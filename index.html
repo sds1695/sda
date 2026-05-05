@@ -4946,17 +4946,22 @@ async function loadBalanceSheet() {
     .filter(i => i.status === 'outstanding' || i.status === 'partial')
     .reduce((s,i) => s + parseFloat(i.amount_outstanding || i.amount || 0), 0));
 
-  // Live bank balance: OB + non-drawings receipts − non-drawings vouchers.
+  // Live bank balance: OB (at OB date) + non-drawings receipts/vouchers dated AFTER the OB.
+  // Receipts/vouchers dated before the OB are already baked into the OB amount, so we exclude them.
   // Computed fresh every time the BS loads — never relies on localStorage/hardcoded value.
   const _isBSDrawings = x => (x.bank_account||x.payment_account||'').toLowerCase().includes('draw');
+  const _ob1010   = COA_OPENING_BALANCES['1010'] || {};
+  const _obDate   = _ob1010.date   || '2026-01-01';
+  const _obAmount = _ob1010.amount || 0;
+  const _afterOB  = x => (x.date || '') >= _obDate;
   const _allVouchers  = (VOUCHERS||[]).filter(v =>
     !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) &&
     !(v.description||'').startsWith('__VOID__'));
-  const bankRcTotal   = (RECEIPTS||[]).filter(r => !_isBSDrawings(r))
+  const bankRcTotal   = (RECEIPTS||[]).filter(r => !_isBSDrawings(r) && _afterOB(r))
                           .reduce((s,r) => s + parseFloat(r.amount||0), 0);
-  const bankPvTotal   = _allVouchers.filter(v => !_isBSDrawings(v))
+  const bankPvTotal   = _allVouchers.filter(v => !_isBSDrawings(v) && _afterOB(v))
                           .reduce((s,v) => s + parseFloat(v.amount||0), 0);
-  const liveBank      = r2((((COA_OPENING_BALANCES['1010']||{}).amount)||0) + bankRcTotal - bankPvTotal);
+  const liveBank      = r2(_obAmount + bankRcTotal - bankPvTotal);
 
   const valueOf = (a) => {
     // Priority: live mapsFrom > hardcoded snapshot > COA_DEFAULT fallback > derived source.
@@ -5697,6 +5702,17 @@ function syncFromExcelSnapshot() {
   const coa = getCOA();
   let updated = 0;
   Object.entries(COA_EXCEL_SNAPSHOT).forEach(([code, value]) => {
+    const acct = coa.find(a => a.code === code);
+    if (acct && !acct.mapsFrom) { acct.value = value; updated++; }
+  });
+  saveCOA(coa);
+  toast(`Synced ${updated} account(s) from Excel snapshot`, 'success');
+  loadCOA();
+}
+</script>
+</body>
+</html>
+t.entries(COA_EXCEL_SNAPSHOT).forEach(([code, value]) => {
     const acct = coa.find(a => a.code === code);
     if (acct && !acct.mapsFrom) { acct.value = value; updated++; }
   });
