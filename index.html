@@ -4956,7 +4956,7 @@ async function loadBalanceSheet() {
                           .reduce((s,r) => s + parseFloat(r.amount||0), 0);
   const bankPvTotal   = _allVouchers.filter(v => !_isBSDrawings(v))
                           .reduce((s,v) => s + parseFloat(v.amount||0), 0);
-  const liveBank      = r2(((COA_OPENING_BALANCES['1010']||{}).amount)||0 + bankRcTotal - bankPvTotal);
+  const liveBank      = r2((((COA_OPENING_BALANCES['1010']||{}).amount)||0) + bankRcTotal - bankPvTotal);
 
   const valueOf = (a) => {
     // Priority: live mapsFrom > hardcoded snapshot > COA_DEFAULT fallback > derived source.
