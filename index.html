@@ -1494,12 +1494,12 @@ const COA_DEFAULT = [
   { code: '1500', name: 'Phone',                        section: 'non_current_asset', value: 5400.00 },
   { code: '1600', name: 'Software',                     section: 'non_current_asset', value: 1800.00 },
   // Current assets
-  { code: '1100', name: 'Trade debtor',                 section: 'current_asset',     value: 3398.50, source: 'live_outstanding_invoices' },
+  { code: '1100', name: 'Trade debtor',                 section: 'current_asset',     source: 'live_outstanding_invoices' },
   { code: '1010', name: 'Bank balance (CIMB)',          section: 'current_asset',     value: 3890.97 },
   // Equity (per Excel: Capital + Drawings + Profit + Retained)
   { code: '3000', name: 'Capital',                      section: 'equity',            value: 12000.00 },
   { code: '3300', name: 'Drawings',                     section: 'equity',            value: 819.05 },
-  { code: '3200', name: 'Profit for the year',          section: 'equity',            value: 4339.15, source: 'pl_net_profit' },
+  { code: '3200', name: 'Profit for the year',          section: 'equity',            source: 'pl_net_profit' },
   { code: '3100', name: 'Retained profits',             section: 'equity',            value: 6331.27 },
   // Current liabilities
   { code: '2100', name: 'Other payable',                section: 'current_liability', value: 0 },
