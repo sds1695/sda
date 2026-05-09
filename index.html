@@ -4954,9 +4954,10 @@ async function loadBalanceSheet() {
   });
   const plNetProfit = r2(plRevenue - plExpense);
 
+  // Live debtor: include disbursements too (client owes the gross amount, not just fees).
   const liveDebtors = r2(allInvoices
     .filter(i => i.status === 'outstanding' || i.status === 'partial')
-    .reduce((s,i) => s + parseFloat(i.amount_outstanding || i.amount || 0), 0));
+    .reduce((s,i) => s + parseFloat(i.amount_outstanding || i.amount || 0) + parseFloat(i.disb_amount || 0), 0));
 
   // Live bank balance: OB (at OB date) + non-drawings receipts/vouchers dated AFTER the OB.
   // Receipts/vouchers dated before the OB are already baked into the OB amount, so we exclude them.
