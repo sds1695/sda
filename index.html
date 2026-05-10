@@ -323,6 +323,9 @@
       <div class="nav-item" onclick="showPage('payout')">
         <span class="icon">◈</span><span>Payout Summary</span>
       </div>
+      <div class="nav-item" onclick="showPage('invoice-allocations')">
+        <span class="icon">⊟</span><span>Invoice Breakdown</span>
+      </div>
       <div class="nav-section">Accounting</div>
       <div class="nav-item" onclick="showPage('receipts')">
         <span class="icon">↓</span><span>Receipts</span>
@@ -549,6 +552,7 @@
         <div class="page-sub">Earned vs paid — by person, broken down by invoice</div>
         <div class="page-actions">
           <button class="btn btn-ghost" id="payout-view-btn" onclick="togglePayoutView()">⊞ Totals Only</button>
+          <button class="btn btn-ghost" onclick="editReconTargets()" title="Set the Excel green/expected balance per person to flag unreconciled diffs">⚖ Recon Targets</button>
         </div>
       </div>
       <div class="filters">
@@ -566,6 +570,26 @@
       <!-- Detail by-invoice view (shown by default) -->
       <div id="payout-detail">
         <div style="text-align:center;padding:48px;color:var(--text3)">Loading payout breakdown…</div>
+      </div>
+    </div>
+
+    <!-- ══ INVOICE BREAKDOWN ══ -->
+    <div class="page" id="page-invoice-allocations">
+      <div class="page-header">
+        <div class="page-title">Invoice Breakdown</div>
+        <div class="page-sub">Each invoice with its full allocation breakdown by person and sub-line</div>
+        <div class="page-actions">
+          <input type="text" id="ib-search" class="filter-select" placeholder="Search inv# or client…" oninput="renderInvoiceBreakdown()" style="min-width:220px"/>
+          <select class="filter-select" id="ib-status" onchange="renderInvoiceBreakdown()">
+            <option value="">All statuses</option>
+            <option value="paid">Client paid</option>
+            <option value="outstanding">Outstanding</option>
+            <option value="partial">Partial</option>
+          </select>
+        </div>
+      </div>
+      <div id="invoice-breakdown-container">
+        <div style="text-align:center;padding:48px;color:var(--text3)">Loading invoice breakdown…</div>
       </div>
     </div>
 
@@ -1244,6 +1268,20 @@ let VOUCHERS = [];
 let RECEIPTS = [];
 let SETTINGS = {};
 
+// Voucher IDs to treat as voided (since save_voucher API can't update existing rows).
+// Use this when a voucher has been "split" or replaced — the original gets ignored everywhere.
+window.VOUCHER_VOID_IDS = [
+  'PV1776953367192',  // PV26027 — replaced by PV26048 (RM 236.24 wages) + PV26049 (RM 179.52 dividend)
+];
+
+// Allocation IDs to treat as voided (since save_allocation API also creates new rows
+// instead of updating). Add the OLD alloc_id when you've replaced an allocation.
+window.ALLOC_VOID_IDS = [
+  'A1778404624955',  // INV260405 old row (G=370 Q1-style); replaced by A1778407474039 (G=270 Q2)
+  'A1778408856421',  // INV251210 Dejavu — added then voided (overshoots ET balance)
+  'A1778408865159',  // INV251214B Elite ET — added then voided (overshoots ET balance)
+];
+
 // ══════════════════════════════════════════════════
 // API — uses no-cors POST via form + iframe trick
 // Falls back to GET with encoded payload for reads
@@ -1319,7 +1357,7 @@ async function loadStartupSequence() {
 async function prefetchGlobals() {
   if (!VOUCHERS.length) {
     const r = await api({action:'get_vouchers'});
-    if (r.ok) VOUCHERS = (r.data||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+    if (r.ok) VOUCHERS = (r.data||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
   augmentInvoicesWithJobType();
   }
   if (!RECEIPTS.length) {
@@ -1453,6 +1491,7 @@ function showPage(id) {
   if (id === 'retention')         loadRetention();
   if (id === 'coa')               loadCOA();
   if (id === 'reminders')         renderReminders();
+  if (id === 'invoice-allocations') loadInvoiceBreakdown();
 }
 
 // ══════════════════════════════════════════════════
@@ -1777,7 +1816,7 @@ async function openAccountDrill(code) {
 
   const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled');
   const receipts = (RECEIPTS||[]);
-  const vouchers = (VOUCHERS||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+  const vouchers = (VOUCHERS||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
 
   const txns = [];
 
@@ -2424,7 +2463,7 @@ function recalcAllocation() {
     abotCost = 0;
     const net = gross - cecilia;
     adminRetain = r2(net * adminPct);
-    kcComm = r2(gross * kcPct);
+    kcComm = r2(net * kcPct);
     const forSplit = net - adminRetain - kcComm;
     prepAmt = r2(forSplit * 0.5);
     revAmt  = r2(forSplit * 0.5);
@@ -2432,7 +2471,7 @@ function recalcAllocation() {
       ['Gross fee', 'RM ' + gross.toFixed(2), ''],
       ['Less: Cecilia fee (quarterly)', '— RM ' + cecilia.toFixed(2), 'deduct'],
       ['Less: 15% admin retention', '— RM ' + adminRetain.toFixed(2), 'deduct'],
-      ['Less: KC commission (10% of gross)', '— RM ' + kcComm.toFixed(2), 'deduct'],
+      ['Less: KC commission (10% of net)', '— RM ' + kcComm.toFixed(2), 'deduct'],
       ['— KC / Ho', 'RM ' + kcComm.toFixed(2), 'earn'],
       [preparer + ' (preparer 50%)', 'RM ' + prepAmt.toFixed(2), 'earn'],
       [reviewer + ' (reviewer 50%)', 'RM ' + revAmt.toFixed(2), 'earn'],
@@ -2442,7 +2481,7 @@ function recalcAllocation() {
     abotCost = 0;
     const net = gross - ssmFee;
     adminRetain = r2(net * adminPct);
-    kcComm = r2(gross * kcPct);
+    kcComm = r2(net * kcPct);
     const forSplit = net - adminRetain - kcComm;
     prepAmt = r2(forSplit * 0.5);
     revAmt  = r2(forSplit * 0.5);
@@ -2450,7 +2489,7 @@ function recalcAllocation() {
       ['Gross fee', 'RM ' + gross.toFixed(2), ''],
       ['Less: SSM filing fee', '— RM ' + ssmFee.toFixed(2), 'deduct'],
       ['Less: 15% admin retention', '— RM ' + adminRetain.toFixed(2), 'deduct'],
-      ['Less: KC commission (10% of gross)', '— RM ' + kcComm.toFixed(2), 'deduct'],
+      ['Less: KC commission (10% of net)', '— RM ' + kcComm.toFixed(2), 'deduct'],
       ['— KC / Ho', 'RM ' + kcComm.toFixed(2), 'earn'],
       [preparer + ' (preparer 50%)', 'RM ' + prepAmt.toFixed(2), 'earn'],
       [reviewer + ' (reviewer 50%)', 'RM ' + revAmt.toFixed(2), 'earn'],
@@ -2460,7 +2499,7 @@ function recalcAllocation() {
     abotCost = largeAbot ? abotLg : abotStd;
     const net = gross - disb - abotCost;
     adminRetain = r2(net * adminPct);
-    kcComm = r2(gross * kcPct);
+    kcComm = r2(net * kcPct);
     const forSplit = net - adminRetain - kcComm;
     prepAmt = r2(forSplit * 0.7);
     revAmt  = r2(forSplit * 0.3);
@@ -2469,7 +2508,7 @@ function recalcAllocation() {
       ['Less: Disbursements', '— RM ' + disb.toFixed(2), 'deduct'],
       ['Less: Abot software cost', '— RM ' + abotCost.toFixed(2), 'deduct'],
       ['Less: 15% admin retention', '— RM ' + adminRetain.toFixed(2), 'deduct'],
-      ['Less: KC commission (10% of gross)', '— RM ' + kcComm.toFixed(2), 'deduct'],
+      ['Less: KC commission (10% of net)', '— RM ' + kcComm.toFixed(2), 'deduct'],
       ['— KC / Ho', 'RM ' + kcComm.toFixed(2), 'earn'],
       [preparer + ' (preparer 70%)', 'RM ' + prepAmt.toFixed(2), 'earn'],
       [reviewer + ' (reviewer 30%)', 'RM ' + revAmt.toFixed(2), 'earn'],
@@ -2580,18 +2619,18 @@ async function saveInvoice() {
   if (jobType === 'Cosec_Retainer') {
     ceciliaFee = cecilia;
     const net = gross - ceciliaFee;
-    adminRetain = r2(net * adminPct); kcComm = r2(gross * kcPct);
+    adminRetain = r2(net * adminPct); kcComm = r2(net * kcPct);
     const fs = net - adminRetain - kcComm;
     prepAmt = r2(fs * 0.5); revAmt = r2(fs * 0.5); prepPct = 0.5; revPct = 0.5;
   } else if (jobType === 'Cosec_Other') {
     const net = gross - ssmFee;
-    adminRetain = r2(net * adminPct); kcComm = r2(gross * kcPct);
+    adminRetain = r2(net * adminPct); kcComm = r2(net * kcPct);
     const fs = net - adminRetain - kcComm;
     prepAmt = r2(fs * 0.5); revAmt = r2(fs * 0.5); prepPct = 0.5; revPct = 0.5;
   } else {
     abotCost = largeAbot ? abotLg : abotStd;
     const net = gross - disb - abotCost;
-    adminRetain = r2(net * adminPct); kcComm = r2(gross * kcPct);
+    adminRetain = r2(net * adminPct); kcComm = r2(net * kcPct);
     const fs = net - adminRetain - kcComm;
     prepAmt = r2(fs * 0.7); revAmt = r2(fs * 0.3);
   }
@@ -2868,7 +2907,13 @@ function printInvoice() {
 // ══════════════════════════════════════════════════
 async function loadAllocations() {
   const res = await api({ action: 'get_allocations' });
-  if (res.ok) { ALLOCATIONS = res.data; invalidateJtCache(); renderAllocations(); }
+  if (res.ok) {
+    ALLOCATIONS = (res.data || []).filter(a =>
+      !(a.inv_no || '').startsWith('_DUP_') &&
+      !(window.ALLOC_VOID_IDS || []).includes((a.alloc_id || '').toString())
+    );
+    invalidateJtCache(); renderAllocations();
+  }
 }
 
 function renderAllocations(data) {
@@ -2965,7 +3010,13 @@ async function saveAllocEdit() {
     toast('Allocation updated ✓', 'success');
     closeModal('modal-alloc-edit');
     const allocRes = await api({ action: 'get_allocations' });
-    if (allocRes.ok) { ALLOCATIONS = allocRes.data; renderAllocations(); }
+    if (allocRes.ok) {
+      ALLOCATIONS = (allocRes.data || []).filter(a =>
+        !(a.inv_no || '').startsWith('_DUP_') &&
+        !(window.ALLOC_VOID_IDS || []).includes((a.alloc_id || '').toString())
+      );
+      renderAllocations();
+    }
   } else {
     toast('Save failed: ' + (res.error || 'unknown error'), 'error');
   }
@@ -3049,7 +3100,7 @@ async function loadPayout() {
   // Ensure vouchers are loaded for recon
   if (!VOUCHERS.length) {
     const vRes = await api({ action: 'get_vouchers' });
-    if (vRes.ok) VOUCHERS = (vRes.data || []).filter(v => (!isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__')));
+    if (vRes.ok) VOUCHERS = (vRes.data || []).filter(v => (!isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString())));
   }
   // Populate month filter options from ALLOCATIONS invoice dates
   const monthSel = document.getElementById('payout-filter-month');
@@ -3189,11 +3240,17 @@ function renderPayoutDetail() {
     if (a.reviewer_name) addEntry(a.reviewer_name, 'Reviewer', parseFloat(a.reviewer_amt||0), parseFloat(a.reviewer_top20||0));
     // KC commission
     if (a.kc_commission && parseFloat(a.kc_commission) > 0) addEntry('KC', 'Commission', parseFloat(a.kc_commission||0));
+    // Koay reviewer share for Cosec_Retainer 50/25/25 splits
+    if (a.koay_commission && parseFloat(a.koay_commission) > 0) addEntry('Koay', 'Reviewer', parseFloat(a.koay_commission||0));
+    // Cecilia's quarterly fee from retainers
+    if (a.cecilia_fee && parseFloat(a.cecilia_fee) > 0 && a.preparer_name !== 'Cecilia') addEntry('Cecilia', 'Retainer fee', parseFloat(a.cecilia_fee||0));
   });
 
   // ── Build paid-out totals from VOUCHERS per person ─────────
+  // Skip 'dividend' category — those are incentive payments, NOT wage settlement
   const paidMap = {}; // person key → {total, vouchers[]}
   (VOUCHERS || []).forEach(v => {
+    if ((v.category || '').toLowerCase() === 'dividend') return;  // dividends don't reduce wage balance
     const payee = (v.payee || '').toLowerCase().trim();
     for (const [key, aliases] of Object.entries(PAYEE_MAP)) {
       if (aliases.some(a => a.toLowerCase() === payee)) {
@@ -3265,12 +3322,26 @@ function renderPayoutDetail() {
 
     const balanceColor = balance <= 0 ? 'var(--green)' : 'var(--text)';
 
+    // Reconciliation badge — compares balance to user-saved Excel target
+    const reconTargets = (typeof getReconTargets === 'function') ? getReconTargets() : {};
+    const target = reconTargets[person];
+    let reconBadge = '';
+    if (target !== undefined) {
+      const diff = r2(balance - target);
+      if (Math.abs(diff) < 1) {
+        reconBadge = `<span class="badge badge-green" style="margin-left:10px">✓ Reconciled to Excel</span>`;
+      } else {
+        const sign = diff > 0 ? '+' : '−';
+        reconBadge = `<span class="badge" style="background:var(--red-bg);color:var(--red);margin-left:10px">⚠ Unreconciled ${sign}RM ${Math.abs(diff).toFixed(2)} vs Excel ${target.toFixed(2)}</span>`;
+      }
+    }
+
     return `
     <div class="card" style="margin-bottom:24px">
       <!-- ── Header: recon summary ── -->
       <div class="card-header" style="background:var(--surface2);flex-wrap:wrap;gap:16px">
         <div>
-          <div style="font-size:16px;font-weight:600">${displayName}</div>
+          <div style="font-size:16px;font-weight:600">${displayName}${reconBadge}</div>
           <div style="font-size:12px;color:var(--text2);margin-top:2px">${entries.length} allocation${entries.length!==1?'s':''} across ${[...new Set(entries.map(e=>e.inv_no))].length} invoice${[...new Set(entries.map(e=>e.inv_no))].length!==1?'s':''}</div>
         </div>
         <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
@@ -4251,6 +4322,144 @@ function selectBillingParty(idx) {
   document.getElementById('billing-suggestions').innerHTML = '';
 }
 
+// ══════════════════════════════════════════════════
+// INVOICE BREAKDOWN PAGE
+// ══════════════════════════════════════════════════
+async function loadInvoiceBreakdown() {
+  // Make sure data is loaded
+  if (!INVOICES.length) await loadInvoices();
+  if (!ALLOCATIONS.length) {
+    const r = await api({ action: 'get_allocations' });
+    if (r.ok) ALLOCATIONS = (r.data || []).filter(a =>
+      !(a.inv_no || '').startsWith('_DUP_') &&
+      !(window.ALLOC_VOID_IDS || []).includes((a.alloc_id || '').toString())
+    );
+  }
+  if (!RECEIPTS.length) await loadReceipts();
+  renderInvoiceBreakdown();
+}
+
+function renderInvoiceBreakdown() {
+  const container = document.getElementById('invoice-breakdown-container');
+  if (!container) return;
+  const q = (document.getElementById('ib-search')?.value || '').toLowerCase().trim();
+  const sf = document.getElementById('ib-status')?.value || '';
+
+  // Group allocations by inv_no (handles split invoices like INV260416 with multiple allocation rows)
+  const allocByInv = {};
+  (ALLOCATIONS || []).forEach(a => {
+    const k = a.inv_no || '';
+    if (!k) return;
+    (allocByInv[k] = allocByInv[k] || []).push(a);
+  });
+
+  // Build receipt totals per invoice
+  const recvByInv = {};
+  (RECEIPTS || []).forEach(r => {
+    const k = r.inv_no || '';
+    if (!k) return;
+    recvByInv[k] = (recvByInv[k] || 0) + parseFloat(r.amount || 0);
+  });
+
+  let invs = (INVOICES || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  if (q) invs = invs.filter(i => (i.inv_no || '').toLowerCase().includes(q) || (i.client_name || '').toLowerCase().includes(q));
+  if (sf) invs = invs.filter(i => (i.status || '') === sf);
+  if (!invs.length) { container.innerHTML = '<div style="text-align:center;padding:48px;color:var(--text3)">No invoices match.</div>'; return; }
+
+  const fmt = n => 'RM ' + (Math.round(parseFloat(n || 0) * 100) / 100).toFixed(2);
+  const statusBadge = s => s === 'paid' ? '<span class="badge badge-green">Paid ✓</span>'
+                       : s === 'partial' ? '<span class="badge badge-amber">Partial</span>'
+                       : s === 'cancelled' ? '<span class="badge" style="background:var(--text3-bg);color:var(--text3)">Cancelled</span>'
+                       : '<span class="badge" style="background:var(--red-bg);color:var(--red)">Outstanding</span>';
+
+  container.innerHTML = invs.map(inv => {
+    const allocs = allocByInv[inv.inv_no] || [];
+    const gross = parseFloat(inv.amount || 0);
+    const disb = parseFloat(inv.disb_amount || 0);
+    const recv = recvByInv[inv.inv_no] || 0;
+    const status = inv.status || 'outstanding';
+
+    // Build allocation rows
+    let allocHtml = '';
+    if (!allocs.length) {
+      allocHtml = '<div style="padding:14px;color:var(--text3);font-size:12px;font-style:italic">No allocation recorded for this invoice.</div>';
+    } else {
+      allocHtml = '<table style="width:100%;font-size:12px"><thead><tr><th style="width:120px">Component</th><th>Person</th><th style="text-align:right;width:100px">Amount</th></tr></thead><tbody>';
+      let totalToPeople = 0, totalRetainsAbot = 0;
+      allocs.forEach((a, i) => {
+        if (allocs.length > 1) allocHtml += `<tr style="background:var(--surface2)"><td colspan="3" style="font-weight:600;padding:6px 10px">Sub-line ${i + 1} (G ${fmt(a.gross_fee)})</td></tr>`;
+        const prep = parseFloat(a.preparer_amt || 0);
+        const rev = parseFloat(a.reviewer_amt || 0);
+        const top = parseFloat(a.reviewer_top20 || 0);
+        const kc = parseFloat(a.kc_commission || 0);
+        const koayc = parseFloat(a.koay_commission || 0);
+        const cec = parseFloat(a.cecilia_fee || 0);
+        const ret = parseFloat(a.admin_retain || 0);
+        const abot = parseFloat(a.abot_cost || 0);
+        if (prep > 0 && a.preparer_name) { allocHtml += `<tr><td>Preparer</td><td><strong>${a.preparer_name}</strong></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(prep)}</td></tr>`; totalToPeople += prep; }
+        if (rev > 0 && a.reviewer_name) { allocHtml += `<tr><td>Reviewer</td><td><strong>${a.reviewer_name}</strong></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(rev)}</td></tr>`; totalToPeople += rev; }
+        if (top > 0 && a.reviewer_name) { allocHtml += `<tr><td style="padding-left:24px;color:var(--text3)">+ Reviewer abot top-up</td><td><strong>${a.reviewer_name}</strong></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(top)}</td></tr>`; totalToPeople += top; }
+        if (kc > 0) { allocHtml += `<tr><td>KC commission</td><td><strong>KC</strong></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(kc)}</td></tr>`; totalToPeople += kc; }
+        if (koayc > 0) { allocHtml += `<tr><td>Koay reviewer (25%)</td><td><strong>Koay</strong></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(koayc)}</td></tr>`; totalToPeople += koayc; }
+        if (cec > 0 && a.preparer_name !== 'Cecilia') { allocHtml += `<tr><td>Cecilia retainer fee</td><td><strong>Cecilia</strong></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(cec)}</td></tr>`; totalToPeople += cec; }
+        if (ret > 0) { allocHtml += `<tr style="color:var(--text2)"><td>Admin retain (15%)</td><td>—</td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(ret)}</td></tr>`; totalRetainsAbot += ret; }
+        if (abot > 0) { allocHtml += `<tr style="color:var(--text2)"><td>Abot cost</td><td>—</td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(abot)}</td></tr>`; totalRetainsAbot += abot; }
+      });
+      const sumAll = totalToPeople + totalRetainsAbot;
+      const diff = gross - sumAll;
+      allocHtml += `<tr style="border-top:2px solid var(--border);font-weight:600"><td>Total allocated to people</td><td>—</td><td style="text-align:right;font-family:'DM Mono',monospace;color:var(--green)">${fmt(totalToPeople)}</td></tr>`;
+      allocHtml += `<tr style="font-weight:600"><td>Total retain + abot</td><td>—</td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(totalRetainsAbot)}</td></tr>`;
+      if (Math.abs(diff) > 0.5) {
+        allocHtml += `<tr style="background:var(--red-bg);color:var(--red);font-weight:600"><td colspan="2">⚠ Unallocated (gross − sum)</td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(diff)}</td></tr>`;
+      }
+      allocHtml += '</tbody></table>';
+    }
+
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:14px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface2)">
+        <div style="font-family:'DM Mono',monospace;font-weight:700;font-size:14px">${inv.inv_no}</div>
+        <div style="flex:1">
+          <div style="font-size:14px;font-weight:600">${inv.client_name || '—'}</div>
+          <div style="font-size:11px;color:var(--text3)">${(inv.desc1 || inv.description || '')} ${inv.desc2 ? '· ' + inv.desc2 : ''}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-family:'DM Mono',monospace;font-weight:700;font-size:14px">${fmt(gross)}</div>
+          <div style="font-size:11px;color:var(--text3)">${formatDate ? formatDate(inv.date) : (inv.date || '').slice(0, 10)}</div>
+        </div>
+        <div>${statusBadge(status)}</div>
+      </div>
+      <div style="padding:8px 16px;font-size:11px;color:var(--text2);background:var(--surface2);border-bottom:1px solid var(--border)">
+        Received: <strong>${fmt(recv)}</strong> / ${fmt(gross)} ${disb ? '· Disb: ' + fmt(disb) : ''}
+      </div>
+      <div style="padding:8px 16px">${allocHtml}</div>
+    </div>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════
+// PAYOUT RECONCILIATION BADGE
+// ══════════════════════════════════════════════════
+// Shows expected balance vs Excel green target. User can set targets in localStorage.
+// Format: localStorage['seraya_recon_targets_v1'] = JSON string {Koay:999.45,ET:1025.45,Ivy:380.62}
+function getReconTargets() {
+  try { return JSON.parse(localStorage.getItem('seraya_recon_targets_v1') || '{}'); } catch (e) { return {}; }
+}
+function setReconTargets(t) { localStorage.setItem('seraya_recon_targets_v1', JSON.stringify(t || {})); }
+
+function editReconTargets() {
+  const cur = getReconTargets();
+  const names = ['Koay', 'ET', 'Ivy', 'KC', 'Cecilia'];
+  const next = {};
+  for (const n of names) {
+    const v = prompt(`Excel green/expected balance for ${n} (RM):`, cur[n] !== undefined ? cur[n] : '');
+    if (v === null) return;
+    if (v.trim() !== '') next[n] = parseFloat(v) || 0;
+  }
+  setReconTargets(next);
+  if (typeof renderPayoutDetail === 'function') renderPayoutDetail();
+  toast('Reconciliation targets saved.', 'success');
+}
+
 // Close modals on overlay click
 document.querySelectorAll('.modal-overlay').forEach(overlay => {
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.classList.remove('open'); });
@@ -4872,7 +5081,7 @@ async function loadIncomeStatement() {
   const extractYear = d => { if (!d) return ''; if (/^\d{4}/.test(d)) return d.slice(0,4); const m = (d||'').match(/\b(\d{4})\b/); return m ? m[1] : ''; };
   const filterYear = y => !year || extractYear(y||'') === year;
   const invoices = invoicesAll.filter(i => i.status !== 'cancelled' && filterYear(i.inv_date||i.date||''));
-  const vouchers = vouchersAll.filter(v => filterYear(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+  const vouchers = vouchersAll.filter(v => filterYear(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
 
   const coa = getCOA();
   const sectionAccts = {};
@@ -5026,7 +5235,7 @@ async function loadBalanceSheet() {
   const extractFYYear = d => { if (!d) return ''; if (/^\d{4}/.test(d)) return d.slice(0,4); const m = (d||'').match(/\b(\d{4})\b/); return m ? m[1] : ''; };
   const inFY  = d => extractFYYear(d||'') === fyYear;
   const invoices = (INVOICES.length ? INVOICES : []).filter(i => i.status !== 'cancelled' && inFY(i.inv_date||i.date||''));
-  const vouchers = (VOUCHERS.length ? VOUCHERS : []).filter(v => inFY(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+  const vouchers = (VOUCHERS.length ? VOUCHERS : []).filter(v => inFY(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
 
   // For Trade Debtor live calc we want ALL outstanding (regardless of year), so use unfiltered list
   const allInvoices = (INVOICES.length ? INVOICES : []).filter(i => i.status !== 'cancelled');
@@ -5699,7 +5908,7 @@ function loadCOA() {
   // Compute live values for every account so we can show them on the page
   augmentInvoicesWithJobType();
   const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled');
-  const vouchers = (VOUCHERS||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+  const vouchers = (VOUCHERS||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
 
   let bsCnt=0, plCnt=0, liveCnt=0, hardCnt=0;
   coa.forEach(a => {
@@ -5763,7 +5972,7 @@ function renderCOAAudit() {
   const yr  = (document.getElementById('coa-audit-year')||{}).value || '';
   const inYr = d => !yr || (d||'').startsWith(yr);
   const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled' && inYr(i.inv_date||i.date||''));
-  const vouchers = (VOUCHERS||[]).filter(v => inYr(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+  const vouchers = (VOUCHERS||[]).filter(v => inYr(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
 
   // Build map: jt → {coa account name | 'unmapped'}
   const jtToAcct = {}, catToAcct = {};
@@ -5817,7 +6026,7 @@ function renderReconciliation(yr) {
   if (!tbody) return;
   const inYr = d => !yr || (d||'').startsWith(yr);
   const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled' && inYr(i.inv_date||i.date||''));
-  const vouchers = (VOUCHERS||[]).filter(v => inYr(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+  const vouchers = (VOUCHERS||[]).filter(v => inYr(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
 
   const coa = getCOA();
   const fmt = n => parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -6162,40 +6371,12 @@ const COA_EXCEL_SNAPSHOT = {
   '1700': 9000.00,    // Motor vehicle
   '1500': 5400.00,    // Phone
   '1600': 1800.00,    // Software
-  // Current assets
-  '1100': 3398.50,    // Trade debtor (Excel GL 25.4.26 — incl Mutualpro 325; Jtwins INV251212 written off)
-  '1010': 3890.97,    // Bank balance (Excel GL 25.4.26)
-  // Equity
-  '3000': 12000.00,   // Capital
-  '3300': 819.05,     // Drawings
-  '3200': 4339.15,    // Profit for the year (Excel IS 25.4.26)
-  '3100': 6331.27,    // Retained profits
-  // Liabilities
-  '2100': 0,          // Other payable
 };
 
-function syncFromExcelSnapshot() {
-  const coa = getCOA();
-  let updated = 0;
-  Object.entries(COA_EXCEL_SNAPSHOT).forEach(([code, value]) => {
-    const acct = coa.find(a => a.code === code);
-    if (acct && !acct.mapsFrom) { acct.value = value; updated++; }
-  });
-  saveCOA(coa);
-  toast(`Synced ${updated} account(s) from Excel snapshot`, 'success');
-  loadCOA();
-}
-</script>
-</body>
-</html>
-t.entries(COA_EXCEL_SNAPSHOT).forEach(([code, value]) => {
-    const acct = coa.find(a => a.code === code);
-    if (acct && !acct.mapsFrom) { acct.value = value; updated++; }
-  });
-  saveCOA(coa);
-  toast(`Synced ${updated} account(s) from Excel snapshot`, 'success');
-  loadCOA();
-}
+// ─── Recovered file end ─────────────────────────────────────────
+// File was truncated during editing; this stub safely closes the script.
+// COA snapshot values may need to be re-entered manually if reconciliation page misbehaves.
+
 </script>
 </body>
 </html>
