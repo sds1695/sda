@@ -2790,7 +2790,7 @@ function renderInvoicePDF(inv) {
         <div>
           <div class="inv-bill-label">Bill To:</div>
           <div class="inv-bill-name">${inv.billing_party || inv.client_name}</div>
-          <div class="inv-bill-addr">${(inv.billing_addr || '').replace(/\n/g,'<br>')}</div>
+          <div class="inv-bill-addr">${stripPartyFromAddr(inv.billing_party || inv.client_name, inv.billing_addr || '').replace(/\n/g,'<br>')}</div>
         </div>
         <div class="inv-meta-right">
           <div class="inv-date-row"><span class="inv-meta-key">Date:</span><span>${fmtDate(inv.date)}</span></div>
@@ -4132,7 +4132,7 @@ function selectClient(id) {
   if (!c) return;
   document.getElementById('inv-client-name').value   = c.name;
   document.getElementById('inv-billing-party').value = c.billing_party;
-  document.getElementById('inv-billing-addr').value  = c.billing_addr;
+  document.getElementById('inv-billing-addr').value  = stripPartyFromAddr(c.billing_party, c.billing_addr);
   document.getElementById('client-suggestions').innerHTML = '';
   // Auto-fill description based on job type
   const jt = document.getElementById('inv-job-type').value;
@@ -4156,6 +4156,16 @@ function selectClient(id) {
       addInvLine(presetDesc);
     }
   }
+}
+
+function stripPartyFromAddr(party, addr) {
+  if (!addr) return '';
+  if (!party) return addr;
+  const lines = String(addr).split('\n');
+  if (lines.length && lines[0].trim().toLowerCase() === String(party).trim().toLowerCase()) {
+    return lines.slice(1).join('\n').replace(/^\s+/, '');
+  }
+  return addr;
 }
 
 function billingAutocomplete(showAll) {
@@ -4192,7 +4202,7 @@ function selectBillingParty(idx) {
   const x = (window._billingPartyCache || [])[idx];
   if (!x) return;
   document.getElementById('inv-billing-party').value = x.party;
-  document.getElementById('inv-billing-addr').value = x.addr || '';
+  document.getElementById('inv-billing-addr').value = stripPartyFromAddr(x.party, x.addr);
   document.getElementById('billing-suggestions').innerHTML = '';
 }
 
