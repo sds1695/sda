@@ -975,7 +975,8 @@
         </div>
         <div class="form-field form-full">
           <label>Bill To (invoice recipient)</label>
-          <input type="text" id="inv-billing-party" placeholder="e.g. FRAZ Corporate Services" oninput="billingAutocomplete()" />
+          <input type="text" id="inv-billing-party" placeholder="Click or type to search recipients…" oninput="billingAutocomplete()" onfocus="billingAutocomplete(true)" onblur="setTimeout(()=>{var el=document.getElementById('billing-suggestions'); if(el) el.innerHTML='';},200)" autocomplete="off" />
+          <div id="billing-suggestions" style="position:relative"></div>
         </div>
         <div class="form-field form-full">
           <label>Billing Address</label>
@@ -4157,8 +4158,42 @@ function selectClient(id) {
   }
 }
 
-function billingAutocomplete() {
-  // Could add billing party suggestions here
+function billingAutocomplete(showAll) {
+  const input = document.getElementById('inv-billing-party');
+  const box = document.getElementById('billing-suggestions');
+  if (!input || !box) return;
+  const q = (input.value || '').toLowerCase().trim();
+  // Build unique billing parties from CLIENTS — keep first address seen per party
+  const seen = new Map();
+  (typeof CLIENTS !== 'undefined' ? CLIENTS : []).forEach(c => {
+    const party = (c.billing_party || '').trim();
+    if (!party) return;
+    const key = party.toLowerCase();
+    if (!seen.has(key)) seen.set(key, { party, addr: (c.billing_addr || '').trim() });
+  });
+  let list = Array.from(seen.values()).sort((a, b) => a.party.localeCompare(b.party));
+  if (!showAll && q) list = list.filter(x => x.party.toLowerCase().includes(q));
+  list = list.slice(0, showAll ? 30 : 10);
+  window._billingPartyCache = list;
+  if (!list.length) { box.innerHTML = ''; return; }
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  box.innerHTML = '<div style="position:absolute;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);z-index:100;width:100%;box-shadow:var(--shadow-md);max-height:240px;overflow-y:auto">' +
+    list.map((x, i) => {
+      const addrPreview = (x.addr || '').split('\n')[0].slice(0, 80);
+      return '<div style="padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border)" onmousedown="selectBillingParty(' + i + ')">' +
+        '<div style="font-weight:500">' + esc(x.party) + '</div>' +
+        (addrPreview ? '<div style="font-size:11px;color:var(--text3);margin-top:2px">' + esc(addrPreview) + '</div>' : '') +
+      '</div>';
+    }).join('') +
+  '</div>';
+}
+
+function selectBillingParty(idx) {
+  const x = (window._billingPartyCache || [])[idx];
+  if (!x) return;
+  document.getElementById('inv-billing-party').value = x.party;
+  document.getElementById('inv-billing-addr').value = x.addr || '';
+  document.getElementById('billing-suggestions').innerHTML = '';
 }
 
 // Close modals on overlay click
