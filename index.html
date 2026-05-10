@@ -5092,7 +5092,11 @@ async function loadSalesAnalysis() {
   augmentInvoicesWithJobType();
 
   let data = allInv.filter(i => i.status !== 'cancelled');
-  if (year)   data = data.filter(i => (i.inv_date||i.date||'').startsWith(year));
+  if (year)   data = data.filter(i => {
+    const d = String(i.inv_date || i.date || '');
+    const m = d.match(/\b(20\d{2})\b/);
+    return m && m[1] === year;
+  });
   if (biller) data = data.filter(i => i.billing_party === biller);
 
   const total = data.reduce((s,i) => s + parseFloat(i.amount||0) + parseFloat(i.disb_amount||0), 0);
