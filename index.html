@@ -5077,7 +5077,7 @@ async function loadSalesAnalysis() {
   if (year)   data = data.filter(i => (i.inv_date||i.date||'').startsWith(year));
   if (biller) data = data.filter(i => i.billing_party === biller);
 
-  const total = data.reduce((s,i) => s + parseFloat(i.amount||0), 0);
+  const total = data.reduce((s,i) => s + parseFloat(i.amount||0) + parseFloat(i.disb_amount||0), 0);
   const fmt   = n => 'RM ' + n.toLocaleString('en-MY',{minimumFractionDigits:2});
 
   document.getElementById('sa-total').textContent = fmt(total);
@@ -5085,7 +5085,7 @@ async function loadSalesAnalysis() {
 
   // By billing party
   const billerMap = {};
-  data.forEach(i => { const b=i.billing_party||'Direct'; billerMap[b]=(billerMap[b]||0)+parseFloat(i.amount||0); });
+  data.forEach(i => { const b=i.billing_party||'Direct'; billerMap[b]=(billerMap[b]||0)+parseFloat(i.amount||0)+parseFloat(i.disb_amount||0); });
   const maxBiller = Object.entries(billerMap).sort((a,b)=>b[1]-a[1]);
   const truncName = (s, n) => { s = (s||'').toString(); return s.length > n ? s.slice(0,n-1)+'…' : s; };
   document.getElementById('sa-top-biller').textContent = maxBiller[0] ? truncName(maxBiller[0][0], 22) : '—';
@@ -5147,7 +5147,7 @@ async function loadSalesAnalysis() {
   data.forEach(i => {
     const k = i.client_name;
     if (!clientMap[k]) clientMap[k] = {bp:i.billing_party, type:i.job_type, count:0, rev:0};
-    clientMap[k].count++; clientMap[k].rev += parseFloat(i.amount||0);
+    clientMap[k].count++; clientMap[k].rev += parseFloat(i.amount||0) + parseFloat(i.disb_amount||0);
   });
   const maxClient = Object.entries(clientMap).sort((a,b)=>b[1].rev-a[1].rev);
   document.getElementById('sa-top-client').textContent = maxClient[0] ? truncName(maxClient[0][0], 22) : '—';
