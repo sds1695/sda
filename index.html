@@ -3390,12 +3390,45 @@ async function loadReceipts() {
     const id = (r.receipt_id||r.id||'').toString();
     return !isDeleted('receipts', id) && !(r.notes||'').startsWith('__VOID__');
   });
+  rebuildRVCache();
   renderReceiptRows(RECEIPTS);
 }
 
+// Build cache: receipt_id → "RVYYMM##" with per-month sequential numbering.
+// Sorted by date asc then numeric id asc so order is stable & chronological.
+let _rvCache = {};
+function rebuildRVCache() {
+  _rvCache = {};
+  const buckets = {}; // 'YYYY-MM' → array of {id, date, idNum}
+  (RECEIPTS || []).forEach(r => {
+    const id = (r.receipt_id || r.id || '').toString();
+    if (!id) return;
+    const d = r.date ? new Date(r.date) : null;
+    if (!d || isNaN(d)) return;
+    const key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+    (buckets[key] = buckets[key] || []).push({
+      id, date: d.getTime(), idNum: parseInt(String(id).replace(/\D/g,''),10) || 0
+    });
+  });
+  Object.keys(buckets).forEach(k => {
+    buckets[k].sort((a,b) => a.date - b.date || a.idNum - b.idNum);
+    const [yyyy, mm] = k.split('-');
+    const yy = yyyy.slice(-2);
+    buckets[k].forEach((e, i) => {
+      _rvCache[e.id] = 'RV' + yy + mm + String(i+1).padStart(2,'0');
+    });
+  });
+}
+
 function fmtRV(id, date) {
-  // Format: RVYYMM## — use date for YYMM, last 2 digits of id for sequence
+  // Per-month sequential numbering, e.g. RV260401, RV260402, …
+  // Cache built by rebuildRVCache() each time RECEIPTS is refreshed.
   if (!id) return '—';
+  const key = String(id);
+  if (_rvCache && _rvCache[key]) return _rvCache[key];
+  // Lazy rebuild if cache is empty (first call before loadReceipts completes)
+  if (typeof rebuildRVCache === 'function') { rebuildRVCache(); if (_rvCache[key]) return _rvCache[key]; }
+  // Fallback: old behaviour (last-2-of-id) so we never show blank
   const d = date ? new Date(date) : new Date();
   const yy = String(d.getFullYear()).slice(-2);
   const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -3483,7 +3516,14 @@ function openReceiptEdit(r) {
   openModal('modal-receipt');
 }
 
+let _receiptSaving = false;
 async function saveReceipt() {
+  if (_receiptSaving) return;            // ← guard: ignore duplicate clicks
+  _receiptSaving = true;
+  const _saveBtn = document.querySelector('#modal-receipt .modal-footer .btn-primary');
+  const _origText = _saveBtn ? _saveBtn.textContent : '';
+  if (_saveBtn) { _saveBtn.disabled = true; _saveBtn.textContent = 'Saving…'; }
+  try {
   const existingId = document.getElementById('rc-id').value;
   const date       = document.getElementById('rc-date').value;
   const account    = document.getElementById('rc-account').value;
@@ -3554,6 +3594,10 @@ async function saveReceipt() {
   if (saved)  toast(`${saved} receipt(s) saved. Invoice status updated.`, 'success');
   if (failed) toast(`${failed} receipt(s) failed — check console.`, 'error');
   if (saved) { closeModal('modal-receipt'); loadInvoices(); loadReceipts(); }
+  } finally {
+    _receiptSaving = false;
+    if (_saveBtn) { _saveBtn.disabled = false; _saveBtn.textContent = _origText || 'Save Receipt'; }
+  }
 }
 
 // ══════════════════════════════════════════════════
@@ -3806,6 +3850,7 @@ async function deleteReceipt(id, inv_no) {
   addDeletedId('receipts', id);
   // Remove from in-memory cache and re-render
   RECEIPTS = RECEIPTS.filter(x => (x.receipt_id||x.id||'').toString() !== id.toString());
+  if (typeof rebuildRVCache === 'function') rebuildRVCache();
   renderReceiptRows(RECEIPTS);
   toast('Receipt deleted.', 'success');
   loadDashboard(); // refresh outstanding amounts
