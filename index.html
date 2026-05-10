@@ -5066,10 +5066,28 @@ async function loadBalanceSheet() {
 
 // ══ SALES ANALYSIS ══
 async function loadSalesAnalysis() {
-  const year   = document.getElementById('sa-filter-year').value;
-  const biller = document.getElementById('sa-filter-biller').value;
   // Use cached INVOICES — avoids extra API call
   const allInv = INVOICES.length ? INVOICES : ((await api({action:'get_invoices'})).data || []);
+
+  // Populate year dropdown with all years that have invoices (default to current year)
+  const yearSel = document.getElementById('sa-filter-year');
+  if (yearSel) {
+    const yearsSet = new Set();
+    allInv.forEach(i => {
+      const d = i.inv_date || i.date || '';
+      const m = String(d).match(/\b(20\d{2})\b/);
+      if (m) yearsSet.add(m[1]);
+    });
+    const yrs = Array.from(yearsSet).sort().reverse();
+    const currentYear = String(new Date().getFullYear());
+    // Preserve user's previous selection if they made one
+    const prevValue = yearSel.value || (yearsSet.has(currentYear) ? currentYear : (yrs[0] || ''));
+    yearSel.innerHTML = '<option value="">All time</option>' +
+      yrs.map(y => '<option value="' + y + '"' + (y === prevValue ? ' selected' : '') + '>' + y + '</option>').join('');
+    if (yearSel.value !== prevValue) yearSel.value = prevValue;
+  }
+  const year   = yearSel ? yearSel.value : '';
+  const biller = document.getElementById('sa-filter-biller').value;
   if (!ALLOCATIONS || !ALLOCATIONS.length) { try { await loadAllocations(); } catch(e){} }
   augmentInvoicesWithJobType();
 
