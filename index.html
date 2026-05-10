@@ -4345,7 +4345,6 @@ function renderInvoiceBreakdown() {
   const q = (document.getElementById('ib-search')?.value || '').toLowerCase().trim();
   const sf = document.getElementById('ib-status')?.value || '';
 
-  // Group allocations by inv_no (handles split invoices like INV260416 with multiple allocation rows)
   const allocByInv = {};
   (ALLOCATIONS || []).forEach(a => {
     const k = a.inv_no || '';
@@ -4353,7 +4352,6 @@ function renderInvoiceBreakdown() {
     (allocByInv[k] = allocByInv[k] || []).push(a);
   });
 
-  // Build receipt totals per invoice
   const recvByInv = {};
   (RECEIPTS || []).forEach(r => {
     const k = r.inv_no || '';
@@ -4366,74 +4364,190 @@ function renderInvoiceBreakdown() {
   if (sf) invs = invs.filter(i => (i.status || '') === sf);
   if (!invs.length) { container.innerHTML = '<div style="text-align:center;padding:48px;color:var(--text3)">No invoices match.</div>'; return; }
 
-  const fmt = n => 'RM ' + (Math.round(parseFloat(n || 0) * 100) / 100).toFixed(2);
-  const statusBadge = s => s === 'paid' ? '<span class="badge badge-green">Paid ✓</span>'
+  const fmt = n => {
+    const v = parseFloat(n || 0);
+    return Math.abs(v) < 0.01 ? '<span style="color:var(--text3)">—</span>' : v.toFixed(2);
+  };
+  const statusBadge = s => s === 'paid' ? '<span class="badge badge-green">Paid</span>'
                        : s === 'partial' ? '<span class="badge badge-amber">Partial</span>'
-                       : s === 'cancelled' ? '<span class="badge" style="background:var(--text3-bg);color:var(--text3)">Cancelled</span>'
+                       : s === 'cancelled' ? '<span class="badge" style="background:var(--surface2);color:var(--text3)">Cancelled</span>'
                        : '<span class="badge" style="background:var(--red-bg);color:var(--red)">Outstanding</span>';
 
-  container.innerHTML = invs.map(inv => {
+  const norm = p => p === 'Koay PH' ? 'Koay' : p;
+
+  // Per-allocation breakdown — returns all the buckets the gross gets split into
+  function bucketAmts(a) {
+    const out = { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0, retain: 0, abot: 0, disb: 0, ceciliaFee: 0, ssm: 0 };
+    const pn = norm((a.preparer_name || '').trim());
+    const rn = norm((a.reviewer_name || '').trim());
+    const prep = parseFloat(a.preparer_amt || 0);
+    const rev = parseFloat(a.reviewer_amt || 0);
+    const top = parseFloat(a.reviewer_top20 || 0);
+    const kcc = parseFloat(a.kc_commission || 0);
+    const koac = parseFloat(a.koay_commission || 0);
+    const cec = parseFloat(a.cecilia_fee || 0);
+    if (pn && out.hasOwnProperty(pn)) out[pn] += prep;
+    if (rn && out.hasOwnProperty(rn)) out[rn] += rev + top;
+    out.KC += kcc;
+    out.Koay += koac;
+    if (cec > 0 && pn !== 'Cecilia') out.Cecilia += cec;
+    out.retain += parseFloat(a.admin_retain || 0);
+    out.abot += parseFloat(a.abot_cost || 0) - top;  // abot RM 20 is moved to reviewer top-up; show net retained abot
+    if (out.abot < 0) out.abot = 0;
+    out.disb += parseFloat(a.disbursements || 0);
+    out.ceciliaFee += cec;  // shown as separate column for visibility
+    out.ssm += parseFloat(a.ssm_fee || 0);
+    return out;
+  }
+
+  // Header
+  let html = '<div class="card" style="overflow-x:auto;padding:0">';
+  html += '<table style="min-width:1400px;width:100%;font-size:11px">';
+  html += `<thead>
+    <tr style="background:var(--surface2);font-size:10px;color:var(--text3)">
+      <th colspan="5" style="text-align:left;padding:6px 10px">Invoice</th>
+      <th colspan="5" style="text-align:center;padding:6px 4px;border-left:1px solid var(--border)">— People —</th>
+      <th colspan="5" style="text-align:center;padding:6px 4px;border-left:1px solid var(--border)">— Firm / Costs —</th>
+      <th colspan="2" style="text-align:center;padding:6px 4px;border-left:1px solid var(--border)">— Check —</th>
+    </tr>
+    <tr style="background:var(--surface2)">
+      <th style="text-align:left;width:90px">No.</th>
+      <th style="text-align:left;min-width:160px">Client</th>
+      <th style="text-align:left;width:80px">Date</th>
+      <th style="text-align:left;width:80px">Status</th>
+      <th style="text-align:right;width:70px">Gross</th>
+      <th style="text-align:right;width:65px;border-left:1px solid var(--border)">ET</th>
+      <th style="text-align:right;width:65px">Koay</th>
+      <th style="text-align:right;width:65px">Ivy</th>
+      <th style="text-align:right;width:65px">KC</th>
+      <th style="text-align:right;width:65px">Cecilia</th>
+      <th style="text-align:right;width:60px;border-left:1px solid var(--border)">Retain</th>
+      <th style="text-align:right;width:55px">Abot</th>
+      <th style="text-align:right;width:55px">Disb</th>
+      <th style="text-align:right;width:65px">Cec.fee</th>
+      <th style="text-align:right;width:55px">SSM</th>
+      <th style="text-align:right;width:70px;border-left:1px solid var(--border)">Sum</th>
+      <th style="text-align:right;width:55px">Δ</th>
+    </tr>
+  </thead><tbody>`;
+
+  const tot = { gross: 0, ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0, retain: 0, abot: 0, disb: 0, ceciliaFee: 0, ssm: 0, sum: 0 };
+
+  invs.forEach(inv => {
     const allocs = allocByInv[inv.inv_no] || [];
     const gross = parseFloat(inv.amount || 0);
-    const disb = parseFloat(inv.disb_amount || 0);
-    const recv = recvByInv[inv.inv_no] || 0;
     const status = inv.status || 'outstanding';
+    const dateStr = (typeof formatDate === 'function') ? formatDate(inv.date) : (inv.date || '').slice(0, 10);
 
-    // Build allocation rows
-    let allocHtml = '';
-    if (!allocs.length) {
-      allocHtml = '<div style="padding:14px;color:var(--text3);font-size:12px;font-style:italic">No allocation recorded for this invoice.</div>';
-    } else {
-      allocHtml = '<table style="width:100%;font-size:12px"><thead><tr><th style="width:120px">Component</th><th>Person</th><th style="text-align:right;width:100px">Amount</th></tr></thead><tbody>';
-      let totalToPeople = 0, totalRetainsAbot = 0;
+    const agg = { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0, retain: 0, abot: 0, disb: 0, ceciliaFee: 0, ssm: 0 };
+    allocs.forEach(a => {
+      const b = bucketAmts(a);
+      Object.keys(b).forEach(k => agg[k] += b[k]);
+    });
+    // Disb pulled from invoice if not in allocations
+    if (agg.disb === 0 && parseFloat(inv.disb_amount || 0) > 0) agg.disb = parseFloat(inv.disb_amount || 0);
+
+    // Sum (people + firm/costs)
+    const people = agg.ET + agg.Koay + agg.Ivy + agg.KC + agg.Cecilia;
+    const firm = agg.retain + agg.abot + agg.disb + agg.ceciliaFee + agg.ssm;
+    const sumAll = people + firm;
+    const diff = gross - sumAll;
+    const rowFlag = Math.abs(diff) > 0.5;
+    const diffColor = rowFlag ? 'var(--red)' : 'var(--green)';
+
+    tot.gross += gross;
+    Object.keys(agg).forEach(k => tot[k] += agg[k]);
+    tot.sum += sumAll;
+
+    const hasMulti = allocs.length > 1;
+    const expandBtn = hasMulti
+      ? `<button class="btn btn-ghost btn-sm" style="padding:0 5px;font-size:10px;margin-right:3px" onclick="toggleIbSubrow('${inv.inv_no}')">+</button>`
+      : '<span style="display:inline-block;width:16px"></span>';
+
+    html += `<tr style="border-bottom:1px solid var(--border);${rowFlag ? 'background:var(--red-bg);' : ''}">
+      <td><span style="font-family:'DM Mono',monospace;font-weight:600">${expandBtn}${inv.inv_no}</span></td>
+      <td>${(inv.client_name || '—').substring(0,40)}</td>
+      <td style="font-size:10px;color:var(--text2)">${dateStr}</td>
+      <td>${statusBadge(status)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;font-weight:600">${gross.toFixed(2)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;border-left:1px solid var(--border)">${fmt(agg.ET)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(agg.Koay)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(agg.Ivy)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(agg.KC)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(agg.Cecilia)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--text2);border-left:1px solid var(--border)">${fmt(agg.retain)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(agg.abot)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(agg.disb)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(agg.ceciliaFee)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(agg.ssm)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;font-weight:600;border-left:1px solid var(--border)">${sumAll.toFixed(2)}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;color:${diffColor};font-weight:600">${Math.abs(diff) < 0.01 ? '✓' : (diff>0?'+':'') + diff.toFixed(2)}</td>
+    </tr>`;
+
+    if (hasMulti) {
       allocs.forEach((a, i) => {
-        if (allocs.length > 1) allocHtml += `<tr style="background:var(--surface2)"><td colspan="3" style="font-weight:600;padding:6px 10px">Sub-line ${i + 1} (G ${fmt(a.gross_fee)})</td></tr>`;
-        const prep = parseFloat(a.preparer_amt || 0);
-        const rev = parseFloat(a.reviewer_amt || 0);
-        const top = parseFloat(a.reviewer_top20 || 0);
-        const kc = parseFloat(a.kc_commission || 0);
-        const koayc = parseFloat(a.koay_commission || 0);
-        const cec = parseFloat(a.cecilia_fee || 0);
-        const ret = parseFloat(a.admin_retain || 0);
-        const abot = parseFloat(a.abot_cost || 0);
-        if (prep > 0 && a.preparer_name) { allocHtml += `<tr><td>Preparer</td><td><strong>${a.preparer_name}</strong></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(prep)}</td></tr>`; totalToPeople += prep; }
-        if (rev > 0 && a.reviewer_name) { allocHtml += `<tr><td>Reviewer</td><td><strong>${a.reviewer_name}</strong></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(rev)}</td></tr>`; totalToPeople += rev; }
-        if (top > 0 && a.reviewer_name) { allocHtml += `<tr><td style="padding-left:24px;color:var(--text3)">+ Reviewer abot top-up</td><td><strong>${a.reviewer_name}</strong></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(top)}</td></tr>`; totalToPeople += top; }
-        if (kc > 0) { allocHtml += `<tr><td>KC commission</td><td><strong>KC</strong></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(kc)}</td></tr>`; totalToPeople += kc; }
-        if (koayc > 0) { allocHtml += `<tr><td>Koay reviewer (25%)</td><td><strong>Koay</strong></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(koayc)}</td></tr>`; totalToPeople += koayc; }
-        if (cec > 0 && a.preparer_name !== 'Cecilia') { allocHtml += `<tr><td>Cecilia retainer fee</td><td><strong>Cecilia</strong></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(cec)}</td></tr>`; totalToPeople += cec; }
-        if (ret > 0) { allocHtml += `<tr style="color:var(--text2)"><td>Admin retain (15%)</td><td>—</td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(ret)}</td></tr>`; totalRetainsAbot += ret; }
-        if (abot > 0) { allocHtml += `<tr style="color:var(--text2)"><td>Abot cost</td><td>—</td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(abot)}</td></tr>`; totalRetainsAbot += abot; }
+        const b = bucketAmts(a);
+        const subPeople = b.ET + b.Koay + b.Ivy + b.KC + b.Cecilia;
+        const subFirm = b.retain + b.abot + b.disb + b.ceciliaFee + b.ssm;
+        const subSum = subPeople + subFirm;
+        const subG = parseFloat(a.gross_fee || 0);
+        const subDiff = subG - subSum;
+        const subDescParts = [`Sub ${i + 1}`];
+        if (a.preparer_name) subDescParts.push(`${a.preparer_name} prep`);
+        if (a.reviewer_name) subDescParts.push(`${a.reviewer_name} rev`);
+        html += `<tr id="ib-sub-${inv.inv_no}-${i}" style="display:none;background:var(--surface2);font-size:10px">
+          <td style="padding-left:36px;color:var(--text3)">└ ${subDescParts.join(' · ')}</td>
+          <td colspan="3" style="color:var(--text3)"></td>
+          <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--text3)">${subG.toFixed(2)}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace;border-left:1px solid var(--border)">${fmt(b.ET)}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(b.Koay)}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(b.Ivy)}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(b.KC)}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(b.Cecilia)}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--text2);border-left:1px solid var(--border)">${fmt(b.retain)}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(b.abot)}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(b.disb)}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(b.ceciliaFee)}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(b.ssm)}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace;border-left:1px solid var(--border)">${subSum.toFixed(2)}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace;color:${Math.abs(subDiff)<0.5?'var(--green)':'var(--red)'}">${Math.abs(subDiff) < 0.01 ? '✓' : (subDiff>0?'+':'') + subDiff.toFixed(2)}</td>
+        </tr>`;
       });
-      const sumAll = totalToPeople + totalRetainsAbot;
-      const diff = gross - sumAll;
-      allocHtml += `<tr style="border-top:2px solid var(--border);font-weight:600"><td>Total allocated to people</td><td>—</td><td style="text-align:right;font-family:'DM Mono',monospace;color:var(--green)">${fmt(totalToPeople)}</td></tr>`;
-      allocHtml += `<tr style="font-weight:600"><td>Total retain + abot</td><td>—</td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(totalRetainsAbot)}</td></tr>`;
-      if (Math.abs(diff) > 0.5) {
-        allocHtml += `<tr style="background:var(--red-bg);color:var(--red);font-weight:600"><td colspan="2">⚠ Unallocated (gross − sum)</td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(diff)}</td></tr>`;
-      }
-      allocHtml += '</tbody></table>';
     }
+  });
 
-    return `<div class="card" style="margin-bottom:14px">
-      <div style="display:flex;align-items:center;gap:14px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface2)">
-        <div style="font-family:'DM Mono',monospace;font-weight:700;font-size:14px">${inv.inv_no}</div>
-        <div style="flex:1">
-          <div style="font-size:14px;font-weight:600">${inv.client_name || '—'}</div>
-          <div style="font-size:11px;color:var(--text3)">${(inv.desc1 || inv.description || '')} ${inv.desc2 ? '· ' + inv.desc2 : ''}</div>
-        </div>
-        <div style="text-align:right">
-          <div style="font-family:'DM Mono',monospace;font-weight:700;font-size:14px">${fmt(gross)}</div>
-          <div style="font-size:11px;color:var(--text3)">${formatDate ? formatDate(inv.date) : (inv.date || '').slice(0, 10)}</div>
-        </div>
-        <div>${statusBadge(status)}</div>
-      </div>
-      <div style="padding:8px 16px;font-size:11px;color:var(--text2);background:var(--surface2);border-bottom:1px solid var(--border)">
-        Received: <strong>${fmt(recv)}</strong> / ${fmt(gross)} ${disb ? '· Disb: ' + fmt(disb) : ''}
-      </div>
-      <div style="padding:8px 16px">${allocHtml}</div>
-    </div>`;
-  }).join('');
+  const totDiff = tot.gross - tot.sum;
+  html += `<tr style="background:var(--accent);color:#fff;font-weight:700;font-size:12px">
+    <td colspan="4" style="padding:10px 12px">TOTAL (${invs.length} invoices)</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">${tot.gross.toFixed(2)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace;border-left:1px solid rgba(255,255,255,0.3)">${tot.ET.toFixed(2)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">${tot.Koay.toFixed(2)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">${tot.Ivy.toFixed(2)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">${tot.KC.toFixed(2)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">${tot.Cecilia.toFixed(2)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace;border-left:1px solid rgba(255,255,255,0.3)">${tot.retain.toFixed(2)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">${tot.abot.toFixed(2)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">${tot.disb.toFixed(2)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">${tot.ceciliaFee.toFixed(2)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">${tot.ssm.toFixed(2)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace;border-left:1px solid rgba(255,255,255,0.3)">${tot.sum.toFixed(2)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">${Math.abs(totDiff) < 0.01 ? '✓' : (totDiff>0?'+':'') + totDiff.toFixed(2)}</td>
+  </tr>`;
+
+  html += '</tbody></table></div>';
+  html += '<div style="margin-top:10px;padding:10px;background:var(--surface2);border-radius:6px;font-size:11px;color:var(--text2)"><strong>Reading the table:</strong> The "Sum" column is People + Firm/Costs. It should equal Gross. The "Δ" (delta) column shows any unaccounted difference — green ✓ when the breakdown fully reconciles, red when something is missing or duplicated. Multi-allocation invoices (e.g. INV260416 split across two FYs) show a + button — click to expand and see each sub-line. The "Abot" column shows the NET abot retained (RM 50 minus the RM 20 reviewer top-up).</div>';
+  container.innerHTML = html;
+}
+
+function toggleIbSubrow(inv_no) {
+  const rows = document.querySelectorAll(`[id^="ib-sub-${inv_no}-"]`);
+  rows.forEach(r => { r.style.display = r.style.display === 'none' ? '' : 'none'; });
+}
+
+// Toggle sub-rows for invoices that have multiple allocation rows
+function toggleIbSubrow(inv_no) {
+  const rows = document.querySelectorAll(`[id^="ib-sub-${inv_no}-"]`);
+  rows.forEach(r => { r.style.display = r.style.display === 'none' ? '' : 'none'; });
 }
 
 // ══════════════════════════════════════════════════
