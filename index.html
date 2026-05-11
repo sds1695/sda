@@ -2411,7 +2411,9 @@ async function openInvoiceModal(id) {
     recalcAllocation();
   } else {
     document.getElementById('inv-modal-title').textContent = 'New Invoice';
-    const today = new Date().toISOString().slice(0,10);
+    // Use LOCAL date (not UTC) so Malaysia timezone always shows the correct day
+    const d = new Date();
+    const today = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
     document.getElementById('inv-date').value = today;
     const yr = new Date().getFullYear();
     const mo = new Date().getMonth() + 1;
@@ -2548,6 +2550,11 @@ function _toIsoDate(s) {
   return '';
 }
 function r2(n) { return Math.round(n * 100) / 100; }
+function _localToday() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
 
 async function editReviewerTop() {
   const cur = parseFloat(getSetting('abot_reviewer_top', 20));
@@ -3552,7 +3559,7 @@ function openReceiptModal(isEdit) {
   rcAmountEdited = false;
   document.getElementById('rc-modal-title').textContent = isEdit ? 'Edit Receipt' : 'Record Receipt';
   document.getElementById('rc-id').value      = '';
-  document.getElementById('rc-date').value    = new Date().toISOString().slice(0,10);
+  document.getElementById('rc-date').value    = _localToday();
   document.getElementById('rc-amount').value  = '';
   document.getElementById('rc-notes').value   = '';
   document.getElementById('rc-account').value = 'bank';
@@ -3852,7 +3859,7 @@ function openVoucherModal(isEdit) {
   pvAmountEdited = false;
   document.getElementById('pv-modal-title').textContent = isEdit ? 'Edit Payment Voucher' : 'Payment Voucher';
   document.getElementById('pv-id').value      = '';
-  document.getElementById('pv-date').value    = new Date().toISOString().slice(0,10);
+  document.getElementById('pv-date').value    = _localToday();
   document.getElementById('pv-amount').value  = '';
   document.getElementById('pv-desc').value    = '';
   document.getElementById('pv-account').value = 'bank';
@@ -4826,7 +4833,7 @@ function openReclassModal(prefill) {
   }).join('');
   document.getElementById('rcl-from').innerHTML = opts;
   document.getElementById('rcl-to').innerHTML = opts;
-  document.getElementById('rcl-date').value = new Date().toISOString().slice(0,10);
+  document.getElementById('rcl-date').value = _localToday();
   document.getElementById('rcl-ref').value = '';
   document.getElementById('rcl-desc').value = '';
   document.getElementById('rcl-amount').value = '';
@@ -4897,7 +4904,7 @@ async function saveReclassEntry() {
 
 // ══ GL MANUAL ENTRY ══
 function openGLModal() {
-  document.getElementById('gl-date').value = new Date().toISOString().slice(0,10);
+  document.getElementById('gl-date').value = _localToday();
   ['gl-ref','gl-desc','gl-dr-code','gl-dr-name','gl-cr-code','gl-cr-name','gl-amount'].forEach(id => {
     const el = document.getElementById(id); if(el) el.value = '';
   });
@@ -6349,7 +6356,7 @@ async function smartReclassCombos() {
   if (!confirm(`Smart reclass ${proposals.length} combo invoice(s)?\n\n${summary}\n\nEach posts a JV that moves the amount between revenue accounts. Total revenue UNCHANGED. Run only ONCE per period.`)) return;
 
   let ok = 0, fail = 0;
-  const today = new Date().toISOString().slice(0,10);
+  const today = _localToday();
   for (const p of proposals) {
     // Both accounts are income (CR-natural):
     //   Decrease FROM: Dr fromAcct
@@ -6417,7 +6424,7 @@ async function autoReclassVariances() {
   if (!confirm(`Auto-reclass ${reclasses.length} variance(s) via Journal Vouchers?\n\n${lines}\n\nEach variance posts a JV with the balancing leg to a "9999 Reconciliation Adjustment" account. After posting, refresh the GL — JVs will appear there. Run only ONCE per period (re-running posts duplicate JVs).`)) return;
 
   let ok = 0, fail = 0;
-  const today = new Date().toISOString().slice(0,10);
+  const today = _localToday();
   for (const r of reclasses) {
     const sec = COA_SECTIONS[r.acct.section] || {};
     const isIncome = sec.side === 'income';
