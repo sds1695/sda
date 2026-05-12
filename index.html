@@ -2714,7 +2714,7 @@ async function saveInvoice() {
     billing_addr: document.getElementById('inv-billing-addr').value.trim(),
     desc1:        JSON.stringify(_invLines),
     desc2:        '',
-    amount,
+    amount:       _allLinesTotal || amount,
     disb_amount:  parseFloat(document.getElementById('inv-disb').value || 0),
     status:       'outstanding',
   };
@@ -3072,17 +3072,21 @@ function recalcInvLines() {
   const norm = p => p === 'Koay PH' ? 'Koay' : p;
   // Per-person earnings from override lines
   const _ovrByPerson = { ET:0, Koay:0, Ivy:0, KC:0, Cecilia:0 };
-  let _ovrRetain = 0, _ovrAbot = 0;
+  let _ovrRetain = 0, _ovrAbot = 0, _ovrTop20 = 0;
   let _hasOvr = false;
+  const abotTopUp = parseFloat(getSetting('abot_reviewer_top', 20));
   lines.forEach(l => {
     if (l.alloc !== 'standard' || l.isDisb) return;
-    const hasOvr = l.prepOvr || l.revOvr || l.abotOvr || l.retainOvr;
+    const hasOvr = l.prepOvr || l.revOvr || l.abotOvr || l.retainOvr || l.lineType;
     if (!hasOvr) return;
     _hasOvr = true;
     const linePrep = norm(l.prepOvr || invPrep);
     const lineRev  = norm(l.revOvr  || invRev);
     const lineAbot = l.abotOvr !== '' ? parseFloat(l.abotOvr || 0) : invAbot;
     const lineRetainPct = l.retainOvr !== '' ? parseFloat(l.retainOvr || 0) / 100 : 0.15;
+    // MBRS-type lines get the abot top-up: RM 20 moves from abot retain to reviewer
+    const isMbrs = (l.lineType || '').toUpperCase() === 'MBRS' || (l.lineType === '' && (document.getElementById('inv-job-type')||{}).value === 'MBRS');
+    const top = isMbrs && lineAbot >= abotTopUp ? abotTopUp : 0;
     const K = Math.max(0, l.amt - lineAbot);
     const L = K * lineRetainPct;
     const O = K * 0.10;  // KC commission — always KC regardless of preparer
@@ -3091,10 +3095,11 @@ function recalcInvLines() {
     const rev = P * 0.3;
     // Credit each share to the right person
     if (_ovrByPerson.hasOwnProperty(linePrep)) _ovrByPerson[linePrep] += prep;
-    if (_ovrByPerson.hasOwnProperty(lineRev))  _ovrByPerson[lineRev]  += rev;
+    if (_ovrByPerson.hasOwnProperty(lineRev))  _ovrByPerson[lineRev]  += rev + top;  // + top-up
     _ovrByPerson.KC += O;  // commission always to KC
     _ovrRetain += L;
-    _ovrAbot += lineAbot;
+    _ovrAbot += (lineAbot - top);  // abot retained (after top-up deduction)
+    _ovrTop20 += top;
   });
   // Store aggregated per-person override earnings in hidden fields
   Object.entries(_ovrByPerson).forEach(([person, amt]) => {
@@ -4868,7 +4873,8 @@ function renderInvoiceBreakdown() {
     (allocByInv[k] = allocByInv[k] || []).push(a);
   });
 
-  let invs = (INVOICES || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  // Sort by invoice number descending so newest first AND in sequential order
+  let invs = (INVOICES || []).slice().sort((a, b) => (b.inv_no || '').localeCompare(a.inv_no || ''));
   if (q) invs = invs.filter(i => (i.inv_no || '').toLowerCase().includes(q) || (i.client_name || '').toLowerCase().includes(q));
   if (sf) invs = invs.filter(i => (i.status || '') === sf);
   if (!invs.length) { container.innerHTML = '<div style="text-align:center;padding:48px;color:var(--text3)">No invoices match.</div>'; return; }
