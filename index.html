@@ -3861,7 +3861,6 @@ function renderPayoutDetail() {
       }
     }
     const displayName2 = PERSON_LABEL[person] || person;
-    const readyTotal = r2(payableNow);
     const awaitTotal = r2(awaitClient);
 
     // Build per-invoice row HTML (compact card style)
@@ -3885,9 +3884,33 @@ function renderPayoutDetail() {
       </div>`;
     };
 
-    const readyHtml = paidRows.length
-      ? paidRows.sort((a,b) => (b.idate||'').localeCompare(a.idate||'')).map(e => mkRow(e, 'ready')).join('')
+    // ─── FIFO split: which client-paid items are still unpaid? ───
+    // Sort client-paid invoices by date ascending (oldest first)
+    const paidRowsAsc = paidRows.slice().sort((a,b) => (a.idate||'').localeCompare(b.idate||''));
+    let voucherPool = totalPaid;  // RM available from voucher payments
+    const settledRows = [];   // items already covered by vouchers
+    const readyRows = [];     // items still unpaid (the subset that needs paying)
+    paidRowsAsc.forEach(e => {
+      const amt = e.amount;
+      if (voucherPool >= amt) {
+        voucherPool -= amt;
+        settledRows.push({...e, settled: amt, remaining: 0});
+      } else if (voucherPool > 0) {
+        // partial — split
+        settledRows.push({...e, settled: voucherPool, remaining: amt - voucherPool, partial: true});
+        readyRows.push({...e, amount: amt - voucherPool, partial: true});
+        voucherPool = 0;
+      } else {
+        readyRows.push({...e});
+      }
+    });
+    const readyHtml = readyRows.length
+      ? readyRows.reverse().map(e => mkRow(e, 'ready')).join('')
       : '<div style="font-size:12px;color:var(--text3);padding:10px;text-align:center">No client-paid invoices ready for payout.</div>';
+    const settledId = 'pay-settled-' + person.replace(/[^a-z0-9]/gi,'_');
+    const settledHtml = settledRows.length
+      ? settledRows.reverse().map(e => mkRow(e, 'paidout')).join('')
+      : '<div style="font-size:12px;color:var(--text3);padding:10px;text-align:center">No invoices settled yet.</div>';
     const awaitHtml = pendingRows.length
       ? pendingRows.sort((a,b) => (b.idate||'').localeCompare(a.idate||'')).map(e => mkRow(e, 'await')).join('')
       : '';
@@ -3918,21 +3941,30 @@ function renderPayoutDetail() {
         </div>
       </div>
 
-      ${readyTotal > 0 ? `
+      ${(() => { const rt = readyRows.reduce((s,e)=>s+e.amount,0); return rt > 0 ? `
       <!-- Ready to pay -->
       <div style="margin-bottom:10px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
           <div style="font-size:11px;color:var(--green);font-weight:600;text-transform:uppercase;letter-spacing:.04em">✓ Ready to pay (${paidRows.length})</div>
-          <button class="btn btn-primary btn-sm" style="background:var(--green);color:#fff;font-size:11px;padding:4px 10px" onclick="event.stopPropagation();openVoucherModalPrefilled('${person}', ${readyTotal.toFixed(2)})">Pay RM ${readyTotal.toFixed(2)} →</button>
+          <button class="btn btn-primary btn-sm" style="background:var(--green);color:#fff;font-size:11px;padding:4px 10px" onclick="event.stopPropagation();openVoucherModalPrefilled('${person}', ${rt.toFixed(2)})">Pay RM ${rt.toFixed(2)} →</button>
         </div>
         <div style="display:flex;flex-direction:column;gap:5px">${readyHtml}</div>
-      </div>` : ''}
+      </div>` : ''; })()}
 
       ${awaitTotal > 0 ? `
       <!-- Awaiting client -->
       <div style="margin-bottom:10px">
         <div style="font-size:11px;color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">◐ Awaiting client (${pendingRows.length})</div>
         <div style="display:flex;flex-direction:column;gap:5px">${awaitHtml}</div>
+      </div>` : ''}
+
+      ${settledRows.length > 0 ? `
+      <!-- Already paid (FIFO matched against vouchers) -->
+      <div style="margin-bottom:10px">
+        <button onclick="document.getElementById('${settledId}').style.display = document.getElementById('${settledId}').style.display === 'none' ? '' : 'none'; this.querySelector('.tog2').textContent = document.getElementById('${settledId}').style.display === 'none' ? '▸' : '▾';" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:0;margin-bottom:6px">
+          <span class="tog2">▸</span> Already paid ‑ FIFO matched (${settledRows.length})
+        </button>
+        <div id="${settledId}" style="display:none;flex-direction:column;gap:5px">${settledHtml}</div>
       </div>` : ''}
 
       <!-- Payment history (collapsed) -->
