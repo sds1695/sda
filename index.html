@@ -2389,7 +2389,7 @@ async function openInvoiceModal(id) {
     let _parsedLines = null;
     try { const _p = JSON.parse(inv.desc1||''); if (Array.isArray(_p)) _parsedLines = _p; } catch(e){}
     if (_parsedLines && _parsedLines.length) {
-      _parsedLines.forEach(l => addInvLine(l.desc, l.amt, l.isDisb));
+      _parsedLines.forEach(l => addInvLine(l.desc, l.amt, l.isDisb, l.alloc));
     } else {
       // Legacy format
       const _legacyDesc = (inv.desc1||'') + (inv.desc2 ? '\n' + inv.desc2 : '');
@@ -2533,6 +2533,25 @@ function recalcAllocation() {
       <span class="alloc-value ${cls === 'deduct' ? 'deduct' : cls === 'earn' ? 'earn' : ''}">${val}</span>
     </div>`;
   }).join('');
+  // ─── Per-line allocation extras (reimbursements + retain) ─────
+  const _retainExtra = parseFloat((document.getElementById('inv-retain-extra')||{}).value || 0);
+  const _reimburse = {
+    ET:      parseFloat((document.getElementById('inv-reimburse-ET')||{}).value || 0),
+    Koay:    parseFloat((document.getElementById('inv-reimburse-Koay')||{}).value || 0),
+    Ivy:     parseFloat((document.getElementById('inv-reimburse-Ivy')||{}).value || 0),
+    KC:      parseFloat((document.getElementById('inv-reimburse-KC')||{}).value || 0),
+    Cecilia: parseFloat((document.getElementById('inv-reimburse-Cecilia')||{}).value || 0),
+  };
+  const _hasExtras = _retainExtra > 0 || Object.values(_reimburse).some(v => v > 0);
+  if (_hasExtras) {
+    let extraHtml = '<div style=\"margin-top:8px;padding:8px;border-top:1px dashed var(--border);font-size:11px;color:var(--text2)\"><strong>Per-line extras:</strong>';
+    Object.entries(_reimburse).forEach(([p, v]) => {
+      if (v > 0) extraHtml += ` · Reimburse ${p}: <strong style=\"color:var(--text)\">+RM ${v.toFixed(2)}</strong>`;
+    });
+    if (_retainExtra > 0) extraHtml += ` · Retain (Seraya): <strong style=\"color:var(--green)\">+RM ${_retainExtra.toFixed(2)}</strong>`;
+    extraHtml += '</div>';
+    document.getElementById('alloc-preview-rows').insertAdjacentHTML('beforeend', extraHtml);
+  }
   document.getElementById('alloc-preview').style.display = '';
 }
 
@@ -2642,25 +2661,63 @@ async function saveInvoice() {
     prepAmt = r2(fs * 0.7); revAmt = r2(fs * 0.3);
   }
 
+  // ─── Add per-line allocation extras to standard formula result ──
+  const _retainExtra2 = parseFloat((document.getElementById('inv-retain-extra')||{}).value || 0);
+  const _reimburse2 = {
+    ET:      parseFloat((document.getElementById('inv-reimburse-ET')||{}).value || 0),
+    Koay:    parseFloat((document.getElementById('inv-reimburse-Koay')||{}).value || 0),
+    Ivy:     parseFloat((document.getElementById('inv-reimburse-Ivy')||{}).value || 0),
+    KC:      parseFloat((document.getElementById('inv-reimburse-KC')||{}).value || 0),
+    Cecilia: parseFloat((document.getElementById('inv-reimburse-Cecilia')||{}).value || 0),
+  };
+  const _prepName = document.getElementById('inv-preparer').value;
+  const _revName  = document.getElementById('inv-reviewer').value;
+  let _prepFinal = prepAmt, _revFinal = revAmt, _kcCommFinal = kcComm, _koayCommFinal = 0;
+  // Add reimbursement to person directly (preparer/reviewer add to their amt; others go to commission fields)
+  const norm = p => p === 'Koay PH' ? 'Koay' : p;
+  Object.entries(_reimburse2).forEach(([person, amt]) => {
+    if (amt <= 0) return;
+    if (norm(_prepName) === person) _prepFinal += amt;
+    else if (norm(_revName) === person) _revFinal += amt;
+    else if (person === 'KC') _kcCommFinal += amt;
+    else if (person === 'Koay') _koayCommFinal += amt;
+    // Other reimbursements (Ivy/ET/Cecilia not in main roles) — goes nowhere visible.
+    // User would need to manually edit allocation OR change preparer/reviewer.
+  });
+  const _adminRetainFinal = adminRetain + _retainExtra2;
+  // Total invoice gross now includes ALL line items
+  const _grossFinal = gross + disb + _retainExtra2 + Object.values(_reimburse2).reduce((s,n)=>s+n,0);
+
+  // Persist the per-line metadata in disb_notes as JSON for restoration on edit
+  const _lineMeta = (typeof getInvLines === 'function') ? getInvLines() : [];
+  const _lineMetaJson = _lineMeta.length ? JSON.stringify({ lines: _lineMeta }) : '';
+
   const allocData = {
     inv_id: res.inv_id || editingInvId,
     inv_no,
     job_type: jobType,
-    gross_fee: gross,
+    gross_fee: gross,  // standard fee portion only (used by formula)
     disbursements: disb,
     abot_cost: abotCost,
     cecilia_fee: ceciliaFee,
     ssm_fee: ssmFee,
-    admin_retain: adminRetain,
-    kc_commission: kcComm,
-    net_for_split: r2(prepAmt + revAmt),
-    preparer_name: document.getElementById('inv-preparer').value,
-    preparer_amt: prepAmt,
-    reviewer_name: document.getElementById('inv-reviewer').value,
-    reviewer_amt: revAmt,
+    admin_retain: _adminRetainFinal,
+    kc_commission: _kcCommFinal,
+    koay_commission: _koayCommFinal,
+    net_for_split: r2(_prepFinal + _revFinal),
+    preparer_name: _prepName,
+    preparer_amt: _prepFinal,
+    reviewer_name: _revName,
+    reviewer_amt: _revFinal,
     reviewer_top20: jobType === 'MBRS' ? parseFloat(getSetting('abot_reviewer_top', 20)) : 0,
   };
   await api({ action: 'save_allocation', data: allocData });
+  // Also store line metadata back into the invoice via re-save
+  if (_lineMetaJson) {
+    try {
+      await api({ action: 'save_invoice', data: { inv_id: res.inv_id || editingInvId, inv_no, disb_notes: _lineMetaJson } });
+    } catch(e) { console.warn('Could not save line metadata:', e); }
+  }
 
   toast('Invoice ' + inv_no + ' saved.', 'success');
   closeModal('modal-invoice');
@@ -2683,7 +2740,7 @@ function escHtml(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-function addInvLine(desc, amt, isDisb) {
+function addInvLine(desc, amt, isDisb, alloc) {
   const container = document.getElementById('inv-lines-container');
   const row = document.createElement('div');
   row.className = 'inv-line-row';
@@ -2699,11 +2756,23 @@ function addInvLine(desc, amt, isDisb) {
         <option value="Secretarial retainer fees">Cosec Retainer</option>
         <option value="Company secretarial services">Cosec Other</option>
         <option value="Disbursements">Disbursements</option>
+        <option value="Attestation">Disb · Attestation</option>
+        <option value="Printing and stationeries">Disb · Printing</option>
+        <option value="Travelling expenses">Disb · Travelling</option>
       </select>
       <textarea class="inv-line-desc" rows="2" placeholder="Description..." style="font-size:12px;padding:6px;border:1px solid var(--border);border-radius:4px;width:100%;resize:vertical;background:var(--surface);color:var(--text1)" oninput="recalcInvLines()"></textarea>
     </div>
-    <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;min-width:110px">
+    <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;min-width:140px">
       <input type="number" class="inv-line-amt" step="0.01" placeholder="0.00" style="font-size:12px;padding:6px;border:1px solid var(--border);border-radius:4px;width:100px;text-align:right;background:var(--surface);color:var(--text1)" oninput="recalcInvLines()" />
+      <select class="inv-line-alloc" onchange="recalcInvLines()" title="How this line\'s amount is allocated" style="font-size:11px;padding:3px 4px;border:1px solid var(--border);border-radius:4px;width:130px;background:var(--surface);color:var(--text1)">
+        <option value="standard">Standard formula</option>
+        <option value="retain">→ Retain (Seraya)</option>
+        <option value="ET">→ Reimburse: ET</option>
+        <option value="Koay">→ Reimburse: Koay</option>
+        <option value="Ivy">→ Reimburse: Ivy</option>
+        <option value="KC">→ Reimburse: KC</option>
+        <option value="Cecilia">→ Reimburse: Cecilia</option>
+      </select>
       <label style="font-size:11px;color:var(--text2);display:flex;align-items:center;gap:4px;cursor:pointer">
         <input type="checkbox" class="inv-line-isDisb" onchange="recalcInvLines()" /> Disb
       </label>
@@ -2712,6 +2781,10 @@ function addInvLine(desc, amt, isDisb) {
   if (desc !== undefined && desc !== null && desc !== '') row.querySelector('.inv-line-desc').value = desc;
   if (amt  !== undefined && amt  !== null && amt  !== '') row.querySelector('.inv-line-amt').value = parseFloat(amt).toFixed(2);
   if (isDisb) row.querySelector('.inv-line-isDisb').checked = true;
+  if (alloc) {
+    const allocSel = row.querySelector('.inv-line-alloc');
+    if (allocSel) allocSel.value = alloc;
+  }
   container.appendChild(row);
   recalcInvLines();
 }
@@ -2729,18 +2802,40 @@ function getInvLines() {
     desc:   row.querySelector('.inv-line-desc').value.trim(),
     amt:    parseFloat(row.querySelector('.inv-line-amt').value || 0),
     isDisb: row.querySelector('.inv-line-isDisb').checked,
+    alloc:  (row.querySelector('.inv-line-alloc') || { value: 'standard' }).value,
   }));
 }
 
 function recalcInvLines() {
   const lines     = getInvLines();
-  const feeTotal  = lines.filter(l => !l.isDisb).reduce((s,l) => s + l.amt, 0);
-  const disbTotal = lines.filter(l =>  l.isDisb).reduce((s,l) => s + l.amt, 0);
-  const grandTotal = feeTotal + disbTotal;
+  // Standard fee total = lines marked "standard" allocation, regardless of Disb flag
+  const stdFee   = lines.filter(l => l.alloc === 'standard' && !l.isDisb).reduce((s,l) => s + l.amt, 0);
+  const stdDisb  = lines.filter(l => l.alloc === 'standard' &&  l.isDisb).reduce((s,l) => s + l.amt, 0);
+  const retainExtra = lines.filter(l => l.alloc === 'retain').reduce((s,l) => s + l.amt, 0);
+  const reimburse = { ET:0, Koay:0, Ivy:0, KC:0, Cecilia:0 };
+  lines.forEach(l => { if (l.alloc && reimburse.hasOwnProperty(l.alloc)) reimburse[l.alloc] += l.amt; });
+  const grandTotal = stdFee + stdDisb + retainExtra + Object.values(reimburse).reduce((s,n)=>s+n,0);
+
   const tot = document.getElementById('inv-lines-total');
   if (tot) tot.textContent = grandTotal.toLocaleString('en-MY',{minimumFractionDigits:2});
-  document.getElementById('inv-amount').value = feeTotal.toFixed(2);
-  document.getElementById('inv-disb').value   = disbTotal.toFixed(2);
+  // Standard fields used by recalcAllocation()
+  document.getElementById('inv-amount').value = stdFee.toFixed(2);
+  document.getElementById('inv-disb').value   = stdDisb.toFixed(2);
+  // Hidden fields for new allocations — read by recalcAllocation
+  let h = document.getElementById('inv-retain-extra');
+  if (!h) {
+    h = document.createElement('input'); h.type = 'hidden'; h.id = 'inv-retain-extra';
+    document.body.appendChild(h);
+  }
+  h.value = retainExtra.toFixed(2);
+  Object.entries(reimburse).forEach(([p, amt]) => {
+    let el = document.getElementById('inv-reimburse-' + p);
+    if (!el) {
+      el = document.createElement('input'); el.type = 'hidden'; el.id = 'inv-reimburse-' + p;
+      document.body.appendChild(el);
+    }
+    el.value = amt.toFixed(2);
+  });
   recalcAllocation();
 }
 
@@ -2750,9 +2845,15 @@ function applyDescPreset(sel) {
   const row = sel.closest('.inv-line-row');
   if (row) {
     row.querySelector('.inv-line-desc').value = val;
-    // Auto-tick Disb checkbox when Disbursements preset is chosen
-    if (val === 'Disbursements') {
+    // Auto-tick Disb checkbox for disbursement-style presets
+    const disbPresets = ['Disbursements','Attestation','Printing and stationeries','Travelling expenses'];
+    if (disbPresets.includes(val)) {
       row.querySelector('.inv-line-isDisb').checked = true;
+    }
+    // Default Travelling expenses → Retain (Seraya keeps it)
+    if (val === 'Travelling expenses') {
+      const allocSel = row.querySelector('.inv-line-alloc');
+      if (allocSel) allocSel.value = 'retain';
     }
     sel.value = '';
     recalcInvLines();
