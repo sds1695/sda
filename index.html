@@ -5392,6 +5392,1018 @@ function deleteTeamMember(){
   renderTeamMembers();
 }
 
+
+
+// ── Recovered functions from backup ──
+
+async function loadAging() {
+  const tbody = document.getElementById('ag-tbody');
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text3)">Loading…</td></tr>';
+
+  const today = new Date();
+  const fmt   = n => 'RM ' + parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2});
+  const buckets = {current:0, d30:0, d60:0, d90:0, d120:0, d365:0};
+
+  // Use cached globals — avoids concurrent JSONP timeout issues
+  const allInvoices = INVOICES.length ? INVOICES : ((await api({action:'get_invoices'})).data || []);
+  const allReceipts = RECEIPTS.length ? RECEIPTS : ((await api({action:'get_receipts'})).data || [])
+    .filter(r => !isDeleted('receipts',(r.receipt_id||r.id||'').toString()) && !(r.notes||'').startsWith('__VOID__'));
+
+  if (!allInvoices.length && !INVOICES.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--red)">Failed to load invoices</td></tr>`;
+    return;
+  }
+
+  // Build paid map (exclude deleted/voided receipts)
+  const rcPaidMap = {};
+  allReceipts.forEach(r => {
+    if (r.inv_no) rcPaidMap[r.inv_no] = r2((rcPaidMap[r.inv_no]||0) + parseFloat(r.amount||0));
+  });
+
+  const outstanding = allInvoices.filter(i => i.status === 'outstanding' || i.status === 'partial');
+
+  if (!outstanding.length) {
+    // Show diagnostic: total invoices vs outstanding so we can see what's happening
+    ['ag-current','ag-30','ag-60','ag-90','ag-120','ag-365'].forEach(id => {
+      document.getElementById(id).textContent = fmt(0);
+    });
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text3)">No outstanding debtors. (${allInvoices.length} total invoices loaded)</td></tr>`;
+    return;
+  }
+
+  const rows = outstanding.map(i => {
+    const idate = i.inv_date || i.date || '';
+    const days  = idate ? Math.floor((today - new Date(idate)) / 86400000) : 0;
+    const gross = parseFloat(i.amount||0) + parseFloat(i.disb_amount||0);
+    const amt   = r2(Math.max(0, gross - (rcPaidMap[i.inv_no]||0)));
+    let bucket, label, color;
+    if (days <= 30)       { bucket='current'; label='Current (0–30d)'; color='var(--green)'; }
+    else if (days <= 60)  { bucket='d30';     label='31–60 days';      color='var(--blue)'; }
+    else if (days <= 90)  { bucket='d60';     label='61–90 days';      color='var(--amber)'; }
+    else if (days <= 120) { bucket='d90';     label='91–120 days';     color='var(--red)'; }
+    else if (days <= 365) { bucket='d120';    label='121d–1 year';     color='var(--red)'; }
+    else                  { bucket='d365';    label='> 1 year';        color='#8b0000'; }
+    buckets[bucket] = r2(buckets[bucket] + amt);
+    return `<tr>
+      <td style="font-family:'DM Mono',monospace;font-size:12px">${i.inv_no}</td>
+      <td style="font-size:12px;color:var(--text2)">${formatDate(idate)}</td>
+      <td><strong>${i.client_name}</strong></td>
+      <td style="font-size:12px;color:var(--text2)">${i.billing_party||'—'}</td>
+      <td style="font-family:'DM Mono',monospace">${fmt(amt)}</td>
+      <td style="font-family:'DM Mono',monospace;font-weight:600;color:${color}">${days}d</td>
+      <td><span class="badge" style="background:${color}20;color:${color}">${label}</span></td>
+    </tr>`;
+  });
+
+  document.getElementById('ag-current').textContent = fmt(buckets.current);
+  document.getElementById('ag-30').textContent      = fmt(buckets.d30);
+  document.getElementById('ag-60').textContent      = fmt(buckets.d60);
+  document.getElementById('ag-90').textContent      = fmt(buckets.d90);
+  document.getElementById('ag-120').textContent     = fmt(buckets.d120);
+  document.getElementById('ag-365').textContent     = fmt(buckets.d365);
+  tbody.innerHTML = rows.join('');
+}
+
+// Note: loadRetention() is defined in the first <script> block (around line 1149)
+// using cached ALLOCATIONS + hardcoded deductions to match GL 2026 (RM 4,191.64).
+// An older JSONP-based duplicate previously lived here and was removed because it
+// (a) shadowed the cache-based version and (b) was truncated, breaking the script.
+
+// ══════════════════════════════════════════════════
+// CHART OF ACCOUNTS — UI
+// ══════════════════════════════════════════════════
+function loadCOA() {
+  const coa = getCOA();
+  const fmt = n => parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  // Compute live values for every account so we can show them on the page
+  augmentInvoicesWithJobType();
+  const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled');
+  const vouchers = (VOUCHERS||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+
+  let bsCnt=0, plCnt=0, liveCnt=0, hardCnt=0;
+  coa.forEach(a => {
+    const sec = COA_SECTIONS[a.section] || {};
+    if (sec.statement === 'BS') bsCnt++; else if (sec.statement === 'PL') plCnt++;
+    if (a.mapsFrom && a.mapsFrom.length) liveCnt++; else hardCnt++;
+  });
+  document.getElementById('coa-bs-count').textContent    = bsCnt;
+  document.getElementById('coa-pl-count').textContent    = plCnt;
+  document.getElementById('coa-live-count').textContent  = liveCnt;
+  document.getElementById('coa-hard-count').textContent  = hardCnt;
+  document.getElementById('coa-total-count').textContent = coa.length;
+
+  const order = COA_BS_ORDER.concat(COA_PL_ORDER);
+  const groups = {};
+  coa.forEach(a => { (groups[a.section] = groups[a.section] || []).push(a); });
+
+  let html = '';
+  order.forEach(section => {
+    if (!groups[section] || !groups[section].length) return;
+    const sec = COA_SECTIONS[section] || { label: section };
+    html += `<tr style="background:var(--surface2)"><td colspan="6" style="font-weight:600;color:var(--text2);font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:8px 12px">${sec.label} <span style="color:var(--text3);font-weight:400">(${sec.statement || ''})</span></td></tr>`;
+    groups[section]
+      .sort((a,b) => (a.code||'').localeCompare(b.code||''))
+      .forEach(a => {
+        const live = a.mapsFrom && a.mapsFrom.length;
+        const sourceTxt = live
+          ? `<span class="badge" style="font-size:10px">live</span> <span style="font-size:11px;color:var(--text3)">${a.mapsFrom.join(', ')}</span>`
+          : `<span class="badge" style="font-size:10px">hardcoded</span>`;
+        // Compute the actual displayed value for this account (live or hardcoded)
+        const liveVal = computeAccountValue(a, invoices, vouchers);
+        const valTxt  = fmt(liveVal);
+        const valDim  = Math.abs(liveVal) < 0.005 ? 'opacity:0.45' : '';
+        html += `<tr>
+          <td style="font-family:'DM Mono',monospace;font-weight:600">${a.code||''}</td>
+          <td>${a.name||''}</td>
+          <td style="font-size:12px;color:var(--text2)">${sec.label}</td>
+          <td>${sourceTxt}</td>
+          <td style="text-align:right;font-family:'DM Mono',monospace;${valDim}">${valTxt}</td>
+          <td><button class="btn btn-ghost btn-sm" onclick="openAccountEdit('${(a.code||'').replace(/'/g,"\\'")}')">Edit</button></td>
+        </tr>`;
+      });
+  });
+  if (!html) html = '<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:20px">No accounts. Click "+ Add Account" to start.</td></tr>';
+  document.getElementById('coa-tbody').innerHTML = html;
+
+  // Populate audit year filter and render audit panel
+  const yrSel = document.getElementById('coa-audit-year');
+  if (yrSel && yrSel.options.length === 0) {
+    const allInv = INVOICES || [];
+    const years = [...new Set(allInv.map(i=>(i.inv_date||i.date||'').slice(0,4)).filter(Boolean))].sort().reverse();
+    const opt = document.createElement('option'); opt.value=''; opt.textContent='All time'; yrSel.appendChild(opt);
+    years.forEach(y => { const o = document.createElement('option'); o.value=y; o.textContent=y; yrSel.appendChild(o); });
+    yrSel.value = String(new Date().getFullYear());
+  }
+  renderCOAAudit();
+}
+
+function renderCOAAudit() {
+  const coa = getCOA();
+  const yr  = (document.getElementById('coa-audit-year')||{}).value || '';
+  const inYr = d => !yr || (d||'').startsWith(yr);
+  const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled' && inYr(i.inv_date||i.date||''));
+  const vouchers = (VOUCHERS||[]).filter(v => inYr(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+
+  // Build map: jt → {coa account name | 'unmapped'}
+  const jtToAcct = {}, catToAcct = {};
+  coa.forEach(a => {
+    if (!a.mapsFrom) return;
+    const sec = COA_SECTIONS[a.section] || {};
+    a.mapsFrom.forEach(t => {
+      const k = (t||'').toLowerCase();
+      if (sec.side === 'income')  jtToAcct[k]  = `${a.code} ${a.name}`;
+      else if (sec.side === 'expense') catToAcct[k] = `${a.code} ${a.name}`;
+    });
+  });
+
+  // Aggregate live by job_type
+  const jtAgg = {};
+  invoices.forEach(i => {
+    const k = (getInvJobType(i)||'(blank)').toString();
+    if (!jtAgg[k]) jtAgg[k] = {count:0, sum:0};
+    jtAgg[k].count++;
+    jtAgg[k].sum += parseFloat(i.amount||0);
+  });
+  // Aggregate live by category
+  const catAgg = {};
+  vouchers.forEach(v => {
+    const k = (v.category||'(blank)').toString();
+    if (!catAgg[k]) catAgg[k] = {count:0, sum:0};
+    catAgg[k].count++;
+    catAgg[k].sum += parseFloat(v.amount||0);
+  });
+
+  const fmt = n => parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const rowHtml = (k, v, mapped) => {
+    const amber = mapped ? '' : 'background:var(--amber-bg)';
+    const m     = mapped || '<span style="color:var(--amber);font-weight:600">UNMAPPED</span>';
+    return `<tr style="${amber}"><td style="font-family:'DM Mono',monospace">${k}</td><td>${v.count}</td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(v.sum)}</td><td style="font-size:12px">${m}</td></tr>`;
+  };
+
+  const jtRows = Object.entries(jtAgg).sort((a,b) => b[1].sum - a[1].sum)
+    .map(([k,v]) => rowHtml(k, v, jtToAcct[k.toLowerCase()])).join('') ||
+    '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:20px">No invoices in this year</td></tr>';
+  const catRows = Object.entries(catAgg).sort((a,b) => b[1].sum - a[1].sum)
+    .map(([k,v]) => rowHtml(k, v, catToAcct[k.toLowerCase()])).join('') ||
+    '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:20px">No vouchers in this year</td></tr>';
+  document.getElementById('coa-audit-jt-tbody').innerHTML  = jtRows;
+  document.getElementById('coa-audit-cat-tbody').innerHTML = catRows;
+  renderReconciliation(yr);
+}
+
+function renderReconciliation(yr) {
+  const tbody = document.getElementById('coa-recon-tbody');
+  if (!tbody) return;
+  const inYr = d => !yr || (d||'').startsWith(yr);
+  const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled' && inYr(i.inv_date||i.date||''));
+  const vouchers = (VOUCHERS||[]).filter(v => inYr(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+
+  const coa = getCOA();
+  const fmt = n => parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const sign = n => n < 0 ? '(' + fmt(Math.abs(n)) + ')' : fmt(n);
+
+  const plAccts = coa.filter(a => COA_PL_ORDER.includes(a.section));
+  let html = '';
+  let totalSnap = 0, totalLive = 0;
+
+  // Group by section for visual clarity
+  const order = COA_PL_ORDER;
+  order.forEach(section => {
+    const accts = plAccts.filter(a => a.section === section);
+    if (!accts.length) return;
+    const sec = COA_SECTIONS[section] || { label: section };
+    html += `<tr style="background:var(--surface2)"><td colspan="7" style="font-weight:600;color:var(--text2);font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:8px 12px">${sec.label}</td></tr>`;
+    accts.sort((a,b) => (a.code||'').localeCompare(b.code||'')).forEach(a => {
+      const hasSnap = a.value !== undefined && a.value !== null && a.value !== '';
+      const snap    = hasSnap ? parseFloat(a.value) : 0;
+      // Live: aggregate from invoices/vouchers per mapsFrom
+      let live = 0;
+      const contributors = [];
+      if (a.mapsFrom && a.mapsFrom.length) {
+        const set = new Set(a.mapsFrom.map(s => (s||'').toLowerCase()));
+        if (sec.side === 'income') {
+          if (set.has('disbursements_field')) {
+            invoices.filter(i => parseFloat(i.disb_amount||0) > 0.005).forEach(i => {
+              const amt = parseFloat(i.disb_amount||0);
+              live += amt;
+              contributors.push({ ref: i.inv_no, desc: (i.client_name||'') + ' — disbursement', amt, type: 'INV' });
+            });
+          }
+          invoices.filter(i => set.has(getInvJobType(i).toLowerCase())).forEach(i => {
+            const amt = parseFloat(i.amount||0);
+            live += amt;
+            contributors.push({ ref: i.inv_no, desc: (i.client_name||'') + (getInvJobType(i) ? ' — ' + getInvJobType(i) : ''), amt, type: 'INV' });
+          });
+        } else if (sec.side === 'expense') {
+          vouchers.filter(v => set.has((v.category||'').toLowerCase())).forEach(v => {
+            const amt = parseFloat(v.amount||0);
+            live += amt;
+            contributors.push({ ref: v.voucher_id, desc: (v.payee||'') + (v.description ? ' — ' + v.description : ''), amt, type: 'PV' });
+          });
+        }
+      }
+      live = r2(live);
+      const variance = r2(live - snap);
+      totalSnap += snap; totalLive += live;
+      const status = !hasSnap
+        ? '<span style="color:var(--text3);font-size:11px">no snapshot</span>'
+        : (Math.abs(variance) < 0.01
+          ? '<span style="color:var(--green);font-weight:600;font-size:11px">✓ tally</span>'
+          : '<span style="color:var(--amber);font-weight:600;font-size:11px">⚠ variance</span>');
+      const varColor = Math.abs(variance) < 0.01 ? 'var(--text3)' : (variance > 0 ? 'var(--amber)' : 'var(--red)');
+      const rowId = 'recon-row-' + (a.code || Math.random().toString(36).slice(2));
+      html += `<tr>
+        <td style="font-family:'DM Mono',monospace;font-weight:600">${a.code||''}</td>
+        <td>${a.name||''}</td>
+        <td style="text-align:right;font-family:'DM Mono',monospace">${hasSnap ? fmt(snap) : '—'}</td>
+        <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(live)}</td>
+        <td style="text-align:right;font-family:'DM Mono',monospace;color:${varColor};font-weight:600">${Math.abs(variance) < 0.01 ? '—' : sign(variance)}</td>
+        <td>${status}</td>
+        <td>${contributors.length ? '<button class="btn btn-ghost btn-sm" onclick="toggleReconRow(\''+rowId+'\')">+</button>' : ''}</td>
+      </tr>`;
+      if (contributors.length) {
+        const sortedContributors = contributors.slice().sort((x,y) => y.amt - x.amt);
+        html += `<tr id="${rowId}" style="display:none;background:var(--surface2)">
+          <td colspan="7" style="padding:0">
+            <table style="width:100%;margin:0">
+              <thead><tr><th style="width:90px">Ref</th><th>Description</th><th style="width:60px">Type</th><th style="text-align:right;width:120px">Amount (RM)</th></tr></thead>
+              <tbody>${sortedContributors.map(c =>
+                `<tr><td style="font-family:'DM Mono',monospace;font-size:12px">${c.ref||'—'}</td><td style="font-size:12px">${c.desc||''}</td><td><span class="badge" style="font-size:10px">${c.type}</span></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(c.amt)}</td></tr>`
+              ).join('')}
+              <tr style="font-weight:600;background:var(--surface)"><td colspan="3" style="text-align:right">Subtotal</td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(live)}</td></tr>
+              </tbody>
+            </table>
+          </td>
+        </tr>`;
+      }
+    });
+  });
+
+  totalSnap = r2(totalSnap); totalLive = r2(totalLive);
+  const totalVar = r2(totalLive - totalSnap);
+  const totalStatusColor = Math.abs(totalVar) < 0.01 ? 'var(--green)' : 'var(--amber)';
+  html += `<tr style="background:var(--accent);color:#fff;font-weight:700">
+    <td colspan="2" style="padding:10px 12px">TOTAL</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">RM ${fmt(totalSnap)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">RM ${fmt(totalLive)}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">${Math.abs(totalVar) < 0.01 ? 'Nil' : sign(totalVar)}</td>
+    <td colspan="2" style="font-size:11px">${Math.abs(totalVar) < 0.01 ? '✓ tallies' : 'investigate'}</td>
+  </tr>`;
+  tbody.innerHTML = html || '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text3)">No P/L accounts to reconcile.</td></tr>';
+}
+
+function toggleReconRow(id) {
+  const r = document.getElementById(id);
+  if (!r) return;
+  r.style.display = r.style.display === 'none' ? '' : 'none';
+}
+
+// Known multi-category invoices from S 25.4.2026.xlsx GL 2026 — each was billed under
+// one job_type but Excel splits the amount across two categories.
+// "from" = the category currently tagged on the invoice (whole amount lands there).
+// "to"   = the OTHER category that should receive `amount`.
+const KNOWN_COMBO_RECLASSES = [
+  { inv_no:'INV260105', from_jt:'fs',    to_jt:'mbrs',  amount:250, note:'INV260105: split MBRS 250 + FS 750' },
+  { inv_no:'INV260305', from_jt:'cosec', to_jt:'mbrs',  amount:300, note:'INV260305: split MBRS 300 + Cosec 370' },
+  { inv_no:'INV260306', from_jt:'mbrs',  to_jt:'cosec', amount:270, note:'INV260306: split MBRS 275 + Cosec 270' },
+  { inv_no:'INV260407', from_jt:'fs',    to_jt:'mbrs',  amount:250, note:'INV260407: split MBRS 250 + FS 750' },
+];
+
+async function smartReclassCombos() {
+  const coa = getCOA();
+  const findAcct = (jt) => coa.find(a => {
+    const sec = COA_SECTIONS[a.section]||{};
+    if (sec.statement !== 'PL' || sec.side !== 'income') return false;
+    return (a.mapsFrom||[]).map(s => (s||'').toLowerCase()).includes(jt.toLowerCase());
+  });
+
+  const proposals = [];
+  for (const r of KNOWN_COMBO_RECLASSES) {
+    const fromAcct = findAcct(r.from_jt);
+    const toAcct   = findAcct(r.to_jt);
+    if (!fromAcct || !toAcct) {
+      console.warn(`Skipping ${r.inv_no}: COA account not found for ${r.from_jt} or ${r.to_jt}`);
+      continue;
+    }
+    proposals.push({ ...r, fromAcct, toAcct });
+  }
+
+  if (!proposals.length) { toast('No matchable combo invoices in your COA.','error'); return; }
+
+  const summary = proposals.map(p =>
+    `  ${p.inv_no}: ${p.amount.toFixed(2)} from ${p.fromAcct.code} ${p.fromAcct.name} → ${p.toAcct.code} ${p.toAcct.name}`
+  ).join('\n');
+  if (!confirm(`Smart reclass ${proposals.length} combo invoice(s)?\n\n${summary}\n\nEach posts a JV that moves the amount between revenue accounts. Total revenue UNCHANGED. Run only ONCE per period.`)) return;
+
+  let ok = 0, fail = 0;
+  const today = new Date().toISOString().slice(0,10);
+  for (const p of proposals) {
+    // Both accounts are income (CR-natural):
+    //   Decrease FROM: Dr fromAcct
+    //   Increase TO:   Cr toAcct
+    const data = {
+      date: today,
+      ref: 'JV-COMBO-' + p.inv_no,
+      description: 'Reclass — ' + p.note,
+      dr_code: p.fromAcct.code,
+      dr_account: p.fromAcct.name,
+      cr_code: p.toAcct.code,
+      cr_account: p.toAcct.name,
+      amount: p.amount,
+      source_type: 'journal',
+    };
+    const res = await api({ action: 'save_gl', data });
+    if (res && res.ok) { ok++; console.log(`✓ ${p.inv_no}: ${p.fromAcct.code} → ${p.toAcct.code}`); }
+    else { fail++; console.error(`✗ ${p.inv_no}:`, res); }
+    await new Promise(r => setTimeout(r, 200));
+  }
+  if (fail === 0) toast(`Posted ${ok} combo reclass JVs. Refresh GL to see them.`,'success');
+  else toast(`Posted ${ok}, failed ${fail}. Check console.`,'error');
+  renderCOAAudit();
+}
+
+async function autoReclassVariances() {
+  const yr = document.getElementById('coa-audit-year')?.value || String(new Date().getFullYear());
+  const inYr = d => !yr || (d||'').startsWith(yr);
+  const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled' && inYr(i.inv_date||i.date||''));
+  const vouchers = (VOUCHERS||[]).filter(v => inYr(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+
+  const coa = getCOA();
+  const plAccts = coa.filter(a => COA_PL_ORDER.includes(a.section));
+  const reclasses = [];
+  plAccts.forEach(a => {
+    const hasSnap = a.value !== undefined && a.value !== null && a.value !== '';
+    if (!hasSnap) return;
+    const snap = parseFloat(a.value);
+    let live = 0;
+    if (a.mapsFrom && a.mapsFrom.length) {
+      const set = new Set(a.mapsFrom.map(s => (s||'').toLowerCase()));
+      const sec = COA_SECTIONS[a.section] || {};
+      if (sec.side === 'income') {
+        if (set.has('disbursements_field')) live += invoices.reduce((s,i) => s + parseFloat(i.disb_amount||0), 0);
+        live += invoices.filter(i => set.has(getInvJobType(i).toLowerCase())).reduce((s,i) => s + parseFloat(i.amount||0), 0);
+      } else if (sec.side === 'expense') {
+        live += vouchers.filter(v => set.has((v.category||'').toLowerCase())).reduce((s,v) => s + parseFloat(v.amount||0), 0);
+      }
+    }
+    live = r2(live);
+    const variance = r2(live - snap);
+    if (Math.abs(variance) > 0.01) {
+      reclasses.push({ acct: a, snap, live, variance });
+    }
+  });
+
+  if (!reclasses.length) {
+    toast('No variances to reclass — every account already tallies to its snapshot.','success');
+    return;
+  }
+
+  const lines = reclasses.map(r =>
+    `  ${r.acct.code} ${r.acct.name}: ${r.variance > 0 ? '+' : ''}${r.variance.toFixed(2)} (live ${r.live.toFixed(2)} vs snap ${r.snap.toFixed(2)})`
+  ).join('\n');
+  if (!confirm(`Auto-reclass ${reclasses.length} variance(s) via Journal Vouchers?\n\n${lines}\n\nEach variance posts a JV with the balancing leg to a "9999 Reconciliation Adjustment" account. After posting, refresh the GL — JVs will appear there. Run only ONCE per period (re-running posts duplicate JVs).`)) return;
+
+  let ok = 0, fail = 0;
+  const today = new Date().toISOString().slice(0,10);
+  for (const r of reclasses) {
+    const sec = COA_SECTIONS[r.acct.section] || {};
+    const isIncome = sec.side === 'income';
+    // For income (CR-natural), an "over" (variance > 0) means live credit is too large → debit account, credit adjustment
+    // For income, "under" → credit account, debit adjustment
+    // For expense (DR-natural), "over" → credit account, debit adjustment ; "under" → debit account, credit adjustment
+    const amt = Math.abs(r.variance);
+    let drCode, drName, crCode, crName;
+    if (isIncome) {
+      if (r.variance > 0) {
+        drCode = r.acct.code; drName = r.acct.name;
+        crCode = '9999';      crName = 'Reconciliation Adjustment';
+      } else {
+        drCode = '9999';      drName = 'Reconciliation Adjustment';
+        crCode = r.acct.code; crName = r.acct.name;
+      }
+    } else {
+      if (r.variance > 0) {
+        drCode = '9999';      drName = 'Reconciliation Adjustment';
+        crCode = r.acct.code; crName = r.acct.name;
+      } else {
+        drCode = r.acct.code; drName = r.acct.name;
+        crCode = '9999';      crName = 'Reconciliation Adjustment';
+      }
+    }
+    const data = {
+      date: today,
+      ref: 'JV-RECON-' + r.acct.code,
+      description: `Reconciliation reclass — ${r.acct.code} ${r.acct.name} (live ${r.live.toFixed(2)} → snap ${r.snap.toFixed(2)})`,
+      dr_code: drCode,
+      dr_account: drName,
+      cr_code: crCode,
+      cr_account: crName,
+      amount: amt,
+      source_type: 'journal',
+    };
+    const res = await api({ action: 'save_gl', data });
+    if (res && res.ok) ok++;
+    else { fail++; console.error('Reclass JV failed for ' + r.acct.code + ':', res); }
+    await new Promise(r => setTimeout(r, 200));
+  }
+  if (fail === 0) toast(`Posted ${ok} reconciliation JVs. Refresh the GL to see them.`, 'success');
+  else toast(`Posted ${ok}, failed ${fail}. Check console for details.`, 'error');
+  renderCOAAudit();
+}
+
+let _coaEditOrigCode = null;
+function openAccountEdit(code) {
+  const coa = getCOA();
+  const acct = code ? coa.find(a => a.code === code) : null;
+  _coaEditOrigCode = code;
+  document.getElementById('coa-edit-title').textContent = acct ? `Edit Account ${code}` : 'New Account';
+  document.getElementById('coa-edit-orig-code').value = code || '';
+  document.getElementById('coa-edit-code').value      = acct ? (acct.code||'')    : '';
+  document.getElementById('coa-edit-section').value   = acct ? (acct.section||'admin_expense') : 'admin_expense';
+  document.getElementById('coa-edit-name').value      = acct ? (acct.name||'')    : '';
+  document.getElementById('coa-edit-mapsFrom').value  = acct && acct.mapsFrom ? acct.mapsFrom.join(', ') : '';
+  document.getElementById('coa-edit-value').value     = acct && acct.value != null ? acct.value : '';
+  document.getElementById('coa-edit-delete-btn').style.display = acct ? '' : 'none';
+  openModal('modal-coa-edit');
+}
+
+function saveAccountEdit() {
+  const code     = document.getElementById('coa-edit-code').value.trim();
+  const name     = document.getElementById('coa-edit-name').value.trim();
+  const section  = document.getElementById('coa-edit-section').value;
+  const mapsRaw  = document.getElementById('coa-edit-mapsFrom').value.trim();
+  const valueRaw = document.getElementById('coa-edit-value').value.trim();
+  if (!code || !name) { toast('Code and Name are required','error'); return; }
+  const mapsFrom = mapsRaw ? mapsRaw.split(',').map(s => s.trim()).filter(Boolean) : null;
+  const value    = valueRaw === '' ? 0 : parseFloat(valueRaw);
+
+  const coa = getCOA();
+  if (_coaEditOrigCode && _coaEditOrigCode !== code && coa.some(a => a.code === code)) {
+    toast(`Account code "${code}" already exists`,'error'); return;
+  }
+  if (!_coaEditOrigCode && coa.some(a => a.code === code)) {
+    toast(`Account code "${code}" already exists`,'error'); return;
+  }
+  const newAcct = { code, name, section };
+  if (mapsFrom && mapsFrom.length) newAcct.mapsFrom = mapsFrom;
+  else newAcct.value = isNaN(value) ? 0 : value;
+
+  if (_coaEditOrigCode) {
+    const idx = coa.findIndex(a => a.code === _coaEditOrigCode);
+    if (idx >= 0) {
+      const oldSource = coa[idx].source;
+      // Replace cleanly: drop fields not in newAcct
+      coa[idx] = { ...newAcct };
+      // Preserve `source` ONLY if user kept mapsFrom (live mode); drop it for hardcoded mode
+      if (oldSource && newAcct.mapsFrom && newAcct.mapsFrom.length) coa[idx].source = oldSource;
+    }
+  } else {
+    coa.push(newAcct);
+  }
+  saveCOA(coa);
+  closeModal('modal-coa-edit');
+  toast('Account saved','success');
+  loadCOA();
+}
+
+function deleteCurrentAccount() {
+  if (!_coaEditOrigCode) return;
+  if (!confirm(`Delete account "${_coaEditOrigCode}"? This cannot be undone (but you can Reset to Default later).`)) return;
+  const coa = getCOA().filter(a => a.code !== _coaEditOrigCode);
+  saveCOA(coa);
+  closeModal('modal-coa-edit');
+  toast('Account deleted','success');
+  loadCOA();
+}
+
+function resetCOAConfirm() {
+  if (!confirm('Reset Chart of Accounts to default? Your custom edits will be lost.')) return;
+  resetCOA();
+  toast('Chart of Accounts reset to default','success');
+  loadCOA();
+}
+
+function exportCOA() {
+  const coa = getCOA();
+  const blob = new Blob([JSON.stringify(coa, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `coa-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Snapshot values extracted from S 25.4.2026.xlsx (FY 31.12.26).
+// When the Excel changes, update this object and re-deploy.
+const COA_EXCEL_SNAPSHOT = {
+  // Non-current assets (NBV)
+  '1700': 9000.00,    // Motor vehicle
+  '1500': 5400.00,    // Phone
+  '1600': 1800.00,    // Software
+  // Current assets
+  '1100': 3398.50,    // Trade debtor (Excel GL 25.4.26)
+  '1010': 3890.97,    // Bank balance (Excel GL 25.4.26)
+  // Equity
+  '3000': 12000.00,   // Capital
+  '3300': 819.05,     // Drawings
+  '3200': 4339.15,    // Profit for the year (Excel IS 25.4.26)
+  '3100': 6331.27,    // Retained profits
+};
+
+async function loadSalesAnalysis() {
+  const year   = document.getElementById('sa-filter-year').value;
+  const biller = document.getElementById('sa-filter-biller').value;
+  // Use cached INVOICES — avoids extra API call
+  const allInv = INVOICES.length ? INVOICES : ((await api({action:'get_invoices'})).data || []);
+  if (!ALLOCATIONS || !ALLOCATIONS.length) { try { await loadAllocations(); } catch(e){} }
+  augmentInvoicesWithJobType();
+
+  let data = allInv.filter(i => i.status !== 'cancelled');
+  if (year)   data = data.filter(i => (i.inv_date||i.date||'').startsWith(year));
+  if (biller) data = data.filter(i => i.billing_party === biller);
+
+  const total = data.reduce((s,i) => s + parseFloat(i.amount||0), 0);
+  const fmt   = n => 'RM ' + n.toLocaleString('en-MY',{minimumFractionDigits:2});
+
+  document.getElementById('sa-total').textContent = fmt(total);
+  document.getElementById('sa-count').textContent = data.length;
+
+  // By billing party
+  const billerMap = {};
+  data.forEach(i => { const b=i.billing_party||'Direct'; billerMap[b]=(billerMap[b]||0)+parseFloat(i.amount||0); });
+  const maxBiller = Object.entries(billerMap).sort((a,b)=>b[1]-a[1]);
+  const truncName = (s, n) => { s = (s||'').toString(); return s.length > n ? s.slice(0,n-1)+'…' : s; };
+  document.getElementById('sa-top-biller').textContent = maxBiller[0] ? truncName(maxBiller[0][0], 22) : '—';
+
+  document.getElementById('sa-by-biller').innerHTML = maxBiller.map(([k,v]) => `
+    <div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;font-size:13px">
+        <span>${k}</span><span style="font-family:'DM Mono',monospace">${fmt(v)}</span>
+      </div>
+      <div class="sales-bar"><div class="sales-bar-fill" style="width:${total?(v/total*100).toFixed(1):0}%"></div></div>
+      <div style="font-size:11px;color:var(--text3);margin-top:2px">${total?(v/total*100).toFixed(1):0}% of total</div>
+    </div>`).join('');
+
+  // By revenue COA account — total tallies with Income Statement
+  const coa = getCOA();
+  const revAccts = coa.filter(a => {
+    const sec = COA_SECTIONS[a.section]||{};
+    return sec.statement === 'PL' && sec.side === 'income';
+  });
+  // Build job_type → COA account name lookup
+  const jtToAcct = {};
+  let disbAcctName = null;
+  revAccts.forEach(a => {
+    if (!a.mapsFrom) return;
+    a.mapsFrom.forEach(t => {
+      const k = (t||'').toLowerCase();
+      if (k === 'disbursements_field') disbAcctName = a.name;
+      else jtToAcct[k] = a.name;
+    });
+  });
+  const typeMap = {};
+  data.forEach(i => {
+    const ejt = getInvJobType(i);
+    const k = ejt.toLowerCase();
+    const lbl = jtToAcct[k] || (ejt ? ejt : 'Unmapped');
+    typeMap[lbl] = (typeMap[lbl]||0) + parseFloat(i.amount||0);
+    const disb = parseFloat(i.disb_amount||0);
+    if (disb > 0.005 && disbAcctName) {
+      typeMap[disbAcctName] = (typeMap[disbAcctName]||0) + disb;
+    }
+  });
+  // Order accounts by their COA code; unmapped at the end
+  const maxType = revAccts
+    .filter(a => typeMap[a.name])
+    .sort((a,b) => (a.code||'').localeCompare(b.code||''))
+    .map(a => [a.name, typeMap[a.name]])
+    .concat(Object.entries(typeMap).filter(([k]) => !revAccts.some(a => a.name === k)).sort((a,b) => b[1]-a[1]));
+  document.getElementById('sa-by-type').innerHTML = maxType.map(([k,v]) => `
+    <div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;font-size:13px">
+        <span>${k}</span><span style="font-family:'DM Mono',monospace">${fmt(v)}</span>
+      </div>
+      <div class="sales-bar"><div class="sales-bar-fill" style="width:${total?(v/total*100).toFixed(1):0}%;background:var(--green)"></div></div>
+      <div style="font-size:11px;color:var(--text3);margin-top:2px">${total?(v/total*100).toFixed(1):0}%</div>
+    </div>`).join('');
+
+  // By client
+  const clientMap = {};
+  data.forEach(i => {
+    const k = i.client_name;
+    if (!clientMap[k]) clientMap[k] = {bp:i.billing_party, type:i.job_type, count:0, rev:0};
+    clientMap[k].count++; clientMap[k].rev += parseFloat(i.amount||0);
+  });
+  const maxClient = Object.entries(clientMap).sort((a,b)=>b[1].rev-a[1].rev);
+  document.getElementById('sa-top-client').textContent = maxClient[0] ? truncName(maxClient[0][0], 22) : '—';
+  document.getElementById('sa-client-tbody').innerHTML = maxClient.map(([k,v]) => `
+    <tr>
+      <td><strong>${k}</strong></td>
+      <td style="font-size:12px;color:var(--text2)">${v.bp||'—'}</td>
+      <td>${jobTypeBadge(v.type)}</td>
+      <td style="text-align:center">${v.count}</td>
+      <td style="font-family:'DM Mono',monospace;font-size:13px">${fmt(v.rev)}</td>
+      <td style="font-size:12px;color:var(--text3)">${total?(v.rev/total*100).toFixed(1):0}%</td>
+    </tr>`).join('');
+}
+
+async function loadBalanceSheet() {
+  document.getElementById('bs-assets').innerHTML = '<div style="padding:20px;color:var(--text3)">Loading…</div>';
+  try {
+
+  // Filter to current FY (matches Excel BS at 31.12.YYYY) — drawings/profit/etc. are "for the year"
+  const fyYear = String(new Date().getFullYear());
+  // extractFYYear handles both ISO '2026-04-18' and JS Date strings 'Sun Jan 04 2026 ...'
+  const extractFYYear = d => { if (!d) return ''; if (/^\d{4}/.test(d)) return d.slice(0,4); const m = (d||'').match(/\b(\d{4})\b/); return m ? m[1] : ''; };
+  const inFY  = d => extractFYYear(d||'') === fyYear;
+  const invoices = (INVOICES.length ? INVOICES : []).filter(i => i.status !== 'cancelled' && inFY(i.inv_date||i.date||''));
+  const vouchers = (VOUCHERS.length ? VOUCHERS : []).filter(v => inFY(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+
+  // For Trade Debtor live calc we want ALL outstanding (regardless of year), so use unfiltered list
+  const allInvoices = (INVOICES.length ? INVOICES : []).filter(i => i.status !== 'cancelled');
+
+  const coa = getCOA();
+
+  // Compute net profit from P/L COA accounts (current FY only)
+  const plCoa = coa.filter(a => COA_PL_ORDER.includes(a.section));
+  let plRevenue = 0, plExpense = 0;
+  plCoa.forEach(a => {
+    const v   = computeAccountValue(a, invoices, vouchers);
+    const sec = COA_SECTIONS[a.section] || {};
+    if (sec.side === 'income')  plRevenue += v;
+    if (sec.side === 'expense') plExpense += v;
+  });
+  const plNetProfit = r2(plRevenue - plExpense);
+
+  const liveDebtors = r2(allInvoices
+    .filter(i => i.status === 'outstanding' || i.status === 'partial')
+    .reduce((s,i) => s + parseFloat(i.amount_outstanding || i.amount || 0), 0));
+
+  // Live bank balance: OB + non-drawings receipts − non-drawings vouchers.
+  // Computed fresh every time the BS loads — never relies on localStorage/hardcoded value.
+  const _isBSDrawings = x => (x.bank_account||x.payment_account||'').toLowerCase().includes('draw');
+  const _allVouchers  = (VOUCHERS||[]).filter(v =>
+    !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) &&
+    !(v.description||'').startsWith('__VOID__'));
+  const bankRcTotal   = (RECEIPTS||[]).filter(r => !_isBSDrawings(r))
+                          .reduce((s,r) => s + parseFloat(r.amount||0), 0);
+  const bankPvTotal   = _allVouchers.filter(v => !_isBSDrawings(v))
+                          .reduce((s,v) => s + parseFloat(v.amount||0), 0);
+  const liveBank      = r2(((COA_OPENING_BALANCES['1010']||{}).amount)||0 + bankRcTotal - bankPvTotal);
+
+  const valueOf = (a) => {
+    // Priority: live mapsFrom > hardcoded snapshot > COA_DEFAULT fallback > derived source.
+    // BS values are Excel snapshots — they stay fixed until the COA is updated.
+    // Drill-down shows live Google Sheets data and flags any variance vs snapshot.
+    // Bank (1010): always live — never allow stale localStorage/OB value to show on BS.
+    if (a.code === '1010') return liveBank;
+    if (a.mapsFrom && a.mapsFrom.length) return computeAccountValue(a, invoices, vouchers);
+    const hasValue = a.value !== undefined && a.value !== null && a.value !== '';
+    if (hasValue) return parseFloat(a.value);
+    // Fall back to COA_DEFAULT hardcoded value if localStorage lost it (e.g. after GS sync)
+    const defEntry = COA_DEFAULT.find(d => d.code === a.code);
+    if (defEntry && defEntry.value !== undefined && defEntry.value !== null && defEntry.value !== '') {
+      return parseFloat(defEntry.value);
+    }
+    const src = a.source || (defEntry && defEntry.source) || '';
+    if (src === 'pl_net_profit')              return plNetProfit;
+    if (src === 'live_outstanding_invoices')  return liveDebtors;
+    return 0;
+  };
+
+  const bsAccts = {};
+  COA_BS_ORDER.forEach(s => bsAccts[s] = []);
+  coa.forEach(a => { if (bsAccts[a.section] !== undefined) bsAccts[a.section].push(a); });
+  Object.keys(bsAccts).forEach(s => bsAccts[s].sort((a,b) => (a.code||'').localeCompare(b.code||'')));
+
+  const totals = {};
+  COA_BS_ORDER.forEach(s => { totals[s] = r2(bsAccts[s].reduce((sum,a) => sum + valueOf(a), 0)); });
+
+  const totalAssets      = r2((totals.non_current_asset||0) + (totals.current_asset||0));
+  const totalEquity      = totals.equity || 0;
+  const totalLiabilities = r2((totals.current_liability||0) + (totals.non_current_liability||0));
+  const totalEquityLiab  = r2(totalEquity + totalLiabilities);
+  const gap              = r2(totalAssets - totalEquityLiab);
+
+  const fmt    = n => 'RM ' + Math.abs(n).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const valStr = n => `${n < 0 ? '(' : ''}${fmt(n)}${n < 0 ? ')' : ''}`;
+  const renderRow = (a) => {
+    const v    = valueOf(a);
+    const isLive = a.mapsFrom && a.mapsFrom.length;
+    if (Math.abs(v) < 0.005 && !isLive) return ''; // hide hardcoded zero accounts
+    const code = a.code ? `<span style="color:var(--text3);font-family:'DM Mono',monospace;font-size:11px;margin-right:6px">${a.code}</span>` : '';
+    const click = a.code ? `onclick="openAccountDrill('${(a.code||'').replace(/'/g,"\\'")}')" style="cursor:pointer" title="Click to see underlying transactions"` : '';
+    return `<div class="fin-row indent fin-row-clickable" ${click}><span>${code}${a.name}</span><span class="fin-amt">${valStr(v)}</span></div>`;
+  };
+  const renderSection = (key, label) => {
+    const accts = bsAccts[key] || [];
+    if (!accts.length) return '';
+    let html = `<div class="fin-sub-title">${label}</div>`;
+    accts.forEach(a => { html += renderRow(a); });
+    html += `<div class="fin-row subtotal"><span>Total ${label}</span><span class="fin-amt">${fmt(totals[key])}</span></div>`;
+    return html;
+  };
+
+  document.getElementById('bs-assets').innerHTML = `
+    <div class="fin-section-title">Assets</div>
+    ${renderSection('non_current_asset','Non-Current Assets')}
+    ${renderSection('current_asset','Current Assets')}
+    <div class="fin-row total"><span>TOTAL ASSETS</span><span class="fin-amt">${fmt(totalAssets)}</span></div>
+  `;
+
+  const gapRow = Math.abs(gap) > 0.02
+    ? `<div class="fin-row" style="background:var(--amber-bg);padding:8px 16px;margin-top:6px"><span style="color:var(--amber);font-size:12px">⚠ Difference (Assets vs Equity + Liabilities)</span><span class="fin-amt" style="color:var(--amber)">${valStr(gap)}</span></div>`
+    : `<div class="fin-row" style="background:var(--green-bg);padding:8px 16px;margin-top:6px"><span style="color:var(--green);font-size:12px">✓ Balance sheet tallies</span><span class="fin-amt" style="color:var(--green)">RM 0.00</span></div>`;
+
+  document.getElementById('bs-equity').innerHTML = `
+    <div class="fin-section-title">Equity & Liabilities</div>
+    ${renderSection('equity','Equity')}
+    ${(bsAccts.non_current_liability||[]).length ? renderSection('non_current_liability','Non-Current Liabilities') : ''}
+    ${renderSection('current_liability','Current Liabilities')}
+    <div class="fin-row total"><span>TOTAL EQUITY & LIABILITIES</span><span class="fin-amt">${fmt(totalEquityLiab)}</span></div>
+    ${gapRow}
+  `;
+  } catch(e) {
+    document.getElementById('bs-assets').innerHTML = `<div style="padding:20px;color:red;font-family:monospace">BS Error: ${e.message}<br>${e.stack||''}</div>`;
+  }
+}
+
+async function loadIncomeStatement() {
+  document.getElementById('is-table').innerHTML = '<div style="padding:20px;color:var(--text3)">Loading…</div>';
+  try {
+  const year = document.getElementById('is-filter-year').value;
+  const invoicesAll = INVOICES.length ? INVOICES : (await api({action:'get_invoices'})).data || [];
+  const vouchersAll = VOUCHERS.length ? VOUCHERS : (await api({action:'get_vouchers'})).data || [];
+  // Ensure invoices have job_type populated from allocations
+  if (!ALLOCATIONS || !ALLOCATIONS.length) { try { await loadAllocations(); } catch(e){} }
+  invalidateJtCache();          // force fresh rebuild from current ALLOCATIONS before unmapped scan
+  augmentInvoicesWithJobType();
+
+  const yearSel = document.getElementById('is-filter-year');
+  if (yearSel.options.length <= 1) {
+    const years = [...new Set(invoicesAll.map(i=>{ const d=i.inv_date||i.date||''; if(/^\d{4}/.test(d)) return d.slice(0,4); const m=d.match(/\b(\d{4})\b/); return m?m[1]:''; }).filter(Boolean))].sort().reverse();
+    years.forEach(y => { const o = document.createElement('option'); o.value=y; o.textContent=y; yearSel.appendChild(o); });
+    // Default to current year so 2025 carry-forward doesn't pollute 2026 P/L
+    const currentYear = String(new Date().getFullYear());
+    if (years.includes(currentYear)) { yearSel.value = currentYear; }
+  }
+  const year2 = yearSel.value;
+  if (year2 && year2 !== year) {
+    // Re-pick using updated default
+    return loadIncomeStatement();
+  }
+
+  // Extract 4-digit year from either ISO ("2026-04-18") or JS Date string ("Sun Jan 04 2026 ...")
+  const extractYear = d => { if (!d) return ''; if (/^\d{4}/.test(d)) return d.slice(0,4); const m = (d||'').match(/\b(\d{4})\b/); return m ? m[1] : ''; };
+  const filterYear = y => !year || extractYear(y||'') === year;
+  const invoices = invoicesAll.filter(i => i.status !== 'cancelled' && filterYear(i.inv_date||i.date||''));
+  const vouchers = vouchersAll.filter(v => filterYear(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+
+  const coa = getCOA();
+  const sectionAccts = {};
+  COA_PL_ORDER.forEach(s => sectionAccts[s] = []);
+  coa.forEach(a => { if (sectionAccts[a.section] !== undefined) sectionAccts[a.section].push(a); });
+  const sectionTotals = {};
+  COA_PL_ORDER.forEach(s => {
+    sectionTotals[s] = r2(sectionAccts[s].reduce((sum,a) => sum + computeAccountValue(a, invoices, vouchers), 0));
+  });
+
+  // Catch-all: any invoice or voucher whose category isn't covered by COA mapsFrom
+  const mappedRevTokens = new Set();
+  const mappedExpTokens = new Set();
+  let disbHandled = false;
+  coa.forEach(a => {
+    if (!a.mapsFrom) return;
+    const sec = COA_SECTIONS[a.section] || {};
+    a.mapsFrom.forEach(t => {
+      const k = (t||'').toLowerCase();
+      if (sec.side === 'income') {
+        if (k === 'disbursements_field') disbHandled = true;
+        else mappedRevTokens.add(k);
+      } else if (sec.side === 'expense') {
+        mappedExpTokens.add(k);
+      }
+    });
+  });
+  let unmappedRev = 0, unmappedExp = 0;
+  const unmappedRevByType = {}, unmappedExpByCat = {};
+  // Detect "snapshot mode": when ALL income/expense COA accounts have an explicit hardcoded value.
+  // In snapshot mode, the IS reflects only the snapshot — live unmapped entries are
+  // surfaced on the COA page audit panel instead, not on the IS.
+  const allIncomeAccts = coa.filter(a => {
+    const sec = COA_SECTIONS[a.section]||{};
+    return sec.statement === 'PL' && sec.side === 'income';
+  });
+  const allExpenseAccts = coa.filter(a => {
+    const sec = COA_SECTIONS[a.section]||{};
+    return sec.statement === 'PL' && sec.side === 'expense';
+  });
+  // Snapshot mode disabled: IS always uses live GL data for mapped accounts.
+  // Unmapped items always surface so nothing is silently hidden.
+  const incomeSnapshotMode  = false;
+  const expenseSnapshotMode = false;
+
+  if (!incomeSnapshotMode) {
+    invoices.forEach(i => {
+      const ejt = getInvJobType(i);
+      const jt = ejt.toLowerCase();
+      if (!mappedRevTokens.has(jt)) {
+        const amt = parseFloat(i.amount||0);
+        unmappedRev += amt;
+        unmappedRevByType[ejt||'(blank)'] = (unmappedRevByType[ejt||'(blank)']||0) + amt;
+      }
+      if (!disbHandled) unmappedRev += parseFloat(i.disb_amount||0);
+    });
+  }
+  if (!expenseSnapshotMode) {
+    vouchers.forEach(v => {
+      const cat = (v.category||'').toLowerCase();
+      if (!mappedExpTokens.has(cat)) {
+        const amt = parseFloat(v.amount||0);
+        unmappedExp += amt;
+        unmappedExpByCat[v.category||'(blank)'] = (unmappedExpByCat[v.category||'(blank)']||0) + amt;
+      }
+    });
+  }
+  unmappedRev = r2(unmappedRev); unmappedExp = r2(unmappedExp);
+
+  const totalRevenue = r2((sectionTotals.revenue||0) + (sectionTotals.other_income||0) + unmappedRev);
+  const totalDirect  = r2(sectionTotals.direct_cost||0);
+  const totalAdmin   = r2(sectionTotals.admin_expense||0);
+  const totalDeprec  = r2(sectionTotals.depreciation||0);
+  const totalExp     = r2(totalDirect + totalAdmin + totalDeprec + unmappedExp);
+  const profit       = r2(totalRevenue - totalExp);
+  const margin       = totalRevenue ? (profit/totalRevenue*100).toFixed(1) : 0;
+
+  const fmt = n => 'RM ' + Math.abs(n).toLocaleString('en-MY',{minimumFractionDigits:2});
+  document.getElementById('is-revenue').textContent  = fmt(totalRevenue);
+  document.getElementById('is-expenses').textContent = fmt(totalExp);
+  document.getElementById('is-profit').textContent   = fmt(profit);
+  document.getElementById('is-profit').style.color   = profit >= 0 ? 'var(--green)' : 'var(--red)';
+  document.getElementById('is-margin').textContent   = margin + '%';
+
+  const renderSection = (sectionKey, label, isExpense) => {
+    const accts = sectionAccts[sectionKey] || [];
+    if (!accts.length) return '';
+    const rows = accts.map(a => ({ a, v: computeAccountValue(a, invoices, vouchers) }))
+      .sort((x,y) => (x.a.code||'').localeCompare(y.a.code||''));
+    let html = `<div class="fin-section-title" style="margin-top:8px">${label}</div>`;
+    // Hide zero-value accounts (all accounts — live or snapshot)
+    rows.forEach(({a,v}) => {
+      const isLive = a.mapsFrom && a.mapsFrom.length;
+      if (Math.abs(v) < 0.005) return; // skip any zero-value account
+      const codeBadge = a.code ? `<span style="color:var(--text3);font-family:'DM Mono',monospace;font-size:11px;margin-right:6px">${a.code}</span>` : '';
+      const valStr = isExpense ? `(${fmt(v)})` : fmt(v);
+      const cls    = isExpense ? 'fin-amt fin-neg' : 'fin-amt';
+      const dim    = Math.abs(v) < 0.005 ? 'opacity:0.45' : '';
+      const clickAttr = a.code ? `onclick="openAccountDrill('${(a.code||'').replace(/'/g,"\\'")}')" style="${dim};cursor:pointer" title="Click to see underlying transactions"` : `style="${dim}"`;
+      html += `<div class="fin-row indent fin-row-clickable" ${clickAttr}><span>${codeBadge}${a.name}</span><span class="${cls}">${valStr}</span></div>`;
+    });
+    const subTotal = sectionTotals[sectionKey];
+    const stStr    = isExpense ? `(${fmt(subTotal)})` : fmt(subTotal);
+    const stCls    = isExpense ? 'fin-amt fin-neg' : 'fin-amt';
+    html += `<div class="fin-row subtotal"><span>Total ${label}</span><span class="${stCls}">${stStr}</span></div>`;
+    return html;
+  };
+
+  const fmtUnmapped = (label, byMap, isExpense) => {
+    const entries = Object.entries(byMap).filter(([_,v]) => Math.abs(v) > 0.005).sort((a,b) => b[1]-a[1]);
+    if (!entries.length) return '';
+    let html = `<div class="fin-section-title" style="margin-top:8px;color:var(--amber)">${label} <span style="font-size:10px;font-weight:400">(unmapped — add an account in Chart of Accounts)</span></div>`;
+    entries.forEach(([k,v]) => {
+      const valStr = isExpense ? `(${fmt(v)})` : fmt(v);
+      const cls    = isExpense ? 'fin-amt fin-neg' : 'fin-amt';
+      html += `<div class="fin-row indent"><span style="color:var(--amber)">${k}</span><span class="${cls}">${valStr}</span></div>`;
+    });
+    return html;
+  };
+
+  let rows = '';
+  rows += renderSection('revenue',       'Revenue',                 false);
+  rows += renderSection('other_income',  'Other Income',            false);
+  rows += fmtUnmapped('Other Revenue', unmappedRevByType, false);
+  rows += `<div class="fin-row subtotal" style="background:var(--surface2);font-weight:600"><span>Total Revenue</span><span class="fin-amt">${fmt(totalRevenue)}</span></div>`;
+  rows += renderSection('direct_cost',   'Direct Costs',            true);
+  rows += renderSection('admin_expense', 'Administrative Expenses', true);
+  rows += fmtUnmapped('Other Expenses', unmappedExpByCat, true);
+  rows += renderSection('depreciation',  'Depreciation',            true);
+  rows += `<div class="fin-row subtotal" style="background:var(--surface2);font-weight:600"><span>Total Expenses</span><span class="fin-amt fin-neg">(${fmt(totalExp)})</span></div>`;
+  rows += `<div class="fin-row total"><span>Net Profit / (Loss)</span><span class="fin-amt" style="color:${profit>=0?'var(--green)':'var(--red)'}">${profit<0?'(':''}${fmt(profit)}${profit<0?')':''}</span></div>`;
+  if (totalDeprec > 0.005) {
+    const profitNoDep = r2(profit + totalDeprec);
+    rows += `<div class="fin-row indent" style="margin-top:6px;color:var(--text3);font-size:12px"><span>Net Profit before Depreciation</span><span class="fin-amt">${fmt(profitNoDep)}</span></div>`;
+  }
+  document.getElementById('is-table').innerHTML = rows;
+  } catch(e) {
+    document.getElementById('is-table').innerHTML = `<div style="padding:20px;color:red;font-family:monospace">IS Error: ${e.message}<br>${e.stack||''}</div>`;
+  }
+}
+
+
+async function renderReminders() {
+  const tbody = document.getElementById('rem-tbody');
+  if (!tbody) return;
+  if (!INVOICES.length) await loadInvoices();
+  if (!CLIENTS.length) await loadClients();
+  // Build reminder rows from clients with deadlines
+  const today = new Date(); today.setHours(0,0,0,0);
+  const rows = [];
+  (CLIENTS || []).forEach(c => {
+    const meta = (typeof getClientMeta === 'function') ? getClientMeta(c.client_id) : {};
+    const services = meta.services || [];
+    const year_end = meta.year_end;
+    const inc_date = meta.date_of_incorporation;
+    if (!year_end && !inc_date) return;
+    // FS/MBRS deadline: 30 days after year end + 6 months for SSM
+    if (year_end) {
+      try {
+        const ye = new Date(year_end);
+        if (!isNaN(ye)) {
+          // MBRS: 30 days after year end's AGM date (year end + 6 months)
+          const mbrsDue = new Date(ye); mbrsDue.setMonth(mbrsDue.getMonth() + 7);
+          const days = Math.floor((mbrsDue - today) / 86400000);
+          rows.push({client: c.name, type: 'MBRS', due: mbrsDue, days, year_end: ye});
+        }
+      } catch(e){}
+    }
+    if (inc_date) {
+      try {
+        const inc = new Date(inc_date);
+        if (!isNaN(inc)) {
+          // Form E annual: due Mar 31 each year
+          const formE = new Date(today.getFullYear(), 2, 31);
+          if (formE < today) formE.setFullYear(formE.getFullYear() + 1);
+          const days = Math.floor((formE - today) / 86400000);
+          if (services.includes('Form_E')) {
+            rows.push({client: c.name, type: 'Form E', due: formE, days, year_end: inc});
+          }
+        }
+      } catch(e){}
+    }
+  });
+  rows.sort((a,b) => a.days - b.days);
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--text3)">No deadlines configured. Add year-end / incorporation dates to clients to see reminders here.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => {
+    const overdue = r.days < 0;
+    const soon = r.days >= 0 && r.days < 30;
+    const color = overdue ? 'var(--red)' : (soon ? 'var(--amber)' : 'var(--text)');
+    return `<tr>
+      <td>${r.client}</td>
+      <td><span class="badge" style="background:var(--surface2)">${r.type}</span></td>
+      <td>${r.due.toLocaleDateString('en-MY')}</td>
+      <td style="color:${color};font-weight:600">${overdue ? 'OVERDUE ' + Math.abs(r.days) + 'd' : (r.days + ' days')}</td>
+      <td colspan="6"></td>
+    </tr>`;
+  }).join('');
+  const stats = document.getElementById('rem-stats');
+  if (stats) stats.textContent = rows.length + ' deadline(s) tracked';
+}
+
 </script>
 </body>
 </html>
