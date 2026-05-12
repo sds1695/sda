@@ -12,24 +12,27 @@
 
   :root {
     --api: 'https://script.google.com/macros/s/AKfycbxQwGael7J87_O2j38_cvgQtJaW6U2ZkeAF49gWmHXXaH7s1JoRt3sTmtBY6G-UmNtBTw/exec';
-    --bg: #f5f4f0;
-    --surface: #ffffff;
-    --surface2: #f0efe9;
-    --border: #e2e0d8;
-    --text: #1a1916;
-    --text2: #6b6860;
-    --text3: #a09e98;
-    --accent: #1a1916;
-    --green: #2d6a4f;
-    --green-bg: #d8f3dc;
-    --amber: #7c5c00;
-    --amber-bg: #fff3cd;
-    --red: #8b1a1a;
-    --red-bg: #fde8e8;
-    --blue: #1a3a5c;
-    --blue-bg: #dceefb;
-    --purple: #3d1a5c;
-    --purple-bg: #ede8fb;
+    /* ── Seraya palette · Option A (logo-faithful) ── */
+    --bg: #F7F5EE;            /* page background — soft cream */
+    --surface: #ffffff;       /* cards */
+    --surface2: #F1EFE8;      /* secondary surface — matches logo bg */
+    --border: #DDD9CC;        /* warm light border */
+    --text: #2C2C2A;          /* primary text — same charcoal as SERAYA wordmark */
+    --text2: #5F5E5A;
+    --text3: #888780;
+    --accent: #2C2C2A;        /* sidebar — same charcoal */
+    --brand: #2EBFA5;         /* logo arrow mint — primary action */
+    --brand-dark: #1D9E75;    /* deeper mint for hover/dark variants */
+    --green: #1D9E75;         /* success / paid (uses brand-dark for legibility) */
+    --green-bg: #E1F5EE;      /* success badge bg */
+    --amber: #BA7517;
+    --amber-bg: #FAEEDA;
+    --red: #A32D2D;
+    --red-bg: #FCEBEB;
+    --blue: #185FA5;
+    --blue-bg: #E6F1FB;
+    --purple: #534AB7;
+    --purple-bg: #EEEDFE;
     --radius: 10px;
     --radius-sm: 6px;
     --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
@@ -71,7 +74,7 @@
   .nav-section { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: rgba(255,255,255,0.35); padding: 16px 20px 6px; }
   .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 20px; font-size: 13px; color: rgba(255,255,255,0.65); cursor: pointer; transition: all 0.15s; border-left: 2px solid transparent; }
   .nav-item:hover { background: rgba(255,255,255,0.06); color: #fff; }
-  .nav-item.active { background: rgba(255,255,255,0.1); color: #fff; border-left-color: #fff; }
+  .nav-item.active { background: rgba(46,191,165,0.15); color: #fff; border-left-color: var(--brand); }
   .nav-item .icon { width: 16px; text-align: center; font-size: 14px; }
   .sidebar-footer { padding: 16px 20px; border-top: 1px solid rgba(255,255,255,0.1); }
   .sidebar-user { font-size: 12px; color: rgba(255,255,255,0.5); margin-bottom: 8px; }
@@ -89,8 +92,8 @@
 
   /* ── BUTTONS ── */
   .btn { padding: 8px 16px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; transition: all 0.15s; display: inline-flex; align-items: center; gap: 6px; }
-  .btn-primary { background: var(--accent); color: #fff; }
-  .btn-primary:hover { opacity: 0.85; }
+  .btn-primary { background: var(--brand); color: #fff; }
+  .btn-primary:hover { background: var(--brand-dark); }
   .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
   .btn-secondary:hover { background: var(--surface2); }
   .btn-danger { background: var(--red-bg); color: var(--red); }
@@ -301,8 +304,16 @@
   <!-- SIDEBAR -->
   <div class="sidebar">
     <div class="sidebar-logo">
-      <div class="sidebar-logo-name">Seraya Data Solution</div>
-      <div class="sidebar-logo-reg">JM1027134-P · v26.04.28</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <svg width="100" height="22" viewBox="0 0 180 40" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0">
+          <text x="0" y="28" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="26" fill="#ffffff" letter-spacing="-0.5">SERAYA</text>
+          <g transform="translate(140,2)">
+            <path d="M 0,14 L 14,0 L 28,14 L 22,14 L 22,28 L 6,28 L 6,14 Z" fill="#2EBFA5"/>
+          </g>
+        </svg>
+      </div>
+      <div class="sidebar-logo-name" style="font-size:10px;font-weight:400;color:rgba(255,255,255,0.55);letter-spacing:0.04em;text-transform:uppercase">Empowering Businesses</div>
+      <div class="sidebar-logo-reg">JM1027134-P · v26.05.12</div>
     </div>
     <nav class="sidebar-nav">
       <div class="nav-section">Overview</div>
@@ -3752,7 +3763,7 @@ function renderPayoutDetail() {
       const key = normPerson(rawPerson);
       if (!personMap[key]) personMap[key] = [];
       personMap[key].push({
-        inv_no: a.inv_no, client, idate, date: idate ? formatDate(idate) : '—',
+        alloc_id: a.alloc_id, inv_no: a.inv_no, client, idate, date: idate ? formatDate(idate) : '—',
         job_type: a.job_type, role, gross,
         amount: r2(amount + (top20 || 0)), top20: top20 || 0, status
       });
@@ -3837,22 +3848,41 @@ function renderPayoutDetail() {
           </tr>`).join('')
       : '<tr><td colspan="4" style="color:var(--text3);font-size:12px;padding:10px 12px">No payments recorded yet</td></tr>';
 
-    // ─── NEW LAYOUT: Ready / Awaiting / History per person ──────────────
-    const paidRows    = entries.filter(e => e.status === 'paid');     // client paid invoices
-    const pendingRows = entries.filter(e => e.status !== 'paid');     // awaiting client
-    // Find last voucher payment date for this person
+    // ─── Wage-paid state from localStorage (per allocation) ────────────
+    const _wpRead = () => { try { return JSON.parse(localStorage.getItem('seraya_wage_paid_v1') || '{}'); } catch(e) { return {}; } };
+    const _wpAll = _wpRead();
+    const _isPaid = (allocId) => _wpAll[allocId] !== undefined && _wpAll[allocId] !== null;
+    const _paidDate = (allocId) => _wpAll[allocId];
+
+    // Group entries from this person's allocations into Ready / Awaiting / Already-paid
+    const readyRows = [];     // wage NOT paid + client paid → needs paying now
+    const awaitRows = [];     // wage NOT paid + client not paid → wait for client
+    const settledRows = [];   // wage PAID → already done
+    entries.forEach(e => {
+      const allocId = e.alloc_id || '';
+      if (_isPaid(allocId)) settledRows.push(e);
+      else if (e.status === 'paid') readyRows.push(e);
+      else awaitRows.push(e);
+    });
+
+    const readyTotal = readyRows.reduce((s,e) => s + e.amount, 0);
+    const awaitTotal = awaitRows.reduce((s,e) => s + e.amount, 0);
+    const settledTotal = settledRows.reduce((s,e) => s + e.amount, 0);
+
+    // Last voucher payment date
     const lastVoucher = paidData.vouchers.length
       ? paidData.vouchers.slice().sort((a,b) => new Date(b.date||0) - new Date(a.date||0))[0]
       : null;
     const lastPayLabel = lastVoucher
       ? `last paid ${formatDate(lastVoucher.date)} · RM ${parseFloat(lastVoucher.amount||0).toFixed(2)}`
       : 'no payments yet';
-    // Reconciliation target check
+
+    // Reconciliation badge against Excel target
     const reconTargets = (typeof getReconTargets === 'function') ? getReconTargets() : {};
     const target = reconTargets[person];
     let reconBadge = '';
     if (target !== undefined) {
-      const diff = r2(balance - target);
+      const diff = r2(readyTotal + awaitTotal - target);
       if (Math.abs(diff) < 1) {
         reconBadge = `<span class="badge badge-green" style="margin-left:10px;font-size:10px">✓ Excel</span>`;
       } else {
@@ -3861,59 +3891,44 @@ function renderPayoutDetail() {
       }
     }
     const displayName2 = PERSON_LABEL[person] || person;
-    const awaitTotal = r2(awaitClient);
+    const totalOwing = readyTotal + awaitTotal;
 
-    // Build per-invoice row HTML (compact card style)
     const mkRow = (e, kind) => {
       const isReady = kind === 'ready';
-      const isPaid = kind === 'paidout';
-      const dotColor = isReady ? '#97C459' : (isPaid ? 'var(--text3)' : '#F0997B');
-      const opacity = isReady ? '1' : (isPaid ? '0.55' : '0.7');
+      const isSettled = kind === 'paidout';
+      const dotColor = isReady ? '#97C459' : (isSettled ? 'var(--text3)' : '#F0997B');
+      const opacity = isReady ? '1' : (isSettled ? '0.55' : '0.75');
       const amtColor = isReady ? 'var(--green)' : 'var(--text)';
-      const tag = isReady ? 'ready to pay' : (isPaid ? 'already paid' : 'awaiting client');
-      return `<div style="background:var(--surface);border-radius:6px;padding:10px 12px;border-left:3px solid ${dotColor};display:flex;align-items:center;gap:10px;opacity:${opacity}" onclick="showPage('invoices');setTimeout(()=>openInvoiceModal('${(INVOICES.find(i=>i.inv_no===e.inv_no)||{}).inv_id||''}'),150)" oncursor="pointer" style="cursor:pointer">
+      const allocId = e.alloc_id || '';
+      const paidDate = isSettled && _paidDate(allocId) ? `paid ${_paidDate(allocId)}` : (isReady ? 'ready to pay' : 'awaiting client');
+      const checkbox = isReady ? `<input type="checkbox" class="wp-ready-chk" data-aid="${allocId}" data-amt="${e.amount}" checked style="margin-right:6px;cursor:pointer" onclick="event.stopPropagation();updateReadyTotal('${person}')" />` : '';
+      const invId = (INVOICES.find(i=>i.inv_no===e.inv_no)||{}).inv_id||'';
+      return `<div style="background:var(--surface);border-radius:6px;padding:10px 12px;border-left:3px solid ${dotColor};display:flex;align-items:center;gap:8px;opacity:${opacity}">
+        ${checkbox}
         <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};flex-shrink:0"></span>
-        <div style="flex:1;min-width:0">
-          <div style="font-family:'DM Mono',monospace;font-size:12px;font-weight:600">${e.inv_no} <span style="font-size:10px;color:var(--text3);font-weight:400">· ${jobTypeBadge(e.job_type) || ''}</span></div>
-          <div style="font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.client} · ${e.date} · ${e.role}</div>
+        <div style="flex:1;min-width:0;cursor:pointer" onclick="showPage('invoices');setTimeout(()=>openInvoiceModal('${invId}'),150)">
+          <div style="font-family:'DM Mono',monospace;font-size:12px;font-weight:600">${e.inv_no} <span style="font-size:10px;color:var(--text3);font-weight:400">· ${e.role}</span></div>
+          <div style="font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.client} · ${e.date}</div>
         </div>
         <div style="text-align:right;min-width:90px">
           <div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:600;color:${amtColor}">RM ${e.amount.toFixed(2)}</div>
-          <div style="font-size:10px;color:var(--text3)">${tag}</div>
+          <div style="font-size:10px;color:var(--text3)">${paidDate}</div>
         </div>
+        ${isSettled ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:10px;color:var(--text3)" title="Mark as unpaid (still owed)" onclick="event.stopPropagation();markWagePaid('${allocId}', null);renderPayoutView();">↺</button>` : ''}
       </div>`;
     };
 
-    // ─── FIFO split: which client-paid items are still unpaid? ───
-    // Sort client-paid invoices by date ascending (oldest first)
-    const paidRowsAsc = paidRows.slice().sort((a,b) => new Date(a.idate||0) - new Date(b.idate||0));
-    let voucherPool = totalPaid;  // RM available from voucher payments
-    const settledRows = [];   // items already covered by vouchers
-    const readyRows = [];     // items still unpaid (the subset that needs paying)
-    paidRowsAsc.forEach(e => {
-      const amt = e.amount;
-      if (voucherPool >= amt) {
-        voucherPool -= amt;
-        settledRows.push({...e, settled: amt, remaining: 0});
-      } else if (voucherPool > 0) {
-        // partial — split
-        settledRows.push({...e, settled: voucherPool, remaining: amt - voucherPool, partial: true});
-        readyRows.push({...e, amount: amt - voucherPool, partial: true});
-        voucherPool = 0;
-      } else {
-        readyRows.push({...e});
-      }
-    });
     const readyHtml = readyRows.length
-      ? readyRows.slice().reverse().map(e => mkRow(e, 'ready')).join('')
-      : '<div style="font-size:12px;color:var(--text3);padding:10px;text-align:center">No client-paid invoices ready for payout.</div>';
-    const settledId = 'pay-settled-' + person.replace(/[^a-z0-9]/gi,'_');
-    const settledHtml = settledRows.length
-      ? settledRows.slice().reverse().map(e => mkRow(e, 'paidout')).join('')
-      : '<div style="font-size:12px;color:var(--text3);padding:10px;text-align:center">No invoices settled yet.</div>';
-    const awaitHtml = pendingRows.length
-      ? pendingRows.sort((a,b) => (b.idate||'').localeCompare(a.idate||'')).map(e => mkRow(e, 'await')).join('')
+      ? readyRows.sort((a,b) => new Date(b.idate||0) - new Date(a.idate||0)).map(e => mkRow(e, 'ready')).join('')
+      : '<div style="font-size:12px;color:var(--text3);padding:10px;text-align:center">Nothing ready to pay.</div>';
+    const awaitHtml = awaitRows.length
+      ? awaitRows.sort((a,b) => new Date(b.idate||0) - new Date(a.idate||0)).map(e => mkRow(e, 'await')).join('')
       : '';
+    const settledHtml = settledRows.length
+      ? settledRows.sort((a,b) => new Date(b.idate||0) - new Date(a.idate||0)).map(e => mkRow(e, 'paidout')).join('')
+      : '<div style="font-size:12px;color:var(--text3);padding:10px;text-align:center">No paid-out items yet.</div>';
+    const settledId = 'pay-settled-' + person.replace(/[^a-z0-9]/gi,'_');
+    const historyId = 'pay-history-' + person.replace(/[^a-z0-9]/gi,'_');
     const historyHtml = paidData.vouchers.length
       ? paidData.vouchers.slice().sort((a,b) => new Date(b.date||0) - new Date(a.date||0)).map(v => `
         <div style="background:var(--surface2);border-radius:6px;padding:8px 12px;display:flex;align-items:center;gap:10px;font-size:12px">
@@ -3922,9 +3937,8 @@ function renderPayoutDetail() {
           <div style="font-family:'DM Mono',monospace;font-weight:600;color:var(--red)">−RM ${parseFloat(v.amount||0).toFixed(2)}</div>
         </div>`).join('')
       : '<div style="font-size:12px;color:var(--text3);padding:10px;text-align:center">No payments recorded yet.</div>';
-    const historyId = 'pay-history-' + person.replace(/[^a-z0-9]/gi,'_');
-    const balColor = balance > 0 ? 'var(--amber)' : 'var(--green)';
-    const balBg    = balance > 0 ? 'var(--amber-bg)' : 'var(--green-bg)';
+    const balColor = totalOwing > 0 ? 'var(--amber)' : 'var(--green)';
+    const readyTotalId = 'ready-total-' + person.replace(/[^a-z0-9]/gi,'_');
 
     return `
     <div class="card" style="margin-bottom:18px;padding:16px;background:var(--surface2)">
@@ -3932,47 +3946,47 @@ function renderPayoutDetail() {
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:12px">
         <div>
           <div style="font-size:17px;font-weight:600">${displayName2}${reconBadge}</div>
-          <div style="font-size:11px;color:var(--text3);margin-top:2px">${paidRows.length + pendingRows.length} invoices · ${lastPayLabel}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${entries.length} invoices · ${lastPayLabel}</div>
         </div>
         <div style="text-align:right">
           <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Total still owing</div>
-          <div style="font-size:20px;font-weight:700;font-family:'DM Mono',monospace;color:${balColor}">RM ${balance.toFixed(2)}</div>
-          <div style="font-size:10px;color:var(--text3);margin-top:2px">Total earned RM ${totalEarned.toFixed(2)} · paid RM ${totalPaid.toFixed(2)}</div>
+          <div style="font-size:20px;font-weight:700;font-family:'DM Mono',monospace;color:${balColor}">RM ${totalOwing.toFixed(2)}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">Ready RM ${readyTotal.toFixed(2)} · Awaiting RM ${awaitTotal.toFixed(2)}</div>
         </div>
       </div>
 
-      ${(() => { const rt = readyRows.reduce((s,e)=>s+e.amount,0); return rt > 0 ? `
+      ${readyTotal > 0 ? `
       <!-- Ready to pay -->
       <div style="margin-bottom:10px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
           <div style="font-size:11px;color:var(--green);font-weight:600;text-transform:uppercase;letter-spacing:.04em">✓ Ready to pay (${readyRows.length})</div>
-          <button class="btn btn-primary btn-sm" style="background:var(--green);color:#fff;font-size:11px;padding:4px 10px" onclick="event.stopPropagation();openVoucherModalPrefilled('${person}', ${rt.toFixed(2)})">Pay RM ${rt.toFixed(2)} →</button>
+          <button class="btn btn-primary btn-sm" style="background:var(--green);color:#fff;font-size:11px;padding:4px 10px" onclick="event.stopPropagation();payReadyInvoices('${person}')">Pay <span id="${readyTotalId}">RM ${readyTotal.toFixed(2)}</span> →</button>
         </div>
         <div style="display:flex;flex-direction:column;gap:5px">${readyHtml}</div>
-      </div>` : ''; })()}
+      </div>` : ''}
 
       ${awaitTotal > 0 ? `
       <!-- Awaiting client -->
       <div style="margin-bottom:10px">
-        <div style="font-size:11px;color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">◐ Awaiting client (${pendingRows.length})</div>
+        <div style="font-size:11px;color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">◐ Awaiting client (${awaitRows.length})</div>
         <div style="display:flex;flex-direction:column;gap:5px">${awaitHtml}</div>
       </div>` : ''}
 
       ${settledRows.length > 0 ? `
-      <!-- Already paid (FIFO matched against vouchers) -->
+      <!-- Already paid (explicit per-allocation state) -->
       <div style="margin-bottom:10px">
-        <button onclick="document.getElementById('${settledId}').style.display = document.getElementById('${settledId}').style.display === 'none' ? '' : 'none'; this.querySelector('.tog2').textContent = document.getElementById('${settledId}').style.display === 'none' ? '▸' : '▾';" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:0;margin-bottom:6px">
-          <span class="tog2">▸</span> Already paid ‑ FIFO matched (${settledRows.length})
+        <button onclick="document.getElementById('${settledId}').style.display = document.getElementById('${settledId}').style.display === 'none' ? 'flex' : 'none'; this.querySelector('.tog2').textContent = document.getElementById('${settledId}').style.display === 'none' ? '▸' : '▾';" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:0;margin-bottom:6px">
+          <span class="tog2">▸</span> Already paid (${settledRows.length}) · RM ${settledTotal.toFixed(2)}
         </button>
         <div id="${settledId}" style="display:none;flex-direction:column;gap:5px">${settledHtml}</div>
       </div>` : ''}
 
-      <!-- Payment history (collapsed) -->
+      <!-- Payment history (vouchers) -->
       <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px">
-        <button onclick="document.getElementById('${historyId}').style.display = document.getElementById('${historyId}').style.display === 'none' ? '' : 'none'; this.querySelector('.tog').textContent = document.getElementById('${historyId}').style.display === 'none' ? '▸' : '▾';" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:0">
-          <span class="tog">▸</span> Payment history (${paidData.vouchers.length})
+        <button onclick="document.getElementById('${historyId}').style.display = document.getElementById('${historyId}').style.display === 'none' ? 'flex' : 'none'; this.querySelector('.tog').textContent = document.getElementById('${historyId}').style.display === 'none' ? '▸' : '▾';" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:0">
+          <span class="tog">▸</span> Voucher payment history (${paidData.vouchers.length})
         </button>
-        <div id="${historyId}" style="display:none;margin-top:8px;display:flex;flex-direction:column;gap:5px">${historyHtml}</div>
+        <div id="${historyId}" style="display:none;margin-top:8px;flex-direction:column;gap:5px">${historyHtml}</div>
       </div>
     </div>`;
   });
@@ -4325,25 +4339,45 @@ function pvBuildChecklist(payee, preCheckIds) {
     }).join('');
   } else {
     // Wages payee: show invoices that have this person's allocation
+    // Filter to wage-UNPAID only (per localStorage state) — the user typically pays unpaid items
+    const wpMap = (typeof getWagePaidMap === 'function') ? getWagePaidMap() : {};
     const rows = ALLOCATIONS.map(a => {
       const inv   = INVOICES.find(i => i.inv_no === a.inv_no) || {};
       const share = allocFn(a);
       if (!share) return null;
-      return { inv, a, share };
-    }).filter(Boolean).sort((x,y) => (x.inv.inv_no||'').localeCompare(y.inv.inv_no||''));
+      const isPaid = wpMap[a.alloc_id] !== undefined && wpMap[a.alloc_id] !== null;
+      return { inv, a, share, isPaid };
+    }).filter(Boolean)
+      .filter(r => !r.isPaid)  // Hide already-paid allocations by default
+      .sort((x,y) => {
+        // Client-paid items first (ready to pay), then awaiting
+        const rankX = x.inv.status === 'paid' ? 0 : 1;
+        const rankY = y.inv.status === 'paid' ? 0 : 1;
+        if (rankX !== rankY) return rankX - rankY;
+        return new Date(x.inv.date||0) - new Date(y.inv.date||0);
+      });
 
-    if (!rows.length) { list.innerHTML = '<div style="padding:12px;color:var(--text3);font-size:13px">No allocations found for this payee.</div>'; return; }
-    list.innerHTML = rows.map(({inv, share}) => {
-      const chk = (preCheckIds||[]).includes(inv.inv_id) ? 'checked' : '';
-      return `<label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px">
-        <input type="checkbox" class="pv-chk" data-inv-id="${inv.inv_id||''}" data-inv-no="${inv.inv_no||''}"
-          data-client="${(inv.client_name||'').replace(/"/g,'&quot;')}" data-amount="${share}"
-          onchange="pvUpdateTotal()" ${chk}/>
-        <span style="flex:1"><strong>${inv.inv_no||'—'}</strong> — ${inv.client_name||'—'}</span>
-        <span style="font-family:'DM Mono',monospace;font-size:12px;color:var(--green)">RM ${share.toFixed(2)}</span>
-        <span class="badge badge-${inv.status==='paid'?'green':inv.status==='partial'?'amber':'red'}" style="font-size:10px">${inv.status||'—'}</span>
-      </label>`;
-    }).join('');
+    if (!rows.length) {
+      list.innerHTML = '<div style="padding:12px;color:var(--text3);font-size:13px">No wage-unpaid allocations for ' + payee + '. (Already paid items are hidden — toggle below to show all.)</div>';
+    } else {
+      list.innerHTML = rows.map(({inv, a, share}) => {
+        const chk = (preCheckIds||[]).includes(inv.inv_id) || inv.status === 'paid' ? 'checked' : '';
+        const readyTag = inv.status === 'paid'
+          ? '<span style="font-size:10px;color:var(--green);font-weight:600;text-transform:uppercase">ready to pay</span>'
+          : '<span style="font-size:10px;color:var(--amber);font-weight:600;text-transform:uppercase">awaiting client</span>';
+        return `<label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px">
+          <input type="checkbox" class="pv-chk" data-inv-id="${inv.inv_id||''}" data-inv-no="${inv.inv_no||''}"
+            data-alloc-id="${a.alloc_id||''}"
+            data-client="${(inv.client_name||'').replace(/"/g,'&quot;')}" data-amount="${share}"
+            onchange="pvUpdateTotal()" ${chk}/>
+          <div style="flex:1">
+            <div><strong>${inv.inv_no||'—'}</strong> — ${inv.client_name||'—'}</div>
+            <div>${readyTag}</div>
+          </div>
+          <span style="font-family:'DM Mono',monospace;font-size:12px;color:var(--green)">RM ${share.toFixed(2)}</span>
+        </label>`;
+      }).join('');
+    }
   }
   pvUpdateTotal();
 }
@@ -4543,7 +4577,14 @@ async function saveVoucher() {
 
   const res = await api({ action: 'save_voucher', data });
   if (res.ok) {
-    const label = existingId ? 'Voucher updated.' : 'Payment voucher ' + (res.voucher_no||'') + ' saved.';
+    // Auto-mark wage_paid for each checked allocation
+    if (typeof markWagePaid === 'function') {
+      checkedBoxes.forEach(b => {
+        const aid = b.dataset.allocId;
+        if (aid) markWagePaid(aid, date);
+      });
+    }
+    const label = existingId ? 'Voucher updated.' : 'Payment voucher ' + (res.voucher_no||'') + ' saved · ' + checkedBoxes.length + ' invoice(s) marked paid';
     toast(label, 'success');
     closeModal('modal-voucher');
     VOUCHERS = []; // clear cache so payout recon reloads fresh
@@ -5236,2073 +5277,108 @@ function openVoucherModalPrefilled(person, amount) {
   }, 100);
 }
 
-// Close modals on overlay click
+
 // ══════════════════════════════════════════════════
-// TEAM MEMBERS REGISTER (localStorage-backed)
+// ─── End of script ─────────────────────────────────────────
+
+
+// ══════════════════════════════════════════════════
+// WAGE-PAID STATE (per-allocation, localStorage)
+// ══════════════════════════════════════════════════
+const WAGE_PAID_BOOTSTRAP = {"A1778392814684":"2026-05-12","A1778400230284":"2026-05-12","A1778400230459":"2026-05-12","A1778400230636":"2026-05-12","A1778400230698":"2026-05-12","A1778400231395":"2026-05-12","A1778400231523":"2026-05-12","A1778400233315":"2026-05-12","A1778400234239":null,"A1778400234261":"2026-05-12","A1778400234880":"2026-05-12","A1778400236364":"2026-05-12","A1778400248620":null,"A1778400248680":"2026-05-12","A1778400252034":"2026-05-12","A1778400252222":"2026-05-12","A1778400252538":"2026-05-12","A1778400254530":null,"A1778400255235":null,"A1778400255317":"2026-05-12","A1778400254995":"2026-05-12","A1778400256057":null,"A1778400257374":null,"A1778400257641":null,"A1778400257694":null,"A1778400258667":"2026-05-12","A1778400261683":null,"A1778400510120":"2026-05-12","A1778400510455":"2026-05-12","A1778400511457":"2026-05-12","A1778404830654":null,"A1778405586247":null,"A1778405588991":null,"A1778407469915":"2026-05-12","A1778407470584":"2026-05-12","A1778407470821":"2026-05-12","A1778407473276":"2026-05-12","A1778407842430":"2026-05-12","A1778407843285":"2026-05-12","A1778407843348":"2026-05-12","A1778407843765":"2026-05-12","A1778407845667":"2026-05-12","A1778407846350":"2026-05-12","A1778407846663":"2026-05-12","A1778407846483":"2026-05-12","A1778408084029":"2026-05-12","A1778408187755":"2026-05-12","A1778408201048":"2026-05-12","A1778430598097":"2026-05-12","A1778559901501":"2026-05-12","A1778559922123":"2026-05-12","A1778560208829":null,"A1778560249983":null,"A1778560291987":"2026-05-12","A1778560332748":"2026-05-12","A1778560360721":"2026-05-12","A1778573501487":null,"A1778580797270":null,"A1778580804001":"2026-05-12","A1778580807228":"2026-05-12","A1778581093869":"2026-05-12","A1778581103901":"2026-05-12","A1778581115753":"2026-05-12","A1778581422925":"2026-05-12","A1778581427452":"2026-05-12","A1778581738947":"2026-05-12","A1778581746113":"2026-05-12"};
+(function(){
+  try {
+    const e = JSON.parse(localStorage.getItem('seraya_wage_paid_v1') || 'null');
+    if (e && Object.keys(e).length) return;
+    localStorage.setItem('seraya_wage_paid_v1', JSON.stringify(WAGE_PAID_BOOTSTRAP));
+  } catch(e){}
+})();
+function getWagePaidMap(){ try { return JSON.parse(localStorage.getItem('seraya_wage_paid_v1') || '{}'); } catch(e){return {};} }
+function setWagePaidMap(m){ localStorage.setItem('seraya_wage_paid_v1', JSON.stringify(m||{})); }
+function markWagePaid(allocId, paidDate){
+  if (!allocId) return;
+  const m = getWagePaidMap();
+  if (paidDate === null) delete m[allocId];
+  else m[allocId] = paidDate || _localToday();
+  setWagePaidMap(m);
+}
+function updateReadyTotal(person){
+  const personSafe = person.replace(/[^a-z0-9]/gi,'_');
+  let total = 0;
+  document.querySelectorAll('.wp-ready-chk').forEach(cb => { if (cb.checked) total += parseFloat(cb.dataset.amt||0); });
+  const tot = document.getElementById('ready-total-'+personSafe);
+  if (tot) tot.textContent = 'RM '+total.toFixed(2);
+}
+async function payReadyInvoices(person){
+  const chosen = [];
+  let total = 0;
+  document.querySelectorAll('.wp-ready-chk').forEach(cb => {
+    if (cb.checked){ chosen.push({allocId:cb.dataset.aid, amt:parseFloat(cb.dataset.amt||0)}); total += parseFloat(cb.dataset.amt||0); }
+  });
+  if (!chosen.length){ toast('No invoices selected.','error'); return; }
+  if (!confirm(`Mark ${chosen.length} invoice(s) (RM ${total.toFixed(2)}) as paid to ${person}?`)) return;
+  const today = _localToday();
+  chosen.forEach(c => markWagePaid(c.allocId, today));
+  if (typeof openVoucherModalPrefilled === 'function') openVoucherModalPrefilled(person, total);
+  if (typeof renderPayoutView === 'function') renderPayoutView();
+  toast(`${chosen.length} invoice(s) marked paid.`, 'success');
+}
+
+// ══════════════════════════════════════════════════
+// TEAM MEMBERS REGISTER
 // ══════════════════════════════════════════════════
 const TEAM_KEY = 'seraya_team_members_v1';
-// Default seed list — your existing hardcoded team members.
 const TEAM_DEFAULTS = [
-  { code:'ET',      name:'ET',                 role:'both',      aliases:'ET, QET',           bank:'', ic:'', phone:'', notes:'' },
-  { code:'Koay',    name:'Ms Koay',            role:'both',      aliases:'Koay, TXY, Koay PH',bank:'', ic:'', phone:'', notes:'TXY = subcon nominee' },
-  { code:'Ivy',     name:'Ivy',                role:'preparer',  aliases:'Ivy',               bank:'', ic:'', phone:'', notes:'' },
-  { code:'KC',      name:'KC (Ho)',            role:'reviewer',  aliases:'KC, Ho, W',         bank:'', ic:'', phone:'', notes:'Pays nominee Ho/W' },
-  { code:'Cecilia', name:'Cecilia',            role:'commission',aliases:'Cecilia',           bank:'', ic:'', phone:'', notes:'Quarterly retainer fee' },
-  { code:'Quah',    name:'Quah',               role:'other',     aliases:'Quah',              bank:'', ic:'', phone:'', notes:'Partner / dividend' },
-  { code:'Abot',    name:'Abot Software',      role:'other',     aliases:'Abot',              bank:'', ic:'', phone:'', notes:'Software vendor (cost)' },
+  {code:'ET',name:'ET',role:'both',aliases:'ET, QET',bank:'',ic:'',phone:'',notes:''},
+  {code:'Koay',name:'Ms Koay',role:'both',aliases:'Koay, TXY, Koay PH',bank:'',ic:'',phone:'',notes:''},
+  {code:'Ivy',name:'Ivy',role:'preparer',aliases:'Ivy',bank:'',ic:'',phone:'',notes:''},
+  {code:'KC',name:'KC (Ho)',role:'reviewer',aliases:'KC, Ho, W',bank:'',ic:'',phone:'',notes:''},
+  {code:'Cecilia',name:'Cecilia',role:'commission',aliases:'Cecilia',bank:'',ic:'',phone:'',notes:''},
+  {code:'Quah',name:'Quah',role:'other',aliases:'Quah',bank:'',ic:'',phone:'',notes:''},
 ];
-function getTeamMembers() {
-  try {
-    const stored = JSON.parse(localStorage.getItem(TEAM_KEY) || 'null');
-    if (Array.isArray(stored) && stored.length) return stored;
-  } catch(e) {}
-  return TEAM_DEFAULTS;
-}
-function setTeamMembers(arr) { localStorage.setItem(TEAM_KEY, JSON.stringify(arr || [])); }
-
-function renderTeamMembers() {
+function getTeamMembers(){ try { const s = JSON.parse(localStorage.getItem(TEAM_KEY) || 'null'); if (Array.isArray(s) && s.length) return s; } catch(e){} return TEAM_DEFAULTS; }
+function setTeamMembers(arr){ localStorage.setItem(TEAM_KEY, JSON.stringify(arr||[])); }
+function renderTeamMembers(){
   const tbody = document.getElementById('team-members-tbody');
   if (!tbody) return;
-  const members = getTeamMembers();
-  if (!members.length) { tbody.innerHTML = '<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text3)">No members yet. Click + Add Member.</td></tr>'; return; }
-  const roleLabel = { preparer:'Preparer', reviewer:'Reviewer', both:'Both', commission:'Commission', other:'Other' };
-  tbody.innerHTML = members.map(m => `
-    <tr style="border-bottom:1px solid var(--border)">
-      <td style="padding:8px 10px"><span style="font-family:'DM Mono',monospace;font-weight:600">${m.code||''}</span></td>
-      <td>${m.name||'—'}</td>
-      <td><span class="badge" style="background:var(--surface2);color:var(--text2);font-size:10px">${roleLabel[m.role]||m.role||'—'}</span></td>
-      <td style="font-family:'DM Mono',monospace;font-size:11px">${m.aliases||'—'}</td>
-      <td style="font-family:'DM Mono',monospace;font-size:11px">${m.bank||'—'}</td>
-      <td style="font-family:'DM Mono',monospace;font-size:11px">${m.ic||'—'}</td>
-      <td style="font-size:11px;color:var(--text2)">${m.notes||'—'}</td>
-      <td style="text-align:right;padding:8px 10px">
-        <button class="btn btn-ghost btn-sm" onclick="openTeamMemberModal('${(m.code||'').replace(/'/g,'')}')">Edit</button>
-        <a href="javascript:showPage('payout')" style="color:var(--accent);font-size:11px;margin-left:6px;text-decoration:none" title="View payouts">⊞</a>
-      </td>
-    </tr>`).join('');
+  const m = getTeamMembers();
+  const lbl = {preparer:'Preparer',reviewer:'Reviewer',both:'Both',commission:'Commission',other:'Other'};
+  tbody.innerHTML = m.length ? m.map(x => `<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 10px"><strong>${x.code||''}</strong></td><td>${x.name||'—'}</td><td>${lbl[x.role]||x.role}</td><td style="font-size:11px">${x.aliases||'—'}</td><td style="font-size:11px">${x.bank||'—'}</td><td style="font-size:11px">${x.ic||'—'}</td><td style="font-size:11px;color:var(--text2)">${x.notes||'—'}</td><td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="openTeamMemberModal('${(x.code||'').replace(/'/g,'')}')">Edit</button></td></tr>`).join('') : '<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text3)">No members.</td></tr>';
 }
-
-function openTeamMemberModal(code) {
-  document.getElementById('tm-modal-title').textContent = code ? 'Edit Team Member' : 'Add Team Member';
-  document.getElementById('tm-orig-code').value = code || '';
-  document.getElementById('tm-delete-btn').style.display = code ? '' : 'none';
-  if (code) {
-    const m = getTeamMembers().find(x => x.code === code) || {};
-    document.getElementById('tm-code').value = m.code || '';
-    document.getElementById('tm-name').value = m.name || '';
-    document.getElementById('tm-role').value = m.role || 'preparer';
-    document.getElementById('tm-aliases').value = m.aliases || '';
-    document.getElementById('tm-bank').value = m.bank || '';
-    document.getElementById('tm-ic').value = m.ic || '';
-    document.getElementById('tm-phone').value = m.phone || '';
-    document.getElementById('tm-notes').value = m.notes || '';
+function openTeamMemberModal(code){
+  document.getElementById('tm-modal-title').textContent = code?'Edit Team Member':'Add Team Member';
+  document.getElementById('tm-orig-code').value = code||'';
+  document.getElementById('tm-delete-btn').style.display = code?'':'none';
+  if (code){
+    const m = getTeamMembers().find(x=>x.code===code)||{};
+    ['tm-code:code','tm-name:name','tm-aliases:aliases','tm-bank:bank','tm-ic:ic','tm-phone:phone','tm-notes:notes'].forEach(p => { const [id,k]=p.split(':'); document.getElementById(id).value=m[k]||''; });
+    document.getElementById('tm-role').value = m.role||'preparer';
   } else {
-    ['tm-code','tm-name','tm-aliases','tm-bank','tm-ic','tm-phone','tm-notes'].forEach(id => document.getElementById(id).value = '');
-    document.getElementById('tm-role').value = 'preparer';
+    ['tm-code','tm-name','tm-aliases','tm-bank','tm-ic','tm-phone','tm-notes'].forEach(id=>document.getElementById(id).value='');
+    document.getElementById('tm-role').value='preparer';
   }
   openModal('modal-team-member');
 }
-
-function saveTeamMember() {
+function saveTeamMember(){
   const orig = document.getElementById('tm-orig-code').value;
-  const m = {
-    code:    document.getElementById('tm-code').value.trim(),
-    name:    document.getElementById('tm-name').value.trim(),
-    role:    document.getElementById('tm-role').value,
-    aliases: document.getElementById('tm-aliases').value.trim(),
-    bank:    document.getElementById('tm-bank').value.trim(),
-    ic:      document.getElementById('tm-ic').value.trim(),
-    phone:   document.getElementById('tm-phone').value.trim(),
-    notes:   document.getElementById('tm-notes').value.trim(),
-  };
-  if (!m.code) { toast('Code is required.', 'error'); return; }
-  const members = getTeamMembers();
-  const idx = members.findIndex(x => x.code === orig);
-  if (idx >= 0) members[idx] = m;
-  else {
-    if (members.find(x => x.code === m.code)) { toast('Code already exists.', 'error'); return; }
-    members.push(m);
-  }
-  setTeamMembers(members);
+  const m = {code:document.getElementById('tm-code').value.trim(),name:document.getElementById('tm-name').value.trim(),role:document.getElementById('tm-role').value,aliases:document.getElementById('tm-aliases').value.trim(),bank:document.getElementById('tm-bank').value.trim(),ic:document.getElementById('tm-ic').value.trim(),phone:document.getElementById('tm-phone').value.trim(),notes:document.getElementById('tm-notes').value.trim()};
+  if (!m.code){ toast('Code required.','error'); return; }
+  const mem = getTeamMembers();
+  const idx = mem.findIndex(x=>x.code===orig);
+  if (idx>=0) mem[idx]=m;
+  else { if (mem.find(x=>x.code===m.code)){ toast('Code exists.','error'); return; } mem.push(m); }
+  setTeamMembers(mem);
   closeModal('modal-team-member');
   renderTeamMembers();
-  toast('Team member saved.', 'success');
+  toast('Saved.','success');
 }
-
-function deleteTeamMember() {
+function deleteTeamMember(){
   const orig = document.getElementById('tm-orig-code').value;
-  if (!orig) return;
-  if (!confirm(`Delete team member "${orig}"? Their historical allocations and vouchers stay intact.`)) return;
-  setTeamMembers(getTeamMembers().filter(x => x.code !== orig));
+  if (!orig || !confirm(`Delete "${orig}"?`)) return;
+  setTeamMembers(getTeamMembers().filter(x=>x.code!==orig));
   closeModal('modal-team-member');
   renderTeamMembers();
-  toast('Team member deleted.', 'success');
 }
-
-// Modal-close confirmation: if user has entered data in invoice/receipt/voucher modal,
-// ask before discarding via overlay click or X
-function _modalHasUnsavedData(modalEl) {
-  if (!modalEl) return false;
-  // Check known input fields for non-empty values
-  const inputs = modalEl.querySelectorAll('input[type=text], input[type=number], input[type=date], textarea, select');
-  for (const inp of inputs) {
-    const val = (inp.value || '').trim();
-    if (!val) continue;
-    // Skip auto-generated invoice number placeholders and pre-set dates
-    if (inp.id === 'inv-no' && /^INV\d/.test(val)) continue;
-    if (inp.type === 'date' && val === _localToday()) continue;
-    if (inp.tagName === 'SELECT' && (inp.selectedIndex === 0 || val === '')) continue;
-    if (inp.id === 'inv-job-type') continue;  // always has a default
-    if (inp.id === 'inv-preparer' || inp.id === 'inv-reviewer') continue;
-    if (inp.id === 'inv-large-abot') continue;
-    if (inp.id === 'inv-ssm-fee' && val === '0') continue;
-    // Found a real input
-    return true;
-  }
-  // Check invoice line rows
-  const lineRows = modalEl.querySelectorAll('.inv-line-row');
-  for (const r of lineRows) {
-    const desc = r.querySelector('.inv-line-desc')?.value?.trim();
-    const amt = parseFloat(r.querySelector('.inv-line-amt')?.value || 0);
-    if (desc || amt > 0) return true;
-  }
-  return false;
-}
-
-document.querySelectorAll('.modal-overlay').forEach(overlay => {
-  overlay.addEventListener('click', e => {
-    if (e.target !== overlay) return;
-    const dirty = _modalHasUnsavedData(overlay);
-    if (dirty && !confirm('You have unsaved changes. Discard them?')) return;
-    overlay.classList.remove('open');
-  });
-});
-
-// Also intercept Cancel and X buttons inside the invoice modal
-document.addEventListener('click', e => {
-  const btn = e.target.closest('.modal-close, [data-modal-cancel]');
-  if (!btn) return;
-  const overlay = btn.closest('.modal-overlay');
-  if (!overlay) return;
-  // Only invoice / receipt / voucher modals get the dirty-check
-  if (!['modal-invoice','modal-receipt','modal-voucher','modal-client','modal-alloc-edit','modal-coa-edit','modal-reclass','modal-gl','modal-team-member'].includes(overlay.id)) return;
-  const dirty = _modalHasUnsavedData(overlay);
-  if (dirty && !confirm('You have unsaved changes. Discard them?')) {
-    e.preventDefault(); e.stopPropagation();
-  }
-}, true);
-</script>
-
-<!-- ══ MODAL: ACCOUNT DRILL-DOWN ══ -->
-<div class="modal-overlay" id="modal-account-drill">
-  <div class="modal" style="max-width:980px">
-    <div class="modal-header">
-      <div class="modal-title" id="drill-title">Account drill-down</div>
-      <button class="modal-close" onclick="closeModal('modal-account-drill')">✕</button>
-    </div>
-    <div class="modal-body">
-      <div id="drill-summary" style="margin-bottom:14px;padding:10px;background:var(--surface2);border-radius:6px;font-size:13px"></div>
-      <table>
-        <thead>
-          <tr>
-            <th style="width:90px">Date</th>
-            <th style="width:90px">Ref</th>
-            <th>Description</th>
-            <th style="width:60px">Type</th>
-            <th style="text-align:right;width:140px">Amount (RM)</th>
-          </tr>
-        </thead>
-        <tbody id="drill-tbody"></tbody>
-      </table>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="closeModal('modal-account-drill')">Close</button>
-    </div>
-  </div>
-</div>
-
-<!-- ══ MODAL: CHART OF ACCOUNTS — EDIT ══ -->
-<div class="modal-overlay" id="modal-coa-edit">
-  <div class="modal" style="max-width:560px">
-    <div class="modal-header">
-      <div class="modal-title" id="coa-edit-title">Edit Account</div>
-      <button class="modal-close" onclick="closeModal('modal-coa-edit')">✕</button>
-    </div>
-    <div class="modal-body">
-      <input type="hidden" id="coa-edit-orig-code" />
-      <div class="form-grid">
-        <div class="form-field">
-          <label>Code *</label>
-          <input type="text" id="coa-edit-code" placeholder="e.g. 4080" />
-        </div>
-        <div class="form-field">
-          <label>Section *</label>
-          <select id="coa-edit-section">
-            <option value="non_current_asset">Non-Current Asset</option>
-            <option value="current_asset">Current Asset</option>
-            <option value="non_current_liability">Non-Current Liability</option>
-            <option value="current_liability">Current Liability</option>
-            <option value="equity">Equity</option>
-            <option value="revenue">Revenue</option>
-            <option value="other_income">Other Income</option>
-            <option value="direct_cost">Direct Cost</option>
-            <option value="admin_expense">Administrative Expense</option>
-            <option value="depreciation">Depreciation</option>
-          </select>
-        </div>
-        <div class="form-field form-full">
-          <label>Account Name *</label>
-          <input type="text" id="coa-edit-name" placeholder="e.g. Advisory income" />
-        </div>
-        <div class="form-field form-full">
-          <label>Maps from (comma-separated voucher.category or invoice.job_type)</label>
-          <input type="text" id="coa-edit-mapsFrom" placeholder="e.g. wages_txy_2  (leave blank to use a hardcoded value below)" />
-          <small style="color:var(--text3);font-size:11px">For Revenue accounts, use job_type strings (e.g. mbrs, tax). For Expense accounts, use voucher categories (e.g. wages_et). Special: <code>disbursements_field</code> sums invoice disb_amount.</small>
-        </div>
-        <div class="form-field form-full">
-          <label>Hardcoded Value (RM) — used only when "Maps from" is blank</label>
-          <input type="number" id="coa-edit-value" step="0.01" placeholder="0.00" />
-        </div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="closeModal('modal-coa-edit')">Cancel</button>
-      <button class="btn btn-ghost" id="coa-edit-delete-btn" onclick="deleteCurrentAccount()" style="color:var(--red)">Delete</button>
-      <button class="btn btn-primary" onclick="saveAccountEdit()">Save</button>
-    </div>
-  </div>
-</div>
-
-<!-- ══ MODAL: RECLASSIFY ══ -->
-<div class="modal-overlay" id="modal-reclass">
-  <div class="modal" style="max-width:560px">
-    <div class="modal-header">
-      <div class="modal-title">Reclassify Between Accounts</div>
-      <button class="modal-close" onclick="closeModal('modal-reclass')">✕</button>
-    </div>
-    <div class="modal-body">
-      <div style="background:var(--surface2);padding:10px;border-radius:6px;margin-bottom:14px;font-size:12px;color:var(--text2)">
-        Posts a single Journal Voucher that moves an amount from one COA account to another.
-        Direction (DR / CR) is automatically chosen based on each account's natural side
-        (Asset/Expense = DR-natural, Income/Liability/Equity = CR-natural).
-      </div>
-      <div class="form-grid">
-        <div class="form-field"><label>Date</label><input type="date" id="rcl-date" /></div>
-        <div class="form-field"><label>Reference (optional)</label><input type="text" id="rcl-ref" placeholder="e.g. JV-RECLASS-001" /></div>
-        <div class="form-field form-full">
-          <label>FROM account *</label>
-          <select id="rcl-from"></select>
-        </div>
-        <div class="form-field form-full">
-          <label>TO account *</label>
-          <select id="rcl-to"></select>
-        </div>
-        <div class="form-field"><label>Amount (RM) *</label><input type="number" id="rcl-amount" step="0.01" placeholder="0.00" /></div>
-        <div class="form-field form-full"><label>Description *</label><input type="text" id="rcl-desc" placeholder="e.g. Reclassify INV260105 (250 from FS to MBRS)" /></div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="closeModal('modal-reclass')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveReclassEntry()">Post Reclass</button>
-    </div>
-  </div>
-</div>
-
-<!-- ══ MODAL: JOURNAL ENTRY ══ -->
-<div class="modal-overlay" id="modal-gl">
-  <div class="modal" style="max-width:560px">
-    <div class="modal-header">
-      <div class="modal-title">New Journal Entry</div>
-      <button class="modal-close" onclick="closeModal('modal-gl')">✕</button>
-    </div>
-    <div class="modal-body">
-      <div class="form-grid">
-        <div class="form-field">
-          <label>Date</label>
-          <input type="date" id="gl-date" />
-        </div>
-        <div class="form-field">
-          <label>Reference</label>
-          <input type="text" id="gl-ref" placeholder="e.g. JV-001" />
-        </div>
-        <div class="form-field form-full">
-          <label>Description</label>
-          <input type="text" id="gl-desc" placeholder="e.g. Accrual for ABOT tokens" />
-        </div>
-        <div class="form-field">
-          <label>DR Account Code</label>
-          <input type="text" id="gl-dr-code" placeholder="e.g. 5100" />
-        </div>
-        <div class="form-field">
-          <label>DR Account Name</label>
-          <input type="text" id="gl-dr-name" placeholder="e.g. Software Expense" />
-        </div>
-        <div class="form-field">
-          <label>CR Account Code</label>
-          <input type="text" id="gl-cr-code" placeholder="e.g. 2100" />
-        </div>
-        <div class="form-field">
-          <label>CR Account Name</label>
-          <input type="text" id="gl-cr-name" placeholder="e.g. Accrued Liabilities" />
-        </div>
-        <div class="form-field">
-          <label>Amount (RM)</label>
-          <input type="number" id="gl-amount" step="0.01" placeholder="0.00" />
-        </div>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="closeModal('modal-gl')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveGLEntry()">Post Entry</button>
-    </div>
-  </div>
-</div>
-
-<script>
-// ══ GL MANUAL ENTRY + RECLASSIFY ══
-function openReclassModal(prefill) {
-  // Populate FROM/TO COA dropdowns (PL accounts mostly, but allow all)
-  const coa = getCOA();
-  const accts = coa.slice().sort((a,b) => (a.code||'').localeCompare(b.code||''));
-  const opts = '<option value="">-- pick --</option>' + accts.map(a => {
-    const sec = COA_SECTIONS[a.section]||{};
-    return `<option value="${a.code}|${a.name}|${a.section}">${a.code} ${a.name} (${sec.label||''})</option>`;
-  }).join('');
-  document.getElementById('rcl-from').innerHTML = opts;
-  document.getElementById('rcl-to').innerHTML = opts;
-  document.getElementById('rcl-date').value = _localToday();
-  document.getElementById('rcl-ref').value = '';
-  document.getElementById('rcl-desc').value = '';
-  document.getElementById('rcl-amount').value = '';
-  if (prefill) {
-    if (prefill.from) document.getElementById('rcl-from').value = prefill.from;
-    if (prefill.to)   document.getElementById('rcl-to').value   = prefill.to;
-    if (prefill.amount) document.getElementById('rcl-amount').value = prefill.amount;
-    if (prefill.desc) document.getElementById('rcl-desc').value = prefill.desc;
-    if (prefill.ref)  document.getElementById('rcl-ref').value  = prefill.ref;
-  }
-  openModal('modal-reclass');
-}
-
-async function saveReclassEntry() {
-  const fromVal = document.getElementById('rcl-from').value;
-  const toVal   = document.getElementById('rcl-to').value;
-  const amount  = parseFloat(document.getElementById('rcl-amount').value);
-  const date    = document.getElementById('rcl-date').value;
-  const desc    = document.getElementById('rcl-desc').value.trim();
-  const ref     = document.getElementById('rcl-ref').value.trim() || ('JV-RECLASS-' + Date.now().toString().slice(-6));
-  if (!fromVal || !toVal || !amount || !date || !desc) { toast('Pick FROM and TO accounts, enter amount, date, description.','error'); return; }
-  if (fromVal === toVal) { toast('FROM and TO accounts must be different.','error'); return; }
-  const [fc, fn, fs] = fromVal.split('|');
-  const [tc, tn, ts] = toVal.split('|');
-  // Determine DR/CR direction based on natural sides:
-  //   "Reclassify FROM A TO B" means: decrease A by amt, increase B by amt
-  //   For DR-natural (assets/expenses): increase = Dr, decrease = Cr
-  //   For CR-natural (income/liab/equity): increase = Cr, decrease = Dr
-  const drNaturalSecs = ['non_current_asset','current_asset','direct_cost','admin_expense','depreciation'];
-  const fromDrNat = drNaturalSecs.includes(fs);
-  const toDrNat   = drNaturalSecs.includes(ts);
-  // To DECREASE FROM: opposite of its natural side
-  // To INCREASE TO:   its natural side
-  // JV needs single Dr / single Cr — we already have those
-  let drCode, drName, crCode, crName;
-  if (fromDrNat) {
-    // From DR-natural: decrease = Cr
-    crCode = fc; crName = fn;
-  } else {
-    // From CR-natural: decrease = Dr
-    drCode = fc; drName = fn;
-  }
-  if (toDrNat) {
-    // To DR-natural: increase = Dr
-    drCode = tc; drName = tn;
-  } else {
-    // To CR-natural: increase = Cr
-    crCode = tc; crName = tn;
-  }
-  // If both same side, the previous logic might leave one slot empty; fix:
-  if (!drCode || !drName) { drCode = fromDrNat ? tc : fc; drName = fromDrNat ? tn : fn; }
-  if (!crCode || !crName) { crCode = fromDrNat ? fc : tc; crName = fromDrNat ? fn : tn; }
-  const data = {
-    date, ref, description: desc,
-    dr_code: drCode, dr_account: drName,
-    cr_code: crCode, cr_account: crName,
-    amount, source_type: 'journal',
-  };
-  const res = await api({ action: 'save_gl', data });
-  if (res && res.ok) {
-    toast(`Reclass posted: Dr ${drCode} ${drName} / Cr ${crCode} ${crName} RM ${amount}`,'success');
-    closeModal('modal-reclass');
-    loadGL();
-  } else {
-    toast(res.error || 'Failed to post reclass.','error');
-  }
-}
-
-// ══ GL MANUAL ENTRY ══
-function openGLModal() {
-  document.getElementById('gl-date').value = _localToday();
-  ['gl-ref','gl-desc','gl-dr-code','gl-dr-name','gl-cr-code','gl-cr-name','gl-amount'].forEach(id => {
-    const el = document.getElementById(id); if(el) el.value = '';
-  });
-  const modal = document.getElementById('modal-gl');
-  modal.dataset.editId = '';
-  document.querySelector('#modal-gl .modal-title').textContent = 'Manual Journal Entry';
-  openModal('modal-gl');
-}
-
-async function saveGLEntry() {
-  const modal  = document.getElementById('modal-gl');
-  const editId = modal.dataset.editId || '';
-  const data = {
-    date:        document.getElementById('gl-date').value,
-    ref:         document.getElementById('gl-ref').value.trim(),
-    description: document.getElementById('gl-desc').value.trim(),
-    dr_code:     document.getElementById('gl-dr-code').value.trim(),
-    dr_account:  document.getElementById('gl-dr-name').value.trim(),
-    cr_code:     document.getElementById('gl-cr-code').value.trim(),
-    cr_account:  document.getElementById('gl-cr-name').value.trim(),
-    amount:      parseFloat(document.getElementById('gl-amount').value),
-    source_type: 'journal',
-  };
-  if (editId) data.gl_id = editId;
-  if (!data.date || !data.description || !data.amount || !data.dr_account || !data.cr_account) {
-    toast('Please fill in all required fields.', 'error'); return;
-  }
-  const res = await api({ action: 'save_gl', data });
-  if (res.ok) {
-    toast(editId ? 'Journal entry updated.' : 'Journal entry posted.', 'success');
-    closeModal('modal-gl');
-    loadGL();
-  } else toast(res.error || 'Failed to save entry.', 'error');
-}
-
-// GL account filter (client-side)
-let GL_ALL_ROWS = [];
-const EXPENSE_ACCOUNTS = ['5','6','7','8'];
-const INCOME_ACCOUNTS  = ['4'];
-function filterGLByAccount() {
-  const filter = document.getElementById('gl-filter-account').value;
-  if (!GL_ALL_ROWS.length) return;
-  const filtered = !filter ? GL_ALL_ROWS : GL_ALL_ROWS.filter(g => {
-    const drCode = (g.dr_code || '').toString();
-    const crCode = (g.cr_code || '').toString();
-    const drName = (g.dr_account || '').toLowerCase();
-    const crName = (g.cr_account || '').toLowerCase();
-    if (filter === 'expense') return drCode.startsWith('5') || drCode.startsWith('6') || drCode.startsWith('7') ||
-                                     /wages|salary|subcon|transport|printing|entertain|bank.charge|software|ssm|courier|telephone|commission|general/i.test(drName);
-    if (filter === 'income')  return crCode.startsWith('4') ||
-                                     /revenue|fee|income|professional/i.test(crName);
-    // Specific account name match (prefix "acct:")
-    if (filter.startsWith('acct:')) {
-      const target = filter.slice(5).toLowerCase();
-      return drName === target || crName === target;
-    }
-    return true;
-  });
-  renderGLRows(filtered);
-}
-
-// Populate the GL account filter dropdown with EVERY COA account + any extra names
-// found in GL data (e.g. legacy names from buildGLFromCache fallbacks). Each option
-// shows an activity badge so user can see at a glance which accounts have entries.
-function populateGLAccountFilter() {
-  const sel = document.getElementById('gl-filter-account');
-  if (!sel) return;
-  const current = sel.value;
-
-  // Collect distinct names + counts/sums from current GL_ALL_ROWS
-  const acctMap = {};   // name -> {count, total}
-  (GL_ALL_ROWS||[]).forEach(g => {
-    const dr = (g.dr_account||'').trim();
-    const cr = (g.cr_account||'').trim();
-    const amt = parseFloat(g.amount||0);
-    [dr, cr].forEach(n => {
-      if (!n) return;
-      if (!acctMap[n]) acctMap[n] = { count: 0, total: 0 };
-      acctMap[n].count++; acctMap[n].total += amt;
-    });
-  });
-
-  // Add ALL COA accounts (so user can find them even if no entries)
-  let coa = [];
-  try { coa = getCOA(); } catch(e) {}
-  const coaNames = new Set();
-  coa.forEach(a => {
-    const name = (a.code ? a.code + ' ' : '') + (a.name || '');
-    if (!acctMap[name]) acctMap[name] = { count: 0, total: 0, coa: true };
-    else acctMap[name].coa = true;
-    coaNames.add(name);
-  });
-
-  // Remove previously appended dynamic options
-  Array.from(sel.options).forEach(o => { if (o.dataset.dynamic) sel.removeChild(o); });
-
-  // Group: COA accounts first (sorted by code), then any extra names not in COA (legacy fallbacks)
-  const groups = [
-    { label: '──── COA accounts ────', filter: n => acctMap[n].coa },
-    { label: '──── Other (legacy / unmapped) ────', filter: n => !acctMap[n].coa },
-  ];
-
-  groups.forEach(grp => {
-    const names = Object.keys(acctMap).filter(grp.filter).sort((a,b) => a.localeCompare(b));
-    if (!names.length) return;
-    const sep = document.createElement('option');
-    sep.disabled = true; sep.dataset.dynamic = '1'; sep.textContent = grp.label;
-    sel.appendChild(sep);
-    names.forEach(name => {
-      const opt = document.createElement('option');
-      opt.value = 'acct:' + name.toLowerCase();
-      opt.dataset.dynamic = '1';
-      const m = acctMap[name];
-      opt.textContent = m.count > 0
-        ? `${name}  · ${m.count} entries · RM ${m.total.toLocaleString('en-MY',{minimumFractionDigits:2})}`
-        : `${name}  · no entries`;
-      sel.appendChild(opt);
-    });
-  });
-
-  if (current) sel.value = current;
-}
-
-function sortAndRenderGL() {
-  const filter = document.getElementById('gl-filter-account')?.value || '';
-  if (filter) { filterGLByAccount(); }
-  else { renderGLRows(GL_ALL_ROWS); }
-}
-
-function renderGLRows(rows) {
-  const tbody  = document.getElementById('gl-tbody');
-  if (!rows.length) {
-    const acctFilter = (document.getElementById('gl-filter-account')?.value||'');
-    const msg = acctFilter.startsWith('acct:')
-      ? `No entries for "${acctFilter.slice(5)}" in the current view.<br><span style="font-size:12px">If you expected entries, check the period filter, or verify the COA account's "maps from" tokens match your voucher categories / invoice job_types.</span>`
-      : 'No entries.';
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text3)">${msg}</td></tr>`;
-    return;
-  }
-  const sort = document.getElementById('gl-sort')?.value || 'date-desc';
-
-  const acctFilterRaw = (document.getElementById('gl-filter-account')?.value || '');
-  const accountFilter = acctFilterRaw.startsWith('acct:') ? acctFilterRaw.slice(5).toLowerCase() : null;
-
-  // Determine natural side for the filtered account
-  let drNatural = true;
-  if (accountFilter) {
-    try {
-      const coa = getCOA();
-      const acct = coa.find(a => {
-        const full = (a.code||'') + ' ' + (a.name||'');
-        return full.toLowerCase() === accountFilter || (a.name||'').toLowerCase() === accountFilter;
-      });
-      if (acct) {
-        const isDrawings = /drawing/i.test(acct.name||'') || acct.code === '3300';
-        const drSections = ['non_current_asset','current_asset','direct_cost','admin_expense','depreciation'];
-        drNatural = drSections.includes(acct.section) || isDrawings;
-      } else if (/revenue|income|capital|retain|liability|payable/i.test(accountFilter)) {
-        drNatural = false;
-      }
-    } catch(e) {}
-  }
-
-  // B/F row when account-filtered
-  let bfAmount = 0;
-  let bfRowHtml = '';
-  if (accountFilter) {
-    try {
-      const coa = getCOA();
-      const acct = coa.find(a => {
-        const full = (a.code||'') + ' ' + (a.name||'');
-        return full.toLowerCase() === accountFilter || (a.name||'').toLowerCase() === accountFilter;
-      });
-      if (acct) {
-        const ob = COA_OPENING_BALANCES[acct.code];
-        if (ob) {
-          bfAmount = parseFloat(ob.amount||0);
-          bfRowHtml = `<tr style="background:var(--surface2)">
-            <td style="font-size:12px;color:var(--text2)">${formatDate(ob.date)}</td>
-            <td style="font-family:'DM Mono',monospace;font-size:12px">B/F</td>
-            <td style="font-size:12px;font-style:italic" colspan="3">Balance b/f — ${ob.note}</td>
-            <td style="font-family:'DM Mono',monospace;font-size:13px;text-align:right;font-weight:600">RM ${bfAmount.toLocaleString('en-MY',{minimumFractionDigits:2})}</td>
-            <td><span style="font-size:10px;color:var(--text3)">opening</span></td>
-          </tr>`;
-        }
-      }
-    } catch(e) {}
-  }
-
-  const sortedAsc = rows.slice().sort((a,b) => new Date(a.date||0) - new Date(b.date||0));
-  let display = sortedAsc;
-  let groupedByAccount = false;
-  if (sort === 'date-desc')         display = sortedAsc.slice().reverse();
-  else if (sort === 'account-asc')  { display = sortedAsc.slice().sort((a,b) => (a.dr_account||'').localeCompare(b.dr_account||'')); groupedByAccount = true; }
-  else if (sort === 'amount-desc')  display = sortedAsc.slice().sort((a,b) => parseFloat(b.amount||0) - parseFloat(a.amount||0));
-
-  const fmt = n => parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
-
-  const buildRow = (g) => {
-    // Determine the right edit handler based on source_type
-    let editBtn = `<span style="font-size:10px;color:var(--text3)">${g.source_type||''}</span>`;
-    const sourceType = g.source_type;
-    const idStr = (g.gl_id||g.id||'').toString();
-    if (sourceType === 'journal') {
-      editBtn = `<button class="btn btn-ghost btn-sm" onclick="openGLEditById('${idStr.replace(/'/g,'')}')">Edit</button>`;
-    } else if (sourceType === 'voucher' && idStr) {
-      // id from buildGLFromCache is 'pv_<voucher_id>' — strip prefix
-      const vid = idStr.replace(/^pv_/, '').replace(/'/g,'');
-      editBtn = `<button class="btn btn-ghost btn-sm" onclick="openVoucherEditById('${vid}')">Edit voucher</button>`;
-    } else if (sourceType === 'receipt' && idStr) {
-      const rid = idStr.replace(/^rc_/, '').replace(/'/g,'');
-      editBtn = `<button class="btn btn-ghost btn-sm" onclick="openReceiptEditById('${rid}')">Edit receipt</button>`;
-    } else if (sourceType === 'invoice' && idStr) {
-      // id is 'inv_<inv_id>' or 'inv_<inv_id>_disb' — strip prefix and any _disb suffix
-      const iid = idStr.replace(/^inv_/, '').replace(/_disb$/, '').replace(/'/g,'');
-      editBtn = `<button class="btn btn-ghost btn-sm" onclick="showPage('invoices');setTimeout(function(){openInvoiceModal('${iid}')},150)">Edit invoice</button>`;
-    }
-    return `<tr>
-      <td style="font-size:12px;color:var(--text2)">${formatDate(g.date)}</td>
-      <td style="font-family:'DM Mono',monospace;font-size:12px">${g.ref||'—'}</td>
-      <td style="font-size:12px">${g.description||'—'}</td>
-      <td><span class="gl-dr">${g.dr_code ? g.dr_code+' ' : ''}${g.dr_account||''}</span></td>
-      <td><span class="gl-cr">${g.cr_code ? g.cr_code+' ' : ''}${g.cr_account||''}</span></td>
-      <td style="font-family:'DM Mono',monospace;font-size:13px;text-align:right">RM ${fmt(g.amount)}</td>
-      <td>${editBtn}</td>
-    </tr>`;
-  };
-
-  let bodyRows = '';
-  if (groupedByAccount) {
-    // Insert a subtotal row after each DR-account group
-    let curAcct = null, curRows = [], curSum = 0;
-    const flush = () => {
-      if (!curRows.length) return;
-      bodyRows += curRows.join('');
-      bodyRows += `<tr style="background:var(--surface2);font-weight:600">
-        <td colspan="5" style="font-size:12px;padding:6px 12px;text-align:right">Subtotal — ${curAcct} (${curRows.length} entries)</td>
-        <td style="font-family:'DM Mono',monospace;font-size:13px;text-align:right">RM ${fmt(curSum)}</td>
-        <td></td>
-      </tr>`;
-      curRows = []; curSum = 0;
-    };
-    display.forEach(g => {
-      const acct = g.dr_account || '—';
-      if (acct !== curAcct) { flush(); curAcct = acct; }
-      curRows.push(buildRow(g));
-      curSum += parseFloat(g.amount||0);
-    });
-    flush();
-  } else {
-    bodyRows = display.map(buildRow).join('');
-  }
-
-  // Total row
-  let totalRowHtml = '';
-  if (accountFilter && rows.length) {
-    let totalDr = 0, totalCr = 0;
-    rows.forEach(g => {
-      const dr = (g.dr_account||'').toLowerCase();
-      const cr = (g.cr_account||'').toLowerCase();
-      const amt = parseFloat(g.amount||0);
-      if (dr === accountFilter) totalDr += amt;
-      if (cr === accountFilter) totalCr += amt;
-    });
-    const closing = drNatural ? bfAmount + totalDr - totalCr : bfAmount + totalCr - totalDr;
-    const formula = drNatural
-      ? `B/F ${fmt(bfAmount)} + DR ${fmt(totalDr)} − CR ${fmt(totalCr)}`
-      : `B/F ${fmt(bfAmount)} + CR ${fmt(totalCr)} − DR ${fmt(totalDr)}`;
-    totalRowHtml = `<tr style="background:var(--accent);color:#fff;font-weight:600">
-      <td colspan="5" style="font-size:12px;padding:10px 12px">Closing balance (${formula})</td>
-      <td style="font-family:'DM Mono',monospace;font-size:13px;text-align:right">RM ${fmt(closing)}</td>
-      <td></td>
-    </tr>`;
-  } else if (rows.length) {
-    const totalAmt = rows.reduce((s, g) => s + parseFloat(g.amount||0), 0);
-    totalRowHtml = `<tr style="background:var(--surface2);font-weight:600">
-      <td colspan="5" style="font-size:12px;padding:10px 12px">Total — ${rows.length} entries</td>
-      <td style="font-family:'DM Mono',monospace;font-size:13px;text-align:right">RM ${fmt(totalAmt)}</td>
-      <td></td>
-    </tr>`;
-  }
-
-  tbody.innerHTML = bfRowHtml + bodyRows + totalRowHtml;
-}
-
-function openGLEditById(id) {
-  const g = GL_ALL_ROWS.find(x => (x.gl_id||x.id||'').toString() === id.toString());
-  if (!g) { toast('GL entry not found — please reload the page.', 'error'); return; }
-  openGLEdit(g);
-}
-
-function openGLEdit(g) {
-  document.getElementById('gl-date').value    = g.date || '';
-  document.getElementById('gl-ref').value     = g.ref  || '';
-  document.getElementById('gl-desc').value    = g.description || '';
-  document.getElementById('gl-dr-code').value = g.dr_code || '';
-  document.getElementById('gl-dr-name').value = g.dr_account || '';
-  document.getElementById('gl-cr-code').value = g.cr_code || '';
-  document.getElementById('gl-cr-name').value = g.cr_account || '';
-  document.getElementById('gl-amount').value  = g.amount || '';
-  // Store the GL entry id for update
-  const modal = document.getElementById('modal-gl');
-  modal.dataset.editId = g.gl_id || g.id || '';
-  document.querySelector('#modal-gl .modal-title').textContent = 'Edit Journal Entry';
-  openModal('modal-gl');
-}
-
-
-// ══ INCOME STATEMENT ══
-const JOB_LABELS = {
-  'mbrs':'MBRS',
-  'cosec':'Cosec', 'cosec_retainer':'Cosec', 'cosec_other':'Cosec',
-  'tax':'Tax', 'personal_tax':'Personal Tax',
-  'fs':'FS (Audit Exemption)',
-  'bookkeeping':'Bookkeeping',
-  'audit':'Audit',
-  'advisory':'Advisory',
-  'disbursement':'Disbursements', 'disb':'Disbursements',
-  'other':'Other'
-};
-const EXP_LABELS = {
-  'wages_ho':'Subcon charges HCK', 'wages_txy':'Subcon charges TXY 1',
-  'wages_et':'Soleprop wages', 'wages_ivy':'Subcon charges IVY',
-  'wages_cecilia':'Cosec charges', 'software':'Software charges',
-  'ssm':'SSM Charges', 'transport':'Petrol', 'petrol':'Petrol',
-  'courier':'Courier charges', 'entertainment':'Entertainment',
-  'bank_charges':'Bank charges', 'general':'General expenses',
-  'printing':'Printing & Stationeries', 'commission':'Commission',
-  'cosec':'Cosec charges', 'incorporation':'Incorporation expenses',
-  'roadtax':'Roadtax & Insurance', 'telephone':'Telephone'
-};
-const IS_REV_ORDER = ['Personal Tax','MBRS','Bookkeeping','FS (Audit Exemption)','Disbursements','Audit','Tax','Cosec','Advisory','Other'];
-const IS_EXP_ORDER = ['Soleprop wages','Subcon charges TXY 1','Subcon charges IVY','Subcon charges HCK',
-  'Cosec charges','Entertainment','SSM Charges','Courier charges','Bank charges',
-  'Software charges','Printing & Stationeries','Petrol','Roadtax & Insurance',
-  'Telephone','Commission','General expenses','Incorporation expenses'];
-
-async function loadIncomeStatement() {
-  document.getElementById('is-table').innerHTML = '<div style="padding:20px;color:var(--text3)">Loading…</div>';
-  try {
-  const year = document.getElementById('is-filter-year').value;
-  const invoicesAll = INVOICES.length ? INVOICES : (await api({action:'get_invoices'})).data || [];
-  const vouchersAll = VOUCHERS.length ? VOUCHERS : (await api({action:'get_vouchers'})).data || [];
-  // Ensure invoices have job_type populated from allocations
-  if (!ALLOCATIONS || !ALLOCATIONS.length) { try { await loadAllocations(); } catch(e){} }
-  invalidateJtCache();          // force fresh rebuild from current ALLOCATIONS before unmapped scan
-  augmentInvoicesWithJobType();
-
-  const yearSel = document.getElementById('is-filter-year');
-  if (yearSel.options.length <= 1) {
-    const years = [...new Set(invoicesAll.map(i=>{ const d=i.inv_date||i.date||''; if(/^\d{4}/.test(d)) return d.slice(0,4); const m=d.match(/\b(\d{4})\b/); return m?m[1]:''; }).filter(Boolean))].sort().reverse();
-    years.forEach(y => { const o = document.createElement('option'); o.value=y; o.textContent=y; yearSel.appendChild(o); });
-    // Default to current year so 2025 carry-forward doesn't pollute 2026 P/L
-    const currentYear = String(new Date().getFullYear());
-    if (years.includes(currentYear)) { yearSel.value = currentYear; }
-  }
-  const year2 = yearSel.value;
-  if (year2 && year2 !== year) {
-    // Re-pick using updated default
-    return loadIncomeStatement();
-  }
-
-  // Extract 4-digit year from either ISO ("2026-04-18") or JS Date string ("Sun Jan 04 2026 ...")
-  const extractYear = d => { if (!d) return ''; if (/^\d{4}/.test(d)) return d.slice(0,4); const m = (d||'').match(/\b(\d{4})\b/); return m ? m[1] : ''; };
-  const filterYear = y => !year || extractYear(y||'') === year;
-  const invoices = invoicesAll.filter(i => i.status !== 'cancelled' && filterYear(i.inv_date||i.date||''));
-  const vouchers = vouchersAll.filter(v => filterYear(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
-
-  const coa = getCOA();
-  const sectionAccts = {};
-  COA_PL_ORDER.forEach(s => sectionAccts[s] = []);
-  coa.forEach(a => { if (sectionAccts[a.section] !== undefined) sectionAccts[a.section].push(a); });
-  const sectionTotals = {};
-  COA_PL_ORDER.forEach(s => {
-    sectionTotals[s] = r2(sectionAccts[s].reduce((sum,a) => sum + computeAccountValue(a, invoices, vouchers), 0));
-  });
-
-  // Catch-all: any invoice or voucher whose category isn't covered by COA mapsFrom
-  const mappedRevTokens = new Set();
-  const mappedExpTokens = new Set();
-  let disbHandled = false;
-  coa.forEach(a => {
-    if (!a.mapsFrom) return;
-    const sec = COA_SECTIONS[a.section] || {};
-    a.mapsFrom.forEach(t => {
-      const k = (t||'').toLowerCase();
-      if (sec.side === 'income') {
-        if (k === 'disbursements_field') disbHandled = true;
-        else mappedRevTokens.add(k);
-      } else if (sec.side === 'expense') {
-        mappedExpTokens.add(k);
-      }
-    });
-  });
-  let unmappedRev = 0, unmappedExp = 0;
-  const unmappedRevByType = {}, unmappedExpByCat = {};
-  // Detect "snapshot mode": when ALL income/expense COA accounts have an explicit hardcoded value.
-  // In snapshot mode, the IS reflects only the snapshot — live unmapped entries are
-  // surfaced on the COA page audit panel instead, not on the IS.
-  const allIncomeAccts = coa.filter(a => {
-    const sec = COA_SECTIONS[a.section]||{};
-    return sec.statement === 'PL' && sec.side === 'income';
-  });
-  const allExpenseAccts = coa.filter(a => {
-    const sec = COA_SECTIONS[a.section]||{};
-    return sec.statement === 'PL' && sec.side === 'expense';
-  });
-  // Snapshot mode disabled: IS always uses live GL data for mapped accounts.
-  // Unmapped items always surface so nothing is silently hidden.
-  const incomeSnapshotMode  = false;
-  const expenseSnapshotMode = false;
-
-  if (!incomeSnapshotMode) {
-    invoices.forEach(i => {
-      const ejt = getInvJobType(i);
-      const jt = ejt.toLowerCase();
-      if (!mappedRevTokens.has(jt)) {
-        const amt = parseFloat(i.amount||0);
-        unmappedRev += amt;
-        unmappedRevByType[ejt||'(blank)'] = (unmappedRevByType[ejt||'(blank)']||0) + amt;
-      }
-      if (!disbHandled) unmappedRev += parseFloat(i.disb_amount||0);
-    });
-  }
-  if (!expenseSnapshotMode) {
-    vouchers.forEach(v => {
-      const cat = (v.category||'').toLowerCase();
-      if (!mappedExpTokens.has(cat)) {
-        const amt = parseFloat(v.amount||0);
-        unmappedExp += amt;
-        unmappedExpByCat[v.category||'(blank)'] = (unmappedExpByCat[v.category||'(blank)']||0) + amt;
-      }
-    });
-  }
-  unmappedRev = r2(unmappedRev); unmappedExp = r2(unmappedExp);
-
-  const totalRevenue = r2((sectionTotals.revenue||0) + (sectionTotals.other_income||0) + unmappedRev);
-  const totalDirect  = r2(sectionTotals.direct_cost||0);
-  const totalAdmin   = r2(sectionTotals.admin_expense||0);
-  const totalDeprec  = r2(sectionTotals.depreciation||0);
-  const totalExp     = r2(totalDirect + totalAdmin + totalDeprec + unmappedExp);
-  const profit       = r2(totalRevenue - totalExp);
-  const margin       = totalRevenue ? (profit/totalRevenue*100).toFixed(1) : 0;
-
-  const fmt = n => 'RM ' + Math.abs(n).toLocaleString('en-MY',{minimumFractionDigits:2});
-  document.getElementById('is-revenue').textContent  = fmt(totalRevenue);
-  document.getElementById('is-expenses').textContent = fmt(totalExp);
-  document.getElementById('is-profit').textContent   = fmt(profit);
-  document.getElementById('is-profit').style.color   = profit >= 0 ? 'var(--green)' : 'var(--red)';
-  document.getElementById('is-margin').textContent   = margin + '%';
-
-  const renderSection = (sectionKey, label, isExpense) => {
-    const accts = sectionAccts[sectionKey] || [];
-    if (!accts.length) return '';
-    const rows = accts.map(a => ({ a, v: computeAccountValue(a, invoices, vouchers) }))
-      .sort((x,y) => (x.a.code||'').localeCompare(y.a.code||''));
-    let html = `<div class="fin-section-title" style="margin-top:8px">${label}</div>`;
-    // Hide zero-value accounts (all accounts — live or snapshot)
-    rows.forEach(({a,v}) => {
-      const isLive = a.mapsFrom && a.mapsFrom.length;
-      if (Math.abs(v) < 0.005) return; // skip any zero-value account
-      const codeBadge = a.code ? `<span style="color:var(--text3);font-family:'DM Mono',monospace;font-size:11px;margin-right:6px">${a.code}</span>` : '';
-      const valStr = isExpense ? `(${fmt(v)})` : fmt(v);
-      const cls    = isExpense ? 'fin-amt fin-neg' : 'fin-amt';
-      const dim    = Math.abs(v) < 0.005 ? 'opacity:0.45' : '';
-      const clickAttr = a.code ? `onclick="openAccountDrill('${(a.code||'').replace(/'/g,"\\'")}')" style="${dim};cursor:pointer" title="Click to see underlying transactions"` : `style="${dim}"`;
-      html += `<div class="fin-row indent fin-row-clickable" ${clickAttr}><span>${codeBadge}${a.name}</span><span class="${cls}">${valStr}</span></div>`;
-    });
-    const subTotal = sectionTotals[sectionKey];
-    const stStr    = isExpense ? `(${fmt(subTotal)})` : fmt(subTotal);
-    const stCls    = isExpense ? 'fin-amt fin-neg' : 'fin-amt';
-    html += `<div class="fin-row subtotal"><span>Total ${label}</span><span class="${stCls}">${stStr}</span></div>`;
-    return html;
-  };
-
-  const fmtUnmapped = (label, byMap, isExpense) => {
-    const entries = Object.entries(byMap).filter(([_,v]) => Math.abs(v) > 0.005).sort((a,b) => b[1]-a[1]);
-    if (!entries.length) return '';
-    let html = `<div class="fin-section-title" style="margin-top:8px;color:var(--amber)">${label} <span style="font-size:10px;font-weight:400">(unmapped — add an account in Chart of Accounts)</span></div>`;
-    entries.forEach(([k,v]) => {
-      const valStr = isExpense ? `(${fmt(v)})` : fmt(v);
-      const cls    = isExpense ? 'fin-amt fin-neg' : 'fin-amt';
-      html += `<div class="fin-row indent"><span style="color:var(--amber)">${k}</span><span class="${cls}">${valStr}</span></div>`;
-    });
-    return html;
-  };
-
-  let rows = '';
-  rows += renderSection('revenue',       'Revenue',                 false);
-  rows += renderSection('other_income',  'Other Income',            false);
-  rows += fmtUnmapped('Other Revenue', unmappedRevByType, false);
-  rows += `<div class="fin-row subtotal" style="background:var(--surface2);font-weight:600"><span>Total Revenue</span><span class="fin-amt">${fmt(totalRevenue)}</span></div>`;
-  rows += renderSection('direct_cost',   'Direct Costs',            true);
-  rows += renderSection('admin_expense', 'Administrative Expenses', true);
-  rows += fmtUnmapped('Other Expenses', unmappedExpByCat, true);
-  rows += renderSection('depreciation',  'Depreciation',            true);
-  rows += `<div class="fin-row subtotal" style="background:var(--surface2);font-weight:600"><span>Total Expenses</span><span class="fin-amt fin-neg">(${fmt(totalExp)})</span></div>`;
-  rows += `<div class="fin-row total"><span>Net Profit / (Loss)</span><span class="fin-amt" style="color:${profit>=0?'var(--green)':'var(--red)'}">${profit<0?'(':''}${fmt(profit)}${profit<0?')':''}</span></div>`;
-  if (totalDeprec > 0.005) {
-    const profitNoDep = r2(profit + totalDeprec);
-    rows += `<div class="fin-row indent" style="margin-top:6px;color:var(--text3);font-size:12px"><span>Net Profit before Depreciation</span><span class="fin-amt">${fmt(profitNoDep)}</span></div>`;
-  }
-  document.getElementById('is-table').innerHTML = rows;
-  } catch(e) {
-    document.getElementById('is-table').innerHTML = `<div style="padding:20px;color:red;font-family:monospace">IS Error: ${e.message}<br>${e.stack||''}</div>`;
-  }
-}
-
-
-// ══ BALANCE SHEET ══
-async function loadBalanceSheet() {
-  document.getElementById('bs-assets').innerHTML = '<div style="padding:20px;color:var(--text3)">Loading…</div>';
-  try {
-
-  // Filter to current FY (matches Excel BS at 31.12.YYYY) — drawings/profit/etc. are "for the year"
-  const fyYear = String(new Date().getFullYear());
-  // extractFYYear handles both ISO '2026-04-18' and JS Date strings 'Sun Jan 04 2026 ...'
-  const extractFYYear = d => { if (!d) return ''; if (/^\d{4}/.test(d)) return d.slice(0,4); const m = (d||'').match(/\b(\d{4})\b/); return m ? m[1] : ''; };
-  const inFY  = d => extractFYYear(d||'') === fyYear;
-  const invoices = (INVOICES.length ? INVOICES : []).filter(i => i.status !== 'cancelled' && inFY(i.inv_date||i.date||''));
-  const vouchers = (VOUCHERS.length ? VOUCHERS : []).filter(v => inFY(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
-
-  // For Trade Debtor live calc we want ALL outstanding (regardless of year), so use unfiltered list
-  const allInvoices = (INVOICES.length ? INVOICES : []).filter(i => i.status !== 'cancelled');
-
-  const coa = getCOA();
-
-  // Compute net profit from P/L COA accounts (current FY only)
-  const plCoa = coa.filter(a => COA_PL_ORDER.includes(a.section));
-  let plRevenue = 0, plExpense = 0;
-  plCoa.forEach(a => {
-    const v   = computeAccountValue(a, invoices, vouchers);
-    const sec = COA_SECTIONS[a.section] || {};
-    if (sec.side === 'income')  plRevenue += v;
-    if (sec.side === 'expense') plExpense += v;
-  });
-  const plNetProfit = r2(plRevenue - plExpense);
-
-  // Live debtor: outstanding = max(0, gross_invoice - sum_of_receipts) per invoice.
-  // This handles partial payments correctly (e.g., invoice 325, paid 255 → outstanding 70).
-  // Includes disbursements in the gross amount.
-  const _liveRcPaidMap = {};
-  (RECEIPTS||[]).forEach(r => {
-    if (r.inv_no) _liveRcPaidMap[r.inv_no] = (_liveRcPaidMap[r.inv_no] || 0) + parseFloat(r.amount || 0);
-  });
-  const liveDebtors = r2(allInvoices
-    .filter(i => i.status === 'outstanding' || i.status === 'partial')
-    .reduce((s,i) => {
-      const gross = parseFloat(i.amount || 0) + parseFloat(i.disb_amount || 0);
-      const paid  = _liveRcPaidMap[i.inv_no] || 0;
-      return s + Math.max(0, gross - paid);
-    }, 0));
-
-  // Live bank balance: OB (at OB date) + non-drawings receipts/vouchers dated AFTER the OB.
-  // Receipts/vouchers dated before the OB are already baked into the OB amount, so we exclude them.
-  // Computed fresh every time the BS loads — never relies on localStorage/hardcoded value.
-  const _isBSDrawings = x => (x.bank_account||x.payment_account||'').toLowerCase().includes('draw');
-  const _ob1010   = COA_OPENING_BALANCES['1010'] || {};
-  const _obDate   = _ob1010.date   || '2026-01-01';
-  const _obAmount = _ob1010.amount || 0;
-  const _afterOB  = x => (x.date || '') >= _obDate;
-  const _allVouchers  = (VOUCHERS||[]).filter(v =>
-    !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) &&
-    !(v.description||'').startsWith('__VOID__'));
-  const bankRcTotal   = (RECEIPTS||[]).filter(r => !_isBSDrawings(r) && _afterOB(r))
-                          .reduce((s,r) => s + parseFloat(r.amount||0), 0);
-  const bankPvTotal   = _allVouchers.filter(v => !_isBSDrawings(v) && _afterOB(v))
-                          .reduce((s,v) => s + parseFloat(v.amount||0), 0);
-  const liveBank      = r2(_obAmount + bankRcTotal - bankPvTotal);
-
-  const valueOf = (a) => {
-    // Priority: live mapsFrom > hardcoded snapshot > COA_DEFAULT fallback > derived source.
-    // BS values are Excel snapshots — they stay fixed until the COA is updated.
-    // Drill-down shows live Google Sheets data and flags any variance vs snapshot.
-    // Bank (1010): always live — never allow stale localStorage/OB value to show on BS.
-    if (a.code === '1010') return liveBank;
-    if (a.mapsFrom && a.mapsFrom.length) return computeAccountValue(a, invoices, vouchers);
-    const hasValue = a.value !== undefined && a.value !== null && a.value !== '';
-    if (hasValue) return parseFloat(a.value);
-    // Fall back to COA_DEFAULT hardcoded value if localStorage lost it (e.g. after GS sync)
-    const defEntry = COA_DEFAULT.find(d => d.code === a.code);
-    if (defEntry && defEntry.value !== undefined && defEntry.value !== null && defEntry.value !== '') {
-      return parseFloat(defEntry.value);
-    }
-    const src = a.source || (defEntry && defEntry.source) || '';
-    if (src === 'pl_net_profit')              return plNetProfit;
-    if (src === 'live_outstanding_invoices')  return liveDebtors;
-    return 0;
-  };
-
-  const bsAccts = {};
-  COA_BS_ORDER.forEach(s => bsAccts[s] = []);
-  coa.forEach(a => { if (bsAccts[a.section] !== undefined) bsAccts[a.section].push(a); });
-  Object.keys(bsAccts).forEach(s => bsAccts[s].sort((a,b) => (a.code||'').localeCompare(b.code||'')));
-
-  const totals = {};
-  COA_BS_ORDER.forEach(s => { totals[s] = r2(bsAccts[s].reduce((sum,a) => sum + valueOf(a), 0)); });
-
-  const totalAssets      = r2((totals.non_current_asset||0) + (totals.current_asset||0));
-  const totalEquity      = totals.equity || 0;
-  const totalLiabilities = r2((totals.current_liability||0) + (totals.non_current_liability||0));
-  const totalEquityLiab  = r2(totalEquity + totalLiabilities);
-  const gap              = r2(totalAssets - totalEquityLiab);
-
-  const fmt    = n => 'RM ' + Math.abs(n).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
-  const valStr = n => `${n < 0 ? '(' : ''}${fmt(n)}${n < 0 ? ')' : ''}`;
-  const renderRow = (a) => {
-    const v    = valueOf(a);
-    const isLive = a.mapsFrom && a.mapsFrom.length;
-    if (Math.abs(v) < 0.005 && !isLive) return ''; // hide hardcoded zero accounts
-    const code = a.code ? `<span style="color:var(--text3);font-family:'DM Mono',monospace;font-size:11px;margin-right:6px">${a.code}</span>` : '';
-    const click = a.code ? `onclick="openAccountDrill('${(a.code||'').replace(/'/g,"\\'")}')" style="cursor:pointer" title="Click to see underlying transactions"` : '';
-    return `<div class="fin-row indent fin-row-clickable" ${click}><span>${code}${a.name}</span><span class="fin-amt">${valStr(v)}</span></div>`;
-  };
-  const renderSection = (key, label) => {
-    const accts = bsAccts[key] || [];
-    if (!accts.length) return '';
-    let html = `<div class="fin-sub-title">${label}</div>`;
-    accts.forEach(a => { html += renderRow(a); });
-    html += `<div class="fin-row subtotal"><span>Total ${label}</span><span class="fin-amt">${fmt(totals[key])}</span></div>`;
-    return html;
-  };
-
-  document.getElementById('bs-assets').innerHTML = `
-    <div class="fin-section-title">Assets</div>
-    ${renderSection('non_current_asset','Non-Current Assets')}
-    ${renderSection('current_asset','Current Assets')}
-    <div class="fin-row total"><span>TOTAL ASSETS</span><span class="fin-amt">${fmt(totalAssets)}</span></div>
-  `;
-
-  const gapRow = Math.abs(gap) > 0.02
-    ? `<div class="fin-row" style="background:var(--amber-bg);padding:8px 16px;margin-top:6px"><span style="color:var(--amber);font-size:12px">⚠ Difference (Assets vs Equity + Liabilities)</span><span class="fin-amt" style="color:var(--amber)">${valStr(gap)}</span></div>`
-    : `<div class="fin-row" style="background:var(--green-bg);padding:8px 16px;margin-top:6px"><span style="color:var(--green);font-size:12px">✓ Balance sheet tallies</span><span class="fin-amt" style="color:var(--green)">RM 0.00</span></div>`;
-
-  document.getElementById('bs-equity').innerHTML = `
-    <div class="fin-section-title">Equity & Liabilities</div>
-    ${renderSection('equity','Equity')}
-    ${(bsAccts.non_current_liability||[]).length ? renderSection('non_current_liability','Non-Current Liabilities') : ''}
-    ${renderSection('current_liability','Current Liabilities')}
-    <div class="fin-row total"><span>TOTAL EQUITY & LIABILITIES</span><span class="fin-amt">${fmt(totalEquityLiab)}</span></div>
-    ${gapRow}
-  `;
-  } catch(e) {
-    document.getElementById('bs-assets').innerHTML = `<div style="padding:20px;color:red;font-family:monospace">BS Error: ${e.message}<br>${e.stack||''}</div>`;
-  }
-}
-
-
-// ══ SALES ANALYSIS ══
-async function loadSalesAnalysis() {
-  // Use cached INVOICES — avoids extra API call
-  const allInv = INVOICES.length ? INVOICES : ((await api({action:'get_invoices'})).data || []);
-
-  // Populate year dropdown with all years that have invoices (default to current year)
-  const yearSel = document.getElementById('sa-filter-year');
-  if (yearSel) {
-    const yearsSet = new Set();
-    allInv.forEach(i => {
-      const d = i.inv_date || i.date || '';
-      const m = String(d).match(/\b(20\d{2})\b/);
-      if (m) yearsSet.add(m[1]);
-    });
-    const yrs = Array.from(yearsSet).sort().reverse();
-    const currentYear = String(new Date().getFullYear());
-    // Preserve user's previous selection if they made one
-    const prevValue = yearSel.value || (yearsSet.has(currentYear) ? currentYear : (yrs[0] || ''));
-    yearSel.innerHTML = '<option value="">All time</option>' +
-      yrs.map(y => '<option value="' + y + '"' + (y === prevValue ? ' selected' : '') + '>' + y + '</option>').join('');
-    if (yearSel.value !== prevValue) yearSel.value = prevValue;
-  }
-  const year   = yearSel ? yearSel.value : '';
-  const biller = document.getElementById('sa-filter-biller').value;
-  if (!ALLOCATIONS || !ALLOCATIONS.length) { try { await loadAllocations(); } catch(e){} }
-  augmentInvoicesWithJobType();
-
-  let data = allInv.filter(i => i.status !== 'cancelled');
-  if (year)   data = data.filter(i => {
-    const d = String(i.inv_date || i.date || '');
-    const m = d.match(/\b(20\d{2})\b/);
-    return m && m[1] === year;
-  });
-  if (biller) data = data.filter(i => i.billing_party === biller);
-
-  const total = data.reduce((s,i) => s + parseFloat(i.amount||0) + parseFloat(i.disb_amount||0), 0);
-  const fmt   = n => 'RM ' + n.toLocaleString('en-MY',{minimumFractionDigits:2});
-
-  document.getElementById('sa-total').textContent = fmt(total);
-  document.getElementById('sa-count').textContent = data.length;
-
-  // By billing party
-  const billerMap = {};
-  data.forEach(i => { const b=i.billing_party||'Direct'; billerMap[b]=(billerMap[b]||0)+parseFloat(i.amount||0)+parseFloat(i.disb_amount||0); });
-  const maxBiller = Object.entries(billerMap).sort((a,b)=>b[1]-a[1]);
-  const truncName = (s, n) => { s = (s||'').toString(); return s.length > n ? s.slice(0,n-1)+'…' : s; };
-  document.getElementById('sa-top-biller').textContent = maxBiller[0] ? truncName(maxBiller[0][0], 22) : '—';
-
-  document.getElementById('sa-by-biller').innerHTML = maxBiller.map(([k,v]) => `
-    <div style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;font-size:13px">
-        <span>${k}</span><span style="font-family:'DM Mono',monospace">${fmt(v)}</span>
-      </div>
-      <div class="sales-bar"><div class="sales-bar-fill" style="width:${total?(v/total*100).toFixed(1):0}%"></div></div>
-      <div style="font-size:11px;color:var(--text3);margin-top:2px">${total?(v/total*100).toFixed(1):0}% of total</div>
-    </div>`).join('');
-
-  // By revenue COA account — total tallies with Income Statement
-  const coa = getCOA();
-  const revAccts = coa.filter(a => {
-    const sec = COA_SECTIONS[a.section]||{};
-    return sec.statement === 'PL' && sec.side === 'income';
-  });
-  // Build job_type → COA account name lookup
-  const jtToAcct = {};
-  let disbAcctName = null;
-  revAccts.forEach(a => {
-    if (!a.mapsFrom) return;
-    a.mapsFrom.forEach(t => {
-      const k = (t||'').toLowerCase();
-      if (k === 'disbursements_field') disbAcctName = a.name;
-      else jtToAcct[k] = a.name;
-    });
-  });
-  const typeMap = {};
-  data.forEach(i => {
-    const ejt = getInvJobType(i);
-    const k = ejt.toLowerCase();
-    const lbl = jtToAcct[k] || (ejt ? ejt : 'Unmapped');
-    typeMap[lbl] = (typeMap[lbl]||0) + parseFloat(i.amount||0);
-    const disb = parseFloat(i.disb_amount||0);
-    if (disb > 0.005 && disbAcctName) {
-      typeMap[disbAcctName] = (typeMap[disbAcctName]||0) + disb;
-    }
-  });
-  // Order accounts by their COA code; unmapped at the end
-  const maxType = revAccts
-    .filter(a => typeMap[a.name])
-    .sort((a,b) => (a.code||'').localeCompare(b.code||''))
-    .map(a => [a.name, typeMap[a.name]])
-    .concat(Object.entries(typeMap).filter(([k]) => !revAccts.some(a => a.name === k)).sort((a,b) => b[1]-a[1]));
-  document.getElementById('sa-by-type').innerHTML = maxType.map(([k,v]) => `
-    <div style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;font-size:13px">
-        <span>${k}</span><span style="font-family:'DM Mono',monospace">${fmt(v)}</span>
-      </div>
-      <div class="sales-bar"><div class="sales-bar-fill" style="width:${total?(v/total*100).toFixed(1):0}%;background:var(--green)"></div></div>
-      <div style="font-size:11px;color:var(--text3);margin-top:2px">${total?(v/total*100).toFixed(1):0}%</div>
-    </div>`).join('');
-
-  // By client
-  const clientMap = {};
-  data.forEach(i => {
-    const k = i.client_name;
-    if (!clientMap[k]) clientMap[k] = {bp:i.billing_party, type:i.job_type, count:0, rev:0};
-    clientMap[k].count++; clientMap[k].rev += parseFloat(i.amount||0) + parseFloat(i.disb_amount||0);
-  });
-  const maxClient = Object.entries(clientMap).sort((a,b)=>b[1].rev-a[1].rev);
-  document.getElementById('sa-top-client').textContent = maxClient[0] ? truncName(maxClient[0][0], 22) : '—';
-  document.getElementById('sa-client-tbody').innerHTML = maxClient.map(([k,v]) => `
-    <tr>
-      <td><strong>${k}</strong></td>
-      <td style="font-size:12px;color:var(--text2)">${v.bp||'—'}</td>
-      <td>${jobTypeBadge(v.type)}</td>
-      <td style="text-align:center">${v.count}</td>
-      <td style="font-family:'DM Mono',monospace;font-size:13px">${fmt(v.rev)}</td>
-      <td style="font-size:12px;color:var(--text3)">${total?(v.rev/total*100).toFixed(1):0}%</td>
-    </tr>`).join('');
-}
-
-// ══ DEBTOR AGING ══
-async function loadAging() {
-  const tbody = document.getElementById('ag-tbody');
-  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text3)">Loading…</td></tr>';
-
-  const today = new Date();
-  const fmt   = n => 'RM ' + parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2});
-  const buckets = {current:0, d30:0, d60:0, d90:0, d120:0, d365:0};
-
-  // Use cached globals — avoids concurrent JSONP timeout issues
-  const allInvoices = INVOICES.length ? INVOICES : ((await api({action:'get_invoices'})).data || []);
-  const allReceipts = RECEIPTS.length ? RECEIPTS : ((await api({action:'get_receipts'})).data || [])
-    .filter(r => !isDeleted('receipts',(r.receipt_id||r.id||'').toString()) && !(r.notes||'').startsWith('__VOID__'));
-
-  if (!allInvoices.length && !INVOICES.length) {
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--red)">Failed to load invoices</td></tr>`;
-    return;
-  }
-
-  // Build paid map (exclude deleted/voided receipts)
-  const rcPaidMap = {};
-  allReceipts.forEach(r => {
-    if (r.inv_no) rcPaidMap[r.inv_no] = r2((rcPaidMap[r.inv_no]||0) + parseFloat(r.amount||0));
-  });
-
-  const outstanding = allInvoices.filter(i => i.status === 'outstanding' || i.status === 'partial');
-
-  if (!outstanding.length) {
-    // Show diagnostic: total invoices vs outstanding so we can see what's happening
-    ['ag-current','ag-30','ag-60','ag-90','ag-120','ag-365'].forEach(id => {
-      document.getElementById(id).textContent = fmt(0);
-    });
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text3)">No outstanding debtors. (${allInvoices.length} total invoices loaded)</td></tr>`;
-    return;
-  }
-
-  const rows = outstanding.map(i => {
-    const idate = i.inv_date || i.date || '';
-    const days  = idate ? Math.floor((today - new Date(idate)) / 86400000) : 0;
-    const gross = parseFloat(i.amount||0) + parseFloat(i.disb_amount||0);
-    const amt   = r2(Math.max(0, gross - (rcPaidMap[i.inv_no]||0)));
-    let bucket, label, color;
-    if (days <= 30)       { bucket='current'; label='Current (0–30d)'; color='var(--green)'; }
-    else if (days <= 60)  { bucket='d30';     label='31–60 days';      color='var(--blue)'; }
-    else if (days <= 90)  { bucket='d60';     label='61–90 days';      color='var(--amber)'; }
-    else if (days <= 120) { bucket='d90';     label='91–120 days';     color='var(--red)'; }
-    else if (days <= 365) { bucket='d120';    label='121d–1 year';     color='var(--red)'; }
-    else                  { bucket='d365';    label='> 1 year';        color='#8b0000'; }
-    buckets[bucket] = r2(buckets[bucket] + amt);
-    return `<tr>
-      <td style="font-family:'DM Mono',monospace;font-size:12px">${i.inv_no}</td>
-      <td style="font-size:12px;color:var(--text2)">${formatDate(idate)}</td>
-      <td><strong>${i.client_name}</strong></td>
-      <td style="font-size:12px;color:var(--text2)">${i.billing_party||'—'}</td>
-      <td style="font-family:'DM Mono',monospace">${fmt(amt)}</td>
-      <td style="font-family:'DM Mono',monospace;font-weight:600;color:${color}">${days}d</td>
-      <td><span class="badge" style="background:${color}20;color:${color}">${label}</span></td>
-    </tr>`;
-  });
-
-  document.getElementById('ag-current').textContent = fmt(buckets.current);
-  document.getElementById('ag-30').textContent      = fmt(buckets.d30);
-  document.getElementById('ag-60').textContent      = fmt(buckets.d60);
-  document.getElementById('ag-90').textContent      = fmt(buckets.d90);
-  document.getElementById('ag-120').textContent     = fmt(buckets.d120);
-  document.getElementById('ag-365').textContent     = fmt(buckets.d365);
-  tbody.innerHTML = rows.join('');
-}
-
-// ══════════════════════════════════════════════════
-// CLIENT DEADLINES (Reminders)
-// Generates per-client tax / cosec / audit / payroll deadlines from clientMeta.
-// Rules (per user spec, 2026-05-08):
-//   Annual Return (cosec)          : anniversary of incorporation
-//   Beneficial Ownership (cosec)   : same as Annual Return
-//   Audit / FS                     : year_end + 6 months
-//   MBRS XBRL                      : year_end + 7 months
-//   Tax (Form C)                   : year_end + 8 months
-//   CP204                          : 1st of (YE month - 1) calendar (~30d lead before statutory)
-//   CP204a (1st/2nd/3rd revision)  : 1st of 6th, 9th, 11th month of FY
-//   Form E (payroll)               : 31 March of following calendar year
-// Done detection: matching invoice job_type + manual override (localStorage).
-// Cutoff: only show deadlines on or after 2026-01-01.
-// ══════════════════════════════════════════════════
-const REM_DONE_KEY  = 'seraya_deadlines_done_v1';
-const REM_CUTOFF    = '2026-01-01';
-let _remSort = { col: 'deadline', dir: 'asc' };
-
-function _remGetDoneMap() {
-  try { return JSON.parse(localStorage.getItem(REM_DONE_KEY) || '{}'); }
-  catch(e) { return {}; }
-}
-function _remSetManual(key, state) {
-  // state: 'done', 'undone', or null (clear override)
-  const map = _remGetDoneMap();
-  if (state === null) delete map[key];
-  else map[key] = { state, ts: new Date().toISOString() };
-  localStorage.setItem(REM_DONE_KEY, JSON.stringify(map));
-}
-
-function _remParseYearEnd(s) {
-  if (!s) return null;
-  const fmt = formatYearEnd(s);
-  const m = /^([A-Z][a-z]{2})\s+(\d+)$/.exec(fmt || '');
-  if (!m) return null;
-  const monthIdx = _MONTH_NAMES.indexOf(m[1]);
-  const day = parseInt(m[2], 10);
-  if (monthIdx < 0 || !day) return null;
-  return { month: monthIdx, day };
-}
-
-function _remAddMonths(date, months) {
-  const d = new Date(date.getFullYear(), date.getMonth() + months, 1);
-  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-  d.setDate(Math.min(date.getDate(), lastDay));
-  return d;
-}
-
-function _remFmtDate(d) {
-  if (!d || isNaN(d)) return '—';
-  return d.toLocaleDateString('en-MY', { day:'numeric', month:'short', year:'numeric' });
-}
-
-function _remDays(from, to) {
-  return Math.floor((to - from) / 86400000);
-}
-
-const REM_TASK_INVOICE_MATCH = {
-  tax:        ['tax'],
-  audit:      ['audit', 'fs'],
-  mbrs:       ['mbrs'],
-  cp204:      ['cp204', 'tax'],
-  cp204a_1:   ['cp204a', 'tax'],
-  cp204a_2:   ['cp204a', 'tax'],
-  cp204a_3:   ['cp204a', 'tax'],
-  ar:         ['cosec', 'cosec_retainer', 'cosec_other'],
-  bo:         ['cosec', 'cosec_retainer', 'cosec_other'],
-  form_e:     ['form_e', 'payroll']
-};
-
-const REM_TASK_TYPE = {
-  tax:'tax', cp204:'tax', cp204a_1:'tax', cp204a_2:'tax', cp204a_3:'tax',
-  audit:'audit', mbrs:'audit',
-  ar:'cosec', bo:'cosec',
-  form_e:'accounting'
-};
-
-function _remBuildRows() {
-  const today  = new Date(); today.setHours(0,0,0,0);
-  const cutoff = new Date(REM_CUTOFF);
-  const doneMap = _remGetDoneMap();
-
-  // Index invoices per client for fast Done lookups
-  const invoicesByClient = {};
-  (INVOICES||[]).forEach(inv => {
-    if (!inv.client_id || inv.status === 'cancelled') return;
-    (invoicesByClient[inv.client_id] = invoicesByClient[inv.client_id] || []).push(inv);
-  });
-
-  const out = [];
-  const push = (c, task, label, dueDate, fyLabel, year) => {
-    if (!dueDate || isNaN(dueDate)) return;
-    if (dueDate < cutoff) return;
-    out.push({
-      client_id: c.client_id,
-      client_name: c.name || '(unnamed)',
-      task, label, fyLabel, year,
-      type: REM_TASK_TYPE[task] || 'other',
-      deadline: dueDate
-    });
-  };
-
-  (CLIENTS||[]).forEach(c => {
-    const meta = getClientMeta(c.client_id);
-    const services = meta.services || [];
-    const ye = _remParseYearEnd(meta.year_end);
-    // Anniversary of incorporation: stored as "Mon DD" string, parse to month/day only
-    const incMD = meta.date_of_incorporation ? _remParseYearEnd(meta.date_of_incorporation) : null;
-
-    // FY-tied deadlines (audit, mbrs, tax, cp204, cp204a)
-    if (ye) {
-      const baseYears = [];
-      for (let y = today.getFullYear() - 2; y <= today.getFullYear() + 1; y++) {
-        baseYears.push(y);
-      }
-      baseYears.forEach(year => {
-        const yeDate   = new Date(year, ye.month, ye.day);
-        const fyLabel  = _MONTH_NAMES[ye.month] + ' ' + year;
-        if (services.includes('tax')) {
-          push(c, 'tax', 'Tax (Form C)', _remAddMonths(yeDate, 8), fyLabel, year);
-        }
-        if (services.includes('audit')) {
-          push(c, 'audit', 'Audit/FS', _remAddMonths(yeDate, 6), fyLabel, year);
-        } else if (services.includes('fs')) {
-          push(c, 'audit', 'FS (Audit Exemption)', _remAddMonths(yeDate, 6), fyLabel, year);
-        }
-        if (services.includes('mbrs')) {
-          push(c, 'mbrs', 'MBRS XBRL', _remAddMonths(yeDate, 7), fyLabel, year);
-        }
-        if (services.includes('tax')) {
-          let cp204Month = ye.month - 1;
-          let cp204Year  = year;
-          if (cp204Month < 0) { cp204Month = 11; cp204Year = year - 1; }
-          push(c, 'cp204', 'CP204', new Date(cp204Year, cp204Month, 1), fyLabel, year);
-        }
-        if (services.includes('tax')) {
-          const fyStart = new Date(year - 1, ye.month, ye.day);
-          fyStart.setDate(fyStart.getDate() + 1);
-          [{m:5,n:'1st'},{m:8,n:'2nd'},{m:10,n:'3rd'}].forEach((rev, idx) => {
-            const d = new Date(fyStart.getFullYear(), fyStart.getMonth() + rev.m, 1);
-            push(c, 'cp204a_'+(idx+1), 'CP204a (' + rev.n + ' revision)', d, fyLabel, year);
-          });
-        }
-      });
-    }
-
-    // Annual Return + BO: anniversary of incorporation (month/day only)
-    if (services.includes('cosec') && incMD) {
-      for (let y = cutoff.getFullYear(); y <= today.getFullYear() + 1; y++) {
-        const anniv = new Date(y, incMD.month, incMD.day);
-        push(c, 'ar', 'Annual Return', anniv, '—', y);
-        push(c, 'bo', 'Beneficial Ownership', anniv, '—', y);
-      }
-    }
-
-    // Form E: 31 March of (calendar year + 1)
-    if (services.includes('form_e')) {
-      for (let y = cutoff.getFullYear() - 1; y <= today.getFullYear(); y++) {
-        push(c, 'form_e', 'Form E', new Date(y + 1, 2, 31), 'CY ' + y, y);
-      }
-    }
-  });
-
-  // Auto-Done detection + manual override
-  out.forEach(row => {
-    const matchTypes = REM_TASK_INVOICE_MATCH[row.task] || [];
-    let autoDone = false, invRef = null;
-    if (matchTypes.length) {
-      const invs = invoicesByClient[row.client_id] || [];
-      const matched = invs.find(inv => {
-        const jt = (inv.job_type || '').toLowerCase();
-        if (!matchTypes.includes(jt)) return false;
-        const invDate = new Date(inv.inv_date || inv.date || '');
-        if (isNaN(invDate)) return false;
-        return Math.abs(invDate.getFullYear() - row.year) <= 1;
-      });
-      if (matched) { autoDone = true; invRef = matched.inv_no; }
-    }
-    row.autoDone = autoDone;
-    row.invoiceRef = invRef;
-    row.key = row.client_id + '|' + row.task + '|' + row.year;
-    const manual = doneMap[row.key];
-    if (manual && manual.state === 'done')   row.done = true;
-    else if (manual && manual.state === 'undone') row.done = false;
-    else row.done = autoDone;
-    row.manualOverride = !!manual;
-  });
-
-  return out;
-}
-
-function _remStatus(row, today) {
-  if (row.done) return { key: 'done',     label: 'Done',          color: 'var(--green)' };
-  const days = _remDays(today, row.deadline);
-  if (days < 0)        return { key: 'overdue', label: 'Overdue ' + Math.abs(days) + 'd', color: 'var(--red)' };
-  if (days <= 30)      return { key: 'urgent',  label: 'Due in ' + days + 'd',           color: '#ea580c' };
-  if (days <= 90)      return { key: 'soon',    label: 'Due in ' + days + 'd',           color: '#d97706' };
-  return                       { key: 'far',     label: 'Due in ' + days + 'd',           color: 'var(--green)' };
-}
-
-function remSetSort(col) {
-  if (_remSort.col === col) _remSort.dir = _remSort.dir === 'asc' ? 'desc' : 'asc';
-  else { _remSort.col = col; _remSort.dir = 'asc'; }
-  renderReminders();
-}
-
-function remToggleDone(key) {
-  const map = _remGetDoneMap();
-  const cur = map[key] && map[key].state;
-  let next;
-  if (!cur)              next = 'done';
-  else if (cur==='done') next = 'undone';
-  else                   next = null;
-  _remSetManual(key, next);
-  renderReminders();
-}
-
-function _remPopulateClientFilter(rows) {
-  const sel = document.getElementById('rem-f-client');
-  if (!sel) return;
-  const cur = sel.value;
-  const seen = new Map();
-  rows.forEach(r => { if (!seen.has(r.client_id)) seen.set(r.client_id, r.client_name); });
-  const opts = ['<option value="">All clients</option>'];
-  Array.from(seen.entries())
-    .sort((a,b) => a[1].localeCompare(b[1]))
-    .forEach(([id, name]) => opts.push('<option value="' + id + '"' + (id===cur?' selected':'') + '>' + name + '</option>'));
-  sel.innerHTML = opts.join('');
-}
-
-function _remPopulateTaskFilter(rows) {
-  const sel = document.getElementById('rem-f-task');
-  if (!sel) return;
-  const cur = sel.value;
-  const seen = new Map();
-  rows.forEach(r => { if (!seen.has(r.task)) seen.set(r.task, r.label); });
-  const opts = ['<option value="">All tasks</option>'];
-  Array.from(seen.entries())
-    .sort((a,b) => a[1].localeCompare(b[1]))
-    .forEach(([code, label]) => opts.push('<option value="' + code + '"' + (code===cur?' selected':'') + '>' + label + '</option>'));
-  sel.innerHTML = opts.join('');
-}
-
-function renderReminders() {
-  const tbody  = document.getElementById('rem-tbody');
-  const stats  = document.getElementById('rem-stats');
-  const today  = new Date(); today.setHours(0,0,0,0);
-  const todayLbl = document.getElementById('rem-today-label');
-  if (todayLbl) todayLbl.textContent = 'Today: ' + _remFmtDate(today) + ' · Showing deadlines from ' + _remFmtDate(new Date(REM_CUTOFF)) + ' onwards';
-
-  let allRows;
-  try { allRows = _remBuildRows(); }
-  catch(e) {
-    if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="padding:20px;color:var(--red)">Error: ' + e.message + '</td></tr>';
-    return;
-  }
-
-  _remPopulateClientFilter(allRows);
-  _remPopulateTaskFilter(allRows);
-
-  const fClient = document.getElementById('rem-f-client').value;
-  const fTask   = document.getElementById('rem-f-task').value;
-  const fType   = document.getElementById('rem-f-type').value;
-  const fStatus = document.getElementById('rem-f-status').value;
-  let rows = allRows.slice();
-  if (fClient) rows = rows.filter(r => r.client_id === fClient);
-  if (fTask)   rows = rows.filter(r => r.task === fTask);
-  if (fType)   rows = rows.filter(r => r.type === fType);
-
-  rows.forEach(r => { r.status = _remStatus(r, today); });
-  if (fStatus) {
-    rows = rows.filter(r => {
-      if (fStatus === 'done')    return r.status.key === 'done';
-      if (fStatus === 'overdue') return r.status.key === 'overdue';
-      if (fStatus === 'pending') return r.status.key !== 'done';
-      return true;
-    });
-  }
-
-  const counts = { overdue:0, urgent:0, soon:0, far:0, done:0 };
-  rows.forEach(r => counts[r.status.key]++);
-  if (stats) {
-    stats.innerHTML =
-      '<div class="metric-card"><div class="metric-label">Overdue</div><div class="metric-value red">' + counts.overdue + '</div></div>' +
-      '<div class="metric-card"><div class="metric-label">Due ≤ 30 days</div><div class="metric-value" style="color:#ea580c">' + counts.urgent + '</div></div>' +
-      '<div class="metric-card"><div class="metric-label">Due 31–90 days</div><div class="metric-value amber">' + counts.soon + '</div></div>' +
-      '<div class="metric-card"><div class="metric-label">Due > 90 days</div><div class="metric-value green">' + counts.far + '</div></div>' +
-      '<div class="metric-card"><div class="metric-label">Done</div><div class="metric-value">' + counts.done + '</div></div>';
-  }
-  const cnt = document.getElementById('rem-count-label');
-  if (cnt) cnt.textContent = rows.length + ' of ' + allRows.length + ' deadline' + (allRows.length===1?'':'s');
-
-  const dir = _remSort.dir === 'asc' ? 1 : -1;
-  rows.sort((a,b) => {
-    let av, bv;
-    switch (_remSort.col) {
-      case 'client':   av=a.client_name; bv=b.client_name; break;
-      case 'task':     av=a.label;       bv=b.label;       break;
-      case 'days':     av=a.deadline-today; bv=b.deadline-today; break;
-      case 'urgency': {
-        const order = { overdue:0, urgent:1, soon:2, far:3, done:4 };
-        av = order[a.status.key]; bv = order[b.status.key]; break;
-      }
-      default:         av=a.deadline; bv=b.deadline;
-    }
-    if (av < bv) return -1*dir;
-    if (av > bv) return  1*dir;
-    return 0;
-  });
-
-  if (!tbody) return;
-  if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="padding:30px;text-align:center;color:var(--text3)">No deadlines match the current filters.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = rows.map(r => {
-    const days = _remDays(today, r.deadline);
-    const statusBadge = '<span class="badge" style="background:' + r.status.color + '20;color:' + r.status.color + ';font-size:11px">' + r.status.label + '</span>';
-    const billed = r.invoiceRef
-      ? '<span class="badge badge-green" style="font-size:11px" title="Auto-detected from invoice">' + r.invoiceRef + '</span>'
-      : '<span style="color:var(--text3);font-size:11px">—</span>';
-    const doneBtnLabel = r.done ? '✓' : '○';
-    const doneBtnTitle = r.manualOverride ? 'Manual override (click to cycle)' : 'Auto-status — click to override';
-    const doneBtn = '<button class="btn btn-ghost" onclick="remToggleDone(\'' + r.key + '\')" title="' + doneBtnTitle + '" style="padding:4px 10px;font-size:14px;' + (r.done?'color:var(--green)':'color:var(--text3)') + '">' + doneBtnLabel + '</button>';
-    return '<tr>' +
-      '<td>' + statusBadge + '</td>' +
-      '<td><strong>' + r.client_name + '</strong></td>' +
-      '<td style="font-size:11px;color:var(--text2)">' + r.fyLabel + '</td>' +
-      '<td>' + r.label + '</td>' +
-      '<td style="font-family:\'DM Mono\',monospace;font-size:12px">' + _remFmtDate(r.deadline) + '</td>' +
-      '<td style="font-family:\'DM Mono\',monospace;font-size:12px;color:' + r.status.color + '">' + (days<0?'+':'') + Math.abs(days) + 'd</td>' +
-      '<td><span class="badge" style="font-size:11px">' + r.type + '</span></td>' +
-      '<td>' + billed + '</td>' +
-      '<td>' + doneBtn + '</td>' +
-      '<td></td>' +
-    '</tr>';
-  }).join('');
-}
-
-
-// Note: loadRetention() is defined in the first <script> block (around line 1149)
-// using cached ALLOCATIONS + hardcoded deductions to match GL 2026 (RM 4,191.64).
-// An older JSONP-based duplicate previously lived here and was removed because it
-// (a) shadowed the cache-based version and (b) was truncated, breaking the script.
-
-// ══════════════════════════════════════════════════
-// CHART OF ACCOUNTS — UI
-// ══════════════════════════════════════════════════
-function loadCOA() {
-  const coa = getCOA();
-  const fmt = n => parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
-
-  // Compute live values for every account so we can show them on the page
-  augmentInvoicesWithJobType();
-  const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled');
-  const vouchers = (VOUCHERS||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
-
-  let bsCnt=0, plCnt=0, liveCnt=0, hardCnt=0;
-  coa.forEach(a => {
-    const sec = COA_SECTIONS[a.section] || {};
-    if (sec.statement === 'BS') bsCnt++; else if (sec.statement === 'PL') plCnt++;
-    if (a.mapsFrom && a.mapsFrom.length) liveCnt++; else hardCnt++;
-  });
-  document.getElementById('coa-bs-count').textContent    = bsCnt;
-  document.getElementById('coa-pl-count').textContent    = plCnt;
-  document.getElementById('coa-live-count').textContent  = liveCnt;
-  document.getElementById('coa-hard-count').textContent  = hardCnt;
-  document.getElementById('coa-total-count').textContent = coa.length;
-
-  const order = COA_BS_ORDER.concat(COA_PL_ORDER);
-  const groups = {};
-  coa.forEach(a => { (groups[a.section] = groups[a.section] || []).push(a); });
-
-  let html = '';
-  order.forEach(section => {
-    if (!groups[section] || !groups[section].length) return;
-    const sec = COA_SECTIONS[section] || { label: section };
-    html += `<tr style="background:var(--surface2)"><td colspan="6" style="font-weight:600;color:var(--text2);font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:8px 12px">${sec.label} <span style="color:var(--text3);font-weight:400">(${sec.statement || ''})</span></td></tr>`;
-    groups[section]
-      .sort((a,b) => (a.code||'').localeCompare(b.code||''))
-      .forEach(a => {
-        const live = a.mapsFrom && a.mapsFrom.length;
-        const sourceTxt = live
-          ? `<span class="badge" style="font-size:10px">live</span> <span style="font-size:11px;color:var(--text3)">${a.mapsFrom.join(', ')}</span>`
-          : `<span class="badge" style="font-size:10px">hardcoded</span>`;
-        // Compute the actual displayed value for this account (live or hardcoded)
-        const liveVal = computeAccountValue(a, invoices, vouchers);
-        const valTxt  = fmt(liveVal);
-        const valDim  = Math.abs(liveVal) < 0.005 ? 'opacity:0.45' : '';
-        html += `<tr>
-          <td style="font-family:'DM Mono',monospace;font-weight:600">${a.code||''}</td>
-          <td>${a.name||''}</td>
-          <td style="font-size:12px;color:var(--text2)">${sec.label}</td>
-          <td>${sourceTxt}</td>
-          <td style="text-align:right;font-family:'DM Mono',monospace;${valDim}">${valTxt}</td>
-          <td><button class="btn btn-ghost btn-sm" onclick="openAccountEdit('${(a.code||'').replace(/'/g,"\\'")}')">Edit</button></td>
-        </tr>`;
-      });
-  });
-  if (!html) html = '<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:20px">No accounts. Click "+ Add Account" to start.</td></tr>';
-  document.getElementById('coa-tbody').innerHTML = html;
-
-  // Populate audit year filter and render audit panel
-  const yrSel = document.getElementById('coa-audit-year');
-  if (yrSel && yrSel.options.length === 0) {
-    const allInv = INVOICES || [];
-    const years = [...new Set(allInv.map(i=>(i.inv_date||i.date||'').slice(0,4)).filter(Boolean))].sort().reverse();
-    const opt = document.createElement('option'); opt.value=''; opt.textContent='All time'; yrSel.appendChild(opt);
-    years.forEach(y => { const o = document.createElement('option'); o.value=y; o.textContent=y; yrSel.appendChild(o); });
-    yrSel.value = String(new Date().getFullYear());
-  }
-  renderCOAAudit();
-}
-
-function renderCOAAudit() {
-  const coa = getCOA();
-  const yr  = (document.getElementById('coa-audit-year')||{}).value || '';
-  const inYr = d => !yr || (d||'').startsWith(yr);
-  const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled' && inYr(i.inv_date||i.date||''));
-  const vouchers = (VOUCHERS||[]).filter(v => inYr(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
-
-  // Build map: jt → {coa account name | 'unmapped'}
-  const jtToAcct = {}, catToAcct = {};
-  coa.forEach(a => {
-    if (!a.mapsFrom) return;
-    const sec = COA_SECTIONS[a.section] || {};
-    a.mapsFrom.forEach(t => {
-      const k = (t||'').toLowerCase();
-      if (sec.side === 'income')  jtToAcct[k]  = `${a.code} ${a.name}`;
-      else if (sec.side === 'expense') catToAcct[k] = `${a.code} ${a.name}`;
-    });
-  });
-
-  // Aggregate live by job_type
-  const jtAgg = {};
-  invoices.forEach(i => {
-    const k = (getInvJobType(i)||'(blank)').toString();
-    if (!jtAgg[k]) jtAgg[k] = {count:0, sum:0};
-    jtAgg[k].count++;
-    jtAgg[k].sum += parseFloat(i.amount||0);
-  });
-  // Aggregate live by category
-  const catAgg = {};
-  vouchers.forEach(v => {
-    const k = (v.category||'(blank)').toString();
-    if (!catAgg[k]) catAgg[k] = {count:0, sum:0};
-    catAgg[k].count++;
-    catAgg[k].sum += parseFloat(v.amount||0);
-  });
-
-  const fmt = n => parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
-  const rowHtml = (k, v, mapped) => {
-    const amber = mapped ? '' : 'background:var(--amber-bg)';
-    const m     = mapped || '<span style="color:var(--amber);font-weight:600">UNMAPPED</span>';
-    return `<tr style="${amber}"><td style="font-family:'DM Mono',monospace">${k}</td><td>${v.count}</td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(v.sum)}</td><td style="font-size:12px">${m}</td></tr>`;
-  };
-
-  const jtRows = Object.entries(jtAgg).sort((a,b) => b[1].sum - a[1].sum)
-    .map(([k,v]) => rowHtml(k, v, jtToAcct[k.toLowerCase()])).join('') ||
-    '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:20px">No invoices in this year</td></tr>';
-  const catRows = Object.entries(catAgg).sort((a,b) => b[1].sum - a[1].sum)
-    .map(([k,v]) => rowHtml(k, v, catToAcct[k.toLowerCase()])).join('') ||
-    '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:20px">No vouchers in this year</td></tr>';
-  document.getElementById('coa-audit-jt-tbody').innerHTML  = jtRows;
-  document.getElementById('coa-audit-cat-tbody').innerHTML = catRows;
-  renderReconciliation(yr);
-}
-
-function renderReconciliation(yr) {
-  const tbody = document.getElementById('coa-recon-tbody');
-  if (!tbody) return;
-  const inYr = d => !yr || (d||'').startsWith(yr);
-  const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled' && inYr(i.inv_date||i.date||''));
-  const vouchers = (VOUCHERS||[]).filter(v => inYr(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
-
-  const coa = getCOA();
-  const fmt = n => parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
-  const sign = n => n < 0 ? '(' + fmt(Math.abs(n)) + ')' : fmt(n);
-
-  const plAccts = coa.filter(a => COA_PL_ORDER.includes(a.section));
-  let html = '';
-  let totalSnap = 0, totalLive = 0;
-
-  // Group by section for visual clarity
-  const order = COA_PL_ORDER;
-  order.forEach(section => {
-    const accts = plAccts.filter(a => a.section === section);
-    if (!accts.length) return;
-    const sec = COA_SECTIONS[section] || { label: section };
-    html += `<tr style="background:var(--surface2)"><td colspan="7" style="font-weight:600;color:var(--text2);font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:8px 12px">${sec.label}</td></tr>`;
-    accts.sort((a,b) => (a.code||'').localeCompare(b.code||'')).forEach(a => {
-      const hasSnap = a.value !== undefined && a.value !== null && a.value !== '';
-      const snap    = hasSnap ? parseFloat(a.value) : 0;
-      // Live: aggregate from invoices/vouchers per mapsFrom
-      let live = 0;
-      const contributors = [];
-      if (a.mapsFrom && a.mapsFrom.length) {
-        const set = new Set(a.mapsFrom.map(s => (s||'').toLowerCase()));
-        if (sec.side === 'income') {
-          if (set.has('disbursements_field')) {
-            invoices.filter(i => parseFloat(i.disb_amount||0) > 0.005).forEach(i => {
-              const amt = parseFloat(i.disb_amount||0);
-              live += amt;
-              contributors.push({ ref: i.inv_no, desc: (i.client_name||'') + ' — disbursement', amt, type: 'INV' });
-            });
-          }
-          invoices.filter(i => set.has(getInvJobType(i).toLowerCase())).forEach(i => {
-            const amt = parseFloat(i.amount||0);
-            live += amt;
-            contributors.push({ ref: i.inv_no, desc: (i.client_name||'') + (getInvJobType(i) ? ' — ' + getInvJobType(i) : ''), amt, type: 'INV' });
-          });
-        } else if (sec.side === 'expense') {
-          vouchers.filter(v => set.has((v.category||'').toLowerCase())).forEach(v => {
-            const amt = parseFloat(v.amount||0);
-            live += amt;
-            contributors.push({ ref: v.voucher_id, desc: (v.payee||'') + (v.description ? ' — ' + v.description : ''), amt, type: 'PV' });
-          });
-        }
-      }
-      live = r2(live);
-      const variance = r2(live - snap);
-      totalSnap += snap; totalLive += live;
-      const status = !hasSnap
-        ? '<span style="color:var(--text3);font-size:11px">no snapshot</span>'
-        : (Math.abs(variance) < 0.01
-          ? '<span style="color:var(--green);font-weight:600;font-size:11px">✓ tally</span>'
-          : '<span style="color:var(--amber);font-weight:600;font-size:11px">⚠ variance</span>');
-      const varColor = Math.abs(variance) < 0.01 ? 'var(--text3)' : (variance > 0 ? 'var(--amber)' : 'var(--red)');
-      const rowId = 'recon-row-' + (a.code || Math.random().toString(36).slice(2));
-      html += `<tr>
-        <td style="font-family:'DM Mono',monospace;font-weight:600">${a.code||''}</td>
-        <td>${a.name||''}</td>
-        <td style="text-align:right;font-family:'DM Mono',monospace">${hasSnap ? fmt(snap) : '—'}</td>
-        <td style="text-align:right;font-family:'DM Mono',monospace">${fmt(live)}</td>
-        <td style="text-align:right;font-family:'DM Mono',monospace;color:${varColor};font-weight:600">${Math.abs(variance) < 0.01 ? '—' : sign(variance)}</td>
-        <td>${status}</td>
-        <td>${contributors.length ? '<button class="btn btn-ghost btn-sm" onclick="toggleReconRow(\''+rowId+'\')">+</button>' : ''}</td>
-      </tr>`;
-      if (contributors.length) {
-        const sortedContributors = contributors.slice().sort((x,y) => y.amt - x.amt);
-        html += `<tr id="${rowId}" style="display:none;background:var(--surface2)">
-          <td colspan="7" style="padding:0">
-            <table style="width:100%;margin:0">
-              <thead><tr><th style="width:90px">Ref</th><th>Description</th><th style="width:60px">Type</th><th style="text-align:right;width:120px">Amount (RM)</th></tr></thead>
-              <tbody>${sortedContributors.map(c =>
-                `<tr><td style="font-family:'DM Mono',monospace;font-size:12px">${c.ref||'—'}</td><td style="font-size:12px">${c.desc||''}</td><td><span class="badge" style="font-size:10px">${c.type}</span></td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(c.amt)}</td></tr>`
-              ).join('')}
-              <tr style="font-weight:600;background:var(--surface)"><td colspan="3" style="text-align:right">Subtotal</td><td style="text-align:right;font-family:'DM Mono',monospace">${fmt(live)}</td></tr>
-              </tbody>
-            </table>
-          </td>
-        </tr>`;
-      }
-    });
-  });
-
-  totalSnap = r2(totalSnap); totalLive = r2(totalLive);
-  const totalVar = r2(totalLive - totalSnap);
-  const totalStatusColor = Math.abs(totalVar) < 0.01 ? 'var(--green)' : 'var(--amber)';
-  html += `<tr style="background:var(--accent);color:#fff;font-weight:700">
-    <td colspan="2" style="padding:10px 12px">TOTAL</td>
-    <td style="text-align:right;font-family:'DM Mono',monospace">RM ${fmt(totalSnap)}</td>
-    <td style="text-align:right;font-family:'DM Mono',monospace">RM ${fmt(totalLive)}</td>
-    <td style="text-align:right;font-family:'DM Mono',monospace">${Math.abs(totalVar) < 0.01 ? 'Nil' : sign(totalVar)}</td>
-    <td colspan="2" style="font-size:11px">${Math.abs(totalVar) < 0.01 ? '✓ tallies' : 'investigate'}</td>
-  </tr>`;
-  tbody.innerHTML = html || '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text3)">No P/L accounts to reconcile.</td></tr>';
-}
-
-function toggleReconRow(id) {
-  const r = document.getElementById(id);
-  if (!r) return;
-  r.style.display = r.style.display === 'none' ? '' : 'none';
-}
-
-// Known multi-category invoices from S 25.4.2026.xlsx GL 2026 — each was billed under
-// one job_type but Excel splits the amount across two categories.
-// "from" = the category currently tagged on the invoice (whole amount lands there).
-// "to"   = the OTHER category that should receive `amount`.
-const KNOWN_COMBO_RECLASSES = [
-  { inv_no:'INV260105', from_jt:'fs',    to_jt:'mbrs',  amount:250, note:'INV260105: split MBRS 250 + FS 750' },
-  { inv_no:'INV260305', from_jt:'cosec', to_jt:'mbrs',  amount:300, note:'INV260305: split MBRS 300 + Cosec 370' },
-  { inv_no:'INV260306', from_jt:'mbrs',  to_jt:'cosec', amount:270, note:'INV260306: split MBRS 275 + Cosec 270' },
-  { inv_no:'INV260407', from_jt:'fs',    to_jt:'mbrs',  amount:250, note:'INV260407: split MBRS 250 + FS 750' },
-];
-
-async function smartReclassCombos() {
-  const coa = getCOA();
-  const findAcct = (jt) => coa.find(a => {
-    const sec = COA_SECTIONS[a.section]||{};
-    if (sec.statement !== 'PL' || sec.side !== 'income') return false;
-    return (a.mapsFrom||[]).map(s => (s||'').toLowerCase()).includes(jt.toLowerCase());
-  });
-
-  const proposals = [];
-  for (const r of KNOWN_COMBO_RECLASSES) {
-    const fromAcct = findAcct(r.from_jt);
-    const toAcct   = findAcct(r.to_jt);
-    if (!fromAcct || !toAcct) {
-      console.warn(`Skipping ${r.inv_no}: COA account not found for ${r.from_jt} or ${r.to_jt}`);
-      continue;
-    }
-    proposals.push({ ...r, fromAcct, toAcct });
-  }
-
-  if (!proposals.length) { toast('No matchable combo invoices in your COA.','error'); return; }
-
-  const summary = proposals.map(p =>
-    `  ${p.inv_no}: ${p.amount.toFixed(2)} from ${p.fromAcct.code} ${p.fromAcct.name} → ${p.toAcct.code} ${p.toAcct.name}`
-  ).join('\n');
-  if (!confirm(`Smart reclass ${proposals.length} combo invoice(s)?\n\n${summary}\n\nEach posts a JV that moves the amount between revenue accounts. Total revenue UNCHANGED. Run only ONCE per period.`)) return;
-
-  let ok = 0, fail = 0;
-  const today = _localToday();
-  for (const p of proposals) {
-    // Both accounts are income (CR-natural):
-    //   Decrease FROM: Dr fromAcct
-    //   Increase TO:   Cr toAcct
-    const data = {
-      date: today,
-      ref: 'JV-COMBO-' + p.inv_no,
-      description: 'Reclass — ' + p.note,
-      dr_code: p.fromAcct.code,
-      dr_account: p.fromAcct.name,
-      cr_code: p.toAcct.code,
-      cr_account: p.toAcct.name,
-      amount: p.amount,
-      source_type: 'journal',
-    };
-    const res = await api({ action: 'save_gl', data });
-    if (res && res.ok) { ok++; console.log(`✓ ${p.inv_no}: ${p.fromAcct.code} → ${p.toAcct.code}`); }
-    else { fail++; console.error(`✗ ${p.inv_no}:`, res); }
-    await new Promise(r => setTimeout(r, 200));
-  }
-  if (fail === 0) toast(`Posted ${ok} combo reclass JVs. Refresh GL to see them.`,'success');
-  else toast(`Posted ${ok}, failed ${fail}. Check console.`,'error');
-  renderCOAAudit();
-}
-
-async function autoReclassVariances() {
-  const yr = document.getElementById('coa-audit-year')?.value || String(new Date().getFullYear());
-  const inYr = d => !yr || (d||'').startsWith(yr);
-  const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled' && inYr(i.inv_date||i.date||''));
-  const vouchers = (VOUCHERS||[]).filter(v => inYr(v.date||'') && !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
-
-  const coa = getCOA();
-  const plAccts = coa.filter(a => COA_PL_ORDER.includes(a.section));
-  const reclasses = [];
-  plAccts.forEach(a => {
-    const hasSnap = a.value !== undefined && a.value !== null && a.value !== '';
-    if (!hasSnap) return;
-    const snap = parseFloat(a.value);
-    let live = 0;
-    if (a.mapsFrom && a.mapsFrom.length) {
-      const set = new Set(a.mapsFrom.map(s => (s||'').toLowerCase()));
-      const sec = COA_SECTIONS[a.section] || {};
-      if (sec.side === 'income') {
-        if (set.has('disbursements_field')) live += invoices.reduce((s,i) => s + parseFloat(i.disb_amount||0), 0);
-        live += invoices.filter(i => set.has(getInvJobType(i).toLowerCase())).reduce((s,i) => s + parseFloat(i.amount||0), 0);
-      } else if (sec.side === 'expense') {
-        live += vouchers.filter(v => set.has((v.category||'').toLowerCase())).reduce((s,v) => s + parseFloat(v.amount||0), 0);
-      }
-    }
-    live = r2(live);
-    const variance = r2(live - snap);
-    if (Math.abs(variance) > 0.01) {
-      reclasses.push({ acct: a, snap, live, variance });
-    }
-  });
-
-  if (!reclasses.length) {
-    toast('No variances to reclass — every account already tallies to its snapshot.','success');
-    return;
-  }
-
-  const lines = reclasses.map(r =>
-    `  ${r.acct.code} ${r.acct.name}: ${r.variance > 0 ? '+' : ''}${r.variance.toFixed(2)} (live ${r.live.toFixed(2)} vs snap ${r.snap.toFixed(2)})`
-  ).join('\n');
-  if (!confirm(`Auto-reclass ${reclasses.length} variance(s) via Journal Vouchers?\n\n${lines}\n\nEach variance posts a JV with the balancing leg to a "9999 Reconciliation Adjustment" account. After posting, refresh the GL — JVs will appear there. Run only ONCE per period (re-running posts duplicate JVs).`)) return;
-
-  let ok = 0, fail = 0;
-  const today = _localToday();
-  for (const r of reclasses) {
-    const sec = COA_SECTIONS[r.acct.section] || {};
-    const isIncome = sec.side === 'income';
-    // For income (CR-natural), an "over" (variance > 0) means live credit is too large → debit account, credit adjustment
-    // For income, "under" → credit account, debit adjustment
-    // For expense (DR-natural), "over" → credit account, debit adjustment ; "under" → debit account, credit adjustment
-    const amt = Math.abs(r.variance);
-    let drCode, drName, crCode, crName;
-    if (isIncome) {
-      if (r.variance > 0) {
-        drCode = r.acct.code; drName = r.acct.name;
-        crCode = '9999';      crName = 'Reconciliation Adjustment';
-      } else {
-        drCode = '9999';      drName = 'Reconciliation Adjustment';
-        crCode = r.acct.code; crName = r.acct.name;
-      }
-    } else {
-      if (r.variance > 0) {
-        drCode = '9999';      drName = 'Reconciliation Adjustment';
-        crCode = r.acct.code; crName = r.acct.name;
-      } else {
-        drCode = r.acct.code; drName = r.acct.name;
-        crCode = '9999';      crName = 'Reconciliation Adjustment';
-      }
-    }
-    const data = {
-      date: today,
-      ref: 'JV-RECON-' + r.acct.code,
-      description: `Reconciliation reclass — ${r.acct.code} ${r.acct.name} (live ${r.live.toFixed(2)} → snap ${r.snap.toFixed(2)})`,
-      dr_code: drCode,
-      dr_account: drName,
-      cr_code: crCode,
-      cr_account: crName,
-      amount: amt,
-      source_type: 'journal',
-    };
-    const res = await api({ action: 'save_gl', data });
-    if (res && res.ok) ok++;
-    else { fail++; console.error('Reclass JV failed for ' + r.acct.code + ':', res); }
-    await new Promise(r => setTimeout(r, 200));
-  }
-  if (fail === 0) toast(`Posted ${ok} reconciliation JVs. Refresh the GL to see them.`, 'success');
-  else toast(`Posted ${ok}, failed ${fail}. Check console for details.`, 'error');
-  renderCOAAudit();
-}
-
-let _coaEditOrigCode = null;
-function openAccountEdit(code) {
-  const coa = getCOA();
-  const acct = code ? coa.find(a => a.code === code) : null;
-  _coaEditOrigCode = code;
-  document.getElementById('coa-edit-title').textContent = acct ? `Edit Account ${code}` : 'New Account';
-  document.getElementById('coa-edit-orig-code').value = code || '';
-  document.getElementById('coa-edit-code').value      = acct ? (acct.code||'')    : '';
-  document.getElementById('coa-edit-section').value   = acct ? (acct.section||'admin_expense') : 'admin_expense';
-  document.getElementById('coa-edit-name').value      = acct ? (acct.name||'')    : '';
-  document.getElementById('coa-edit-mapsFrom').value  = acct && acct.mapsFrom ? acct.mapsFrom.join(', ') : '';
-  document.getElementById('coa-edit-value').value     = acct && acct.value != null ? acct.value : '';
-  document.getElementById('coa-edit-delete-btn').style.display = acct ? '' : 'none';
-  openModal('modal-coa-edit');
-}
-
-function saveAccountEdit() {
-  const code     = document.getElementById('coa-edit-code').value.trim();
-  const name     = document.getElementById('coa-edit-name').value.trim();
-  const section  = document.getElementById('coa-edit-section').value;
-  const mapsRaw  = document.getElementById('coa-edit-mapsFrom').value.trim();
-  const valueRaw = document.getElementById('coa-edit-value').value.trim();
-  if (!code || !name) { toast('Code and Name are required','error'); return; }
-  const mapsFrom = mapsRaw ? mapsRaw.split(',').map(s => s.trim()).filter(Boolean) : null;
-  const value    = valueRaw === '' ? 0 : parseFloat(valueRaw);
-
-  const coa = getCOA();
-  if (_coaEditOrigCode && _coaEditOrigCode !== code && coa.some(a => a.code === code)) {
-    toast(`Account code "${code}" already exists`,'error'); return;
-  }
-  if (!_coaEditOrigCode && coa.some(a => a.code === code)) {
-    toast(`Account code "${code}" already exists`,'error'); return;
-  }
-  const newAcct = { code, name, section };
-  if (mapsFrom && mapsFrom.length) newAcct.mapsFrom = mapsFrom;
-  else newAcct.value = isNaN(value) ? 0 : value;
-
-  if (_coaEditOrigCode) {
-    const idx = coa.findIndex(a => a.code === _coaEditOrigCode);
-    if (idx >= 0) {
-      const oldSource = coa[idx].source;
-      // Replace cleanly: drop fields not in newAcct
-      coa[idx] = { ...newAcct };
-      // Preserve `source` ONLY if user kept mapsFrom (live mode); drop it for hardcoded mode
-      if (oldSource && newAcct.mapsFrom && newAcct.mapsFrom.length) coa[idx].source = oldSource;
-    }
-  } else {
-    coa.push(newAcct);
-  }
-  saveCOA(coa);
-  closeModal('modal-coa-edit');
-  toast('Account saved','success');
-  loadCOA();
-}
-
-function deleteCurrentAccount() {
-  if (!_coaEditOrigCode) return;
-  if (!confirm(`Delete account "${_coaEditOrigCode}"? This cannot be undone (but you can Reset to Default later).`)) return;
-  const coa = getCOA().filter(a => a.code !== _coaEditOrigCode);
-  saveCOA(coa);
-  closeModal('modal-coa-edit');
-  toast('Account deleted','success');
-  loadCOA();
-}
-
-function resetCOAConfirm() {
-  if (!confirm('Reset Chart of Accounts to default? Your custom edits will be lost.')) return;
-  resetCOA();
-  toast('Chart of Accounts reset to default','success');
-  loadCOA();
-}
-
-function exportCOA() {
-  const coa = getCOA();
-  const blob = new Blob([JSON.stringify(coa, null, 2)], {type:'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `coa-${new Date().toISOString().slice(0,10)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-// Snapshot values extracted from S 25.4.2026.xlsx (FY 31.12.26).
-// When the Excel changes, update this object and re-deploy.
-const COA_EXCEL_SNAPSHOT = {
-  // Non-current assets (NBV)
-  '1700': 9000.00,    // Motor vehicle
-  '1500': 5400.00,    // Phone
-  '1600': 1800.00,    // Software
-};
-
-// ─── Recovered file end ─────────────────────────────────────────
-// File was truncated during editing; this stub safely closes the script.
-// COA snapshot values may need to be re-entered manually if reconciliation page misbehaves.
 
 </script>
 </body>
