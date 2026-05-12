@@ -2480,7 +2480,7 @@ async function openInvoiceModal(id) {
     let _parsedLines = null;
     try { const _p = JSON.parse(inv.desc1||''); if (Array.isArray(_p)) _parsedLines = _p; } catch(e){}
     if (_parsedLines && _parsedLines.length) {
-      _parsedLines.forEach(l => addInvLine(l.desc, l.amt, l.isDisb, l.alloc, l.customSplit));
+      _parsedLines.forEach(l => addInvLine(l.desc, l.amt, l.isDisb, l.alloc, l.customSplit, {prepOvr:l.prepOvr,revOvr:l.revOvr,abotOvr:l.abotOvr,retainOvr:l.retainOvr}));
     } else {
       // Legacy format
       const _legacyDesc = (inv.desc1||'') + (inv.desc2 ? '\n' + inv.desc2 : '');
@@ -2781,8 +2781,15 @@ async function saveInvoice() {
   const _customRetainAbot = parseFloat((document.getElementById('inv-custom-retain-abot')||{}).value || 0);
   _prepFinal += _customPrep;
   _revFinal  += _customRev;
-  const _adminRetainFinal = adminRetain + _retainExtra2;
-  const _abotCostFinal = abotCost + _customRetainAbot;
+  // Apply per-line override aggregates
+  const _ovrPrep = parseFloat((document.getElementById('inv-ovr-prep') || {}).value || 0);
+  const _ovrRev = parseFloat((document.getElementById('inv-ovr-rev') || {}).value || 0);
+  const _ovrRetain = parseFloat((document.getElementById('inv-ovr-retain') || {}).value || 0);
+  const _ovrAbot = parseFloat((document.getElementById('inv-ovr-abot') || {}).value || 0);
+  _prepFinal += _ovrPrep;
+  _revFinal  += _ovrRev;
+  const _adminRetainFinal = adminRetain + _retainExtra2 + _ovrRetain;
+  const _abotCostFinal = abotCost + _customRetainAbot + _ovrAbot;
   // Total invoice gross now includes ALL line items
   const _grossFinal = gross + disb + _retainExtra2 + Object.values(_reimburse2).reduce((s,n)=>s+n,0);
 
@@ -2875,6 +2882,33 @@ function addInvLine(desc, amt, isDisb, alloc) {
       <label style="font-size:11px;color:var(--text2);display:flex;align-items:center;gap:4px;cursor:pointer">
         <input type="checkbox" class="inv-line-isDisb" onchange="recalcInvLines()" /> Disb
       </label>
+      <button type="button" onclick="toggleLineAdv(this)" style="font-size:10px;color:var(--text3);background:none;border:none;cursor:pointer;text-decoration:underline;padding:0">⚙ override</button>
+      <div class="inv-line-adv" style="display:none;border-top:1px dashed var(--border);padding-top:6px;margin-top:4px;width:140px">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Per-line overrides:</div>
+        <select class="inv-line-prep-ovr" onchange="recalcInvLines()" style="font-size:10px;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:3px;background:var(--surface);margin-bottom:3px">
+          <option value="">Preparer: (invoice)</option>
+          <option value="ET">Preparer: ET</option>
+          <option value="Koay">Preparer: Koay</option>
+          <option value="Koay PH">Preparer: Koay PH</option>
+          <option value="Ivy">Preparer: Ivy</option>
+          <option value="Cecilia">Preparer: Cecilia</option>
+        </select>
+        <select class="inv-line-rev-ovr" onchange="recalcInvLines()" style="font-size:10px;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:3px;background:var(--surface);margin-bottom:3px">
+          <option value="">Reviewer: (invoice)</option>
+          <option value="KC">Reviewer: KC</option>
+          <option value="Koay">Reviewer: Koay</option>
+          <option value="ET">Reviewer: ET</option>
+          <option value="Ivy">Reviewer: Ivy</option>
+        </select>
+        <select class="inv-line-abot-ovr" onchange="recalcInvLines()" style="font-size:10px;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:3px;background:var(--surface);margin-bottom:3px">
+          <option value="">Abot: (invoice)</option>
+          <option value="0">Abot: 0</option>
+          <option value="30">Abot: 30</option>
+          <option value="50">Abot: 50</option>
+          <option value="100">Abot: 100</option>
+        </select>
+        <input type="number" class="inv-line-retain-ovr" placeholder="Retain %: (inv)" step="1" min="0" max="100" oninput="recalcInvLines()" style="font-size:10px;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:3px;background:var(--surface)" title="Retain % override (e.g. 15 for 15%)" />
+      </div>
     </div>
     <button type="button" onclick="this.closest('.inv-line-row').remove();recalcInvLines();" style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;padding:2px 4px;line-height:1" title="Remove line">✕</button>`;
   if (desc !== undefined && desc !== null && desc !== '') row.querySelector('.inv-line-desc').value = desc;
@@ -2886,6 +2920,19 @@ function addInvLine(desc, amt, isDisb, alloc) {
   }
   if (arguments.length > 4 && arguments[4]) {
     row.dataset.customSplit = JSON.stringify(arguments[4]);
+  }
+  // Restore per-line overrides if passed (5th arg is customSplit, 6th is overrides obj)
+  const ovr = arguments.length > 5 ? arguments[5] : null;
+  if (ovr) {
+    const setVal = (cls, val) => { const el = row.querySelector('.' + cls); if (el && val) el.value = val; };
+    setVal('inv-line-prep-ovr',   ovr.prepOvr);
+    setVal('inv-line-rev-ovr',    ovr.revOvr);
+    setVal('inv-line-abot-ovr',   ovr.abotOvr);
+    setVal('inv-line-retain-ovr', ovr.retainOvr);
+    if (ovr.prepOvr || ovr.revOvr || ovr.abotOvr || ovr.retainOvr) {
+      const adv = row.querySelector('.inv-line-adv');
+      if (adv) adv.style.display = '';
+    }
   }
   container.appendChild(row);
   recalcInvLines();
@@ -2906,7 +2953,17 @@ function getInvLines() {
     isDisb: row.querySelector('.inv-line-isDisb').checked,
     alloc:  (row.querySelector('.inv-line-alloc') || { value: 'standard' }).value,
     customSplit: row.dataset.customSplit ? JSON.parse(row.dataset.customSplit) : null,
+    prepOvr:   (row.querySelector('.inv-line-prep-ovr')   || { value: '' }).value,
+    revOvr:    (row.querySelector('.inv-line-rev-ovr')    || { value: '' }).value,
+    abotOvr:   (row.querySelector('.inv-line-abot-ovr')   || { value: '' }).value,
+    retainOvr: (row.querySelector('.inv-line-retain-ovr') || { value: '' }).value,
   }));
+}
+
+function toggleLineAdv(btn) {
+  const adv = btn.parentElement.querySelector('.inv-line-adv');
+  if (!adv) return;
+  adv.style.display = adv.style.display === 'none' ? '' : 'none';
 }
 
 function recalcInvLines() {
@@ -2966,6 +3023,60 @@ function recalcInvLines() {
     }
     el.value = amt.toFixed(2);
   });
+
+  // ─── Per-line overrides: when a Standard line has prep/rev/abot/retain overrides,
+  // compute its share separately and roll it into the per-person buckets ───
+  const invPrep = (document.getElementById('inv-preparer') || {}).value || '';
+  const invRev  = (document.getElementById('inv-reviewer') || {}).value || '';
+  const invAbotLarge = (document.getElementById('inv-large-abot') || {}).value === 'true';
+  const invAbotStd = parseFloat(getSetting('abot_standard', 50));
+  const invAbotLg  = parseFloat(getSetting('abot_large', 100));
+  const invAbot = invAbotLarge ? invAbotLg : invAbotStd;
+  const _ovrShares = { ET:0, Koay:0, Ivy:0, KC:0, Cecilia:0, retain:0, abot:0, preparer:0, reviewer:0 };
+  let _hasOvr = false;
+  lines.forEach(l => {
+    if (l.alloc !== 'standard' || l.isDisb) return;
+    const hasOvr = l.prepOvr || l.revOvr || l.abotOvr || l.retainOvr;
+    if (!hasOvr) return;
+    _hasOvr = true;
+    const linePrep = l.prepOvr || invPrep;
+    const lineRev  = l.revOvr  || invRev;
+    const lineAbot = l.abotOvr !== '' ? parseFloat(l.abotOvr || 0) : invAbot;
+    const lineRetainPct = l.retainOvr !== '' ? parseFloat(l.retainOvr || 0) / 100 : 0.15;
+    const K = Math.max(0, l.amt - lineAbot);
+    const L = K * lineRetainPct;
+    const O = K * 0.10;
+    const P = K - L - O;
+    const prep = P * 0.7;
+    const rev = P * 0.3;
+    // Subtract this line's amount from the standard fee total so it isn't double-counted
+    // (We'll do this by reducing inv-amount.) — actually easier: track separately and compensate below
+    _ovrShares.preparer += prep;
+    _ovrShares.reviewer += rev;
+    _ovrShares.retain += L;
+    _ovrShares.abot += lineAbot;
+    // also add line's effective KC commission via existing kc_commission path — handled in save
+  });
+  // Store overridden-line aggregate shares in hidden fields
+  ['ovr-prep','ovr-rev','ovr-retain','ovr-abot','ovr-line-amount'].forEach(id => {
+    let el = document.getElementById('inv-' + id);
+    if (!el) {
+      el = document.createElement('input'); el.type = 'hidden'; el.id = 'inv-' + id;
+      document.body.appendChild(el);
+    }
+  });
+  document.getElementById('inv-ovr-prep').value = _ovrShares.preparer.toFixed(2);
+  document.getElementById('inv-ovr-rev').value  = _ovrShares.reviewer.toFixed(2);
+  document.getElementById('inv-ovr-retain').value = _ovrShares.retain.toFixed(2);
+  document.getElementById('inv-ovr-abot').value = _ovrShares.abot.toFixed(2);
+  // Subtract overridden-line amounts from the standard fee total used in formula
+  const ovrLineAmount = lines.filter(l => l.alloc==='standard' && !l.isDisb && (l.prepOvr||l.revOvr||l.abotOvr||l.retainOvr)).reduce((s,l)=>s+l.amt,0);
+  document.getElementById('inv-ovr-line-amount').value = ovrLineAmount.toFixed(2);
+  if (_hasOvr) {
+    // Reduce the inv-amount sent to the standard formula so override lines aren't counted twice
+    const adjustedFee = stdFee - ovrLineAmount;
+    document.getElementById('inv-amount').value = Math.max(0, adjustedFee).toFixed(2);
+  }
   recalcAllocation();
 }
 
