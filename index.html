@@ -2775,7 +2775,14 @@ async function saveInvoice() {
     // Other reimbursements (Ivy/ET/Cecilia not in main roles) — goes nowhere visible.
     // User would need to manually edit allocation OR change preparer/reviewer.
   });
+  // Add custom-split contributions to preparer/reviewer/retain-abot
+  const _customPrep = parseFloat((document.getElementById('inv-custom-preparer')||{}).value || 0);
+  const _customRev = parseFloat((document.getElementById('inv-custom-reviewer')||{}).value || 0);
+  const _customRetainAbot = parseFloat((document.getElementById('inv-custom-retain-abot')||{}).value || 0);
+  _prepFinal += _customPrep;
+  _revFinal  += _customRev;
   const _adminRetainFinal = adminRetain + _retainExtra2;
+  const _abotCostFinal = abotCost + _customRetainAbot;
   // Total invoice gross now includes ALL line items
   const _grossFinal = gross + disb + _retainExtra2 + Object.values(_reimburse2).reduce((s,n)=>s+n,0);
 
@@ -2789,7 +2796,7 @@ async function saveInvoice() {
     job_type: jobType,
     gross_fee: gross,  // standard fee portion only (used by formula)
     disbursements: disb,
-    abot_cost: abotCost,
+    abot_cost: _abotCostFinal,
     cecilia_fee: ceciliaFee,
     ssm_fee: ssmFee,
     admin_retain: _adminRetainFinal,
@@ -2909,12 +2916,19 @@ function recalcInvLines() {
   const stdDisb  = lines.filter(l => l.alloc === 'standard' &&  l.isDisb).reduce((s,l) => s + l.amt, 0);
   const retainExtra = lines.filter(l => l.alloc === 'retain').reduce((s,l) => s + l.amt, 0);
   const reimburse = { ET:0, Koay:0, Ivy:0, KC:0, Cecilia:0 };
+  let customRetain = 0, customRetainAbot = 0, customPreparer = 0, customReviewer = 0, customDisb = 0;
   lines.forEach(l => {
     if (l.alloc && reimburse.hasOwnProperty(l.alloc)) reimburse[l.alloc] += l.amt;
-    // Custom split: parse from row data
+    // Custom split: parse from row data — supports preparer, reviewer, retain, retainAbot, person reimburse, disb
     if (l.alloc === 'custom' && l.customSplit) {
-      Object.entries(l.customSplit).forEach(([p, amt]) => {
-        if (reimburse.hasOwnProperty(p)) reimburse[p] += parseFloat(amt) || 0;
+      Object.entries(l.customSplit).forEach(([k, amt]) => {
+        const v = parseFloat(amt) || 0;
+        if (reimburse.hasOwnProperty(k)) reimburse[k] += v;
+        else if (k === 'retain') customRetain += v;
+        else if (k === 'retainAbot') customRetainAbot += v;
+        else if (k === 'preparer') customPreparer += v;
+        else if (k === 'reviewer') customReviewer += v;
+        else if (k === 'disb') customDisb += v;
       });
     }
   });
@@ -2926,12 +2940,24 @@ function recalcInvLines() {
   document.getElementById('inv-amount').value = stdFee.toFixed(2);
   document.getElementById('inv-disb').value   = stdDisb.toFixed(2);
   // Hidden fields for new allocations — read by recalcAllocation
+  // Combine retain from "retain" alloc lines + custom retain bucket
+  const retainTotal = retainExtra + customRetain;
   let h = document.getElementById('inv-retain-extra');
   if (!h) {
     h = document.createElement('input'); h.type = 'hidden'; h.id = 'inv-retain-extra';
     document.body.appendChild(h);
   }
-  h.value = retainExtra.toFixed(2);
+  h.value = retainTotal.toFixed(2);
+  // Custom-split additions to preparer / reviewer / retain abot / disb
+  ['custom-preparer','custom-reviewer','custom-retain-abot','custom-disb'].forEach((id, i) => {
+    let el = document.getElementById('inv-' + id);
+    if (!el) {
+      el = document.createElement('input'); el.type = 'hidden'; el.id = 'inv-' + id;
+      document.body.appendChild(el);
+    }
+    const vals = [customPreparer, customReviewer, customRetainAbot, customDisb];
+    el.value = vals[i].toFixed(2);
+  });
   Object.entries(reimburse).forEach(([p, amt]) => {
     let el = document.getElementById('inv-reimburse-' + p);
     if (!el) {
@@ -2945,33 +2971,107 @@ function recalcInvLines() {
 
 function onAllocChange(sel) {
   if (sel.value === 'custom') {
-    const row = sel.closest('.inv-line-row');
-    const cur = row.dataset.customSplit ? JSON.parse(row.dataset.customSplit) : {};
-    const lineAmt = parseFloat(row.querySelector('.inv-line-amt').value || 0);
-    const names = ['ET','Koay','Ivy','KC','Cecilia'];
-    const result = {};
-    let total = 0;
-    for (const n of names) {
-      const v = prompt(`Custom split — RM amount to ${n} (line total: ${lineAmt.toFixed(2)}, leave blank for 0):`, cur[n] !== undefined ? cur[n] : '');
-      if (v === null) {
-        // User cancelled — revert to standard
-        sel.value = 'standard';
-        delete row.dataset.customSplit;
-        recalcInvLines();
-        return;
-      }
-      const num = parseFloat(v);
-      if (!isNaN(num) && num > 0) { result[n] = num; total += num; }
-    }
-    if (Math.abs(total - lineAmt) > 0.5) {
-      const ok = confirm(`Custom split totals RM ${total.toFixed(2)} but line amount is RM ${lineAmt.toFixed(2)}.\nDifference: RM ${(lineAmt-total).toFixed(2)}\n\nKeep anyway? (Cancel to re-enter)`);
-      if (!ok) { onAllocChange(sel); return; }
-    }
-    row.dataset.customSplit = JSON.stringify(result);
+    openCustomSplitModal(sel);
   } else {
     const row = sel.closest('.inv-line-row');
     delete row.dataset.customSplit;
+    recalcInvLines();
   }
+}
+
+// Opens an inline modal for custom-split editing across all categories.
+function openCustomSplitModal(sel) {
+  const row = sel.closest('.inv-line-row');
+  const cur = row.dataset.customSplit ? JSON.parse(row.dataset.customSplit) : {};
+  const lineAmt = parseFloat(row.querySelector('.inv-line-amt').value || 0);
+  // Resolve preparer/reviewer names from the invoice's main dropdowns
+  const prepName = (document.getElementById('inv-preparer') || {}).value || '';
+  const revName  = (document.getElementById('inv-reviewer') || {}).value || '';
+  const buckets = [
+    { key: 'preparer',  label: `Preparer (${prepName})`,  hint: 'Goes to preparer share of formula' },
+    { key: 'reviewer',  label: `Reviewer (${revName})`,   hint: 'Goes to reviewer share' },
+    { key: 'retain',    label: 'Retain (Seraya)',         hint: 'Seraya admin earnings' },
+    { key: 'retainAbot',label: 'Retain Abot',             hint: 'Abot software cost retained' },
+    { key: 'ET',        label: 'Reimburse: ET',           hint: '' },
+    { key: 'Koay',      label: 'Reimburse: Koay',         hint: '' },
+    { key: 'Ivy',       label: 'Reimburse: Ivy',          hint: '' },
+    { key: 'KC',        label: 'Reimburse: KC',           hint: '' },
+    { key: 'Cecilia',   label: 'Reimburse: Cecilia',      hint: '' },
+    { key: 'disb',      label: 'Disbursement (no person)',hint: 'Pure pass-through' },
+  ];
+  const overlayId = '_custom_split_overlay';
+  document.getElementById(overlayId)?.remove();
+  const ov = document.createElement('div');
+  ov.id = overlayId;
+  ov.className = 'modal-overlay open';
+  ov.style.zIndex = '9999';
+  let rowsHtml = buckets.map(b => `
+    <tr>
+      <td style="padding:6px 10px;font-size:12px">${b.label}<div style="font-size:10px;color:var(--text3)">${b.hint}</div></td>
+      <td style="text-align:right;padding:6px 10px"><input type="number" step="0.01" data-key="${b.key}" value="${cur[b.key] || ''}" placeholder="0.00" style="width:110px;text-align:right;padding:4px 6px;font-size:12px;font-family:'DM Mono',monospace;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text1)" oninput="updateCustomSplitTotal()" /></td>
+    </tr>`).join('');
+  ov.innerHTML = `<div class="modal" style="max-width:480px">
+    <div class="modal-header"><div class="modal-title">Custom Split — Line RM ${lineAmt.toFixed(2)}</div><button class="modal-close" onclick="cancelCustomSplit()">✕</button></div>
+    <div class="modal-body">
+      <div style="margin-bottom:10px;font-size:11px;color:var(--text2)">Allocate the RM ${lineAmt.toFixed(2)} line amount to any combination of buckets below. Sum should match line total.</div>
+      <table style="width:100%;border-collapse:collapse">${rowsHtml}</table>
+      <div style="margin-top:14px;padding:10px 12px;background:var(--surface2);border-radius:6px;font-size:13px;display:flex;justify-content:space-between;align-items:center">
+        <strong>Total entered:</strong>
+        <span><span id="csm-running" style="font-family:'DM Mono',monospace;font-weight:600">0.00</span> / <span style="color:var(--text3)">${lineAmt.toFixed(2)}</span> · <span id="csm-diff" style="font-family:'DM Mono',monospace;color:var(--green)">balanced</span></span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="cancelCustomSplit()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveCustomSplit()">Save Split</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+  // Cache reference to the source select for save handler
+  ov._sourceSel = sel;
+  ov._lineAmt = lineAmt;
+  updateCustomSplitTotal();
+}
+
+function updateCustomSplitTotal() {
+  const ov = document.getElementById('_custom_split_overlay');
+  if (!ov) return;
+  const inputs = ov.querySelectorAll('input[data-key]');
+  let total = 0;
+  inputs.forEach(i => { total += parseFloat(i.value || 0); });
+  ov.querySelector('#csm-running').textContent = total.toFixed(2);
+  const diff = ov._lineAmt - total;
+  const diffEl = ov.querySelector('#csm-diff');
+  if (Math.abs(diff) < 0.01) { diffEl.textContent = 'balanced ✓'; diffEl.style.color = 'var(--green)'; }
+  else if (diff > 0) { diffEl.textContent = `+${diff.toFixed(2)} unallocated`; diffEl.style.color = 'var(--amber)'; }
+  else { diffEl.textContent = `${diff.toFixed(2)} over`; diffEl.style.color = 'var(--red)'; }
+}
+
+function cancelCustomSplit() {
+  const ov = document.getElementById('_custom_split_overlay');
+  if (!ov) return;
+  const sel = ov._sourceSel;
+  // Revert to previous selection if no existing split
+  const row = sel.closest('.inv-line-row');
+  if (!row.dataset.customSplit) sel.value = 'standard';
+  ov.remove();
+  recalcInvLines();
+}
+
+function saveCustomSplit() {
+  const ov = document.getElementById('_custom_split_overlay');
+  if (!ov) return;
+  const sel = ov._sourceSel;
+  const row = sel.closest('.inv-line-row');
+  const result = {};
+  let total = 0;
+  ov.querySelectorAll('input[data-key]').forEach(i => {
+    const v = parseFloat(i.value || 0);
+    if (v > 0) { result[i.dataset.key] = v; total += v; }
+  });
+  const diff = ov._lineAmt - total;
+  if (Math.abs(diff) > 0.5 && !confirm(`Split is off by RM ${diff.toFixed(2)}. Save anyway?`)) return;
+  row.dataset.customSplit = JSON.stringify(result);
+  ov.remove();
   recalcInvLines();
 }
 
