@@ -2781,13 +2781,28 @@ async function saveInvoice() {
   const _customRetainAbot = parseFloat((document.getElementById('inv-custom-retain-abot')||{}).value || 0);
   _prepFinal += _customPrep;
   _revFinal  += _customRev;
-  // Apply per-line override aggregates
-  const _ovrPrep = parseFloat((document.getElementById('inv-ovr-prep') || {}).value || 0);
-  const _ovrRev = parseFloat((document.getElementById('inv-ovr-rev') || {}).value || 0);
+  // Apply per-line override aggregates (per-person)
+  const _ovrPerPerson = {
+    ET:      parseFloat((document.getElementById('inv-ovr-person-ET')||{}).value || 0),
+    Koay:    parseFloat((document.getElementById('inv-ovr-person-Koay')||{}).value || 0),
+    Ivy:     parseFloat((document.getElementById('inv-ovr-person-Ivy')||{}).value || 0),
+    KC:      parseFloat((document.getElementById('inv-ovr-person-KC')||{}).value || 0),
+    Cecilia: parseFloat((document.getElementById('inv-ovr-person-Cecilia')||{}).value || 0),
+  };
   const _ovrRetain = parseFloat((document.getElementById('inv-ovr-retain') || {}).value || 0);
   const _ovrAbot = parseFloat((document.getElementById('inv-ovr-abot') || {}).value || 0);
-  _prepFinal += _ovrPrep;
-  _revFinal  += _ovrRev;
+  const _normP = p => p === 'Koay PH' ? 'Koay' : p;
+  // Route each person's override total to the right field:
+  //   matches invoice preparer → preparer_amt; matches reviewer → reviewer_amt
+  //   KC → kc_commission; Koay (when not primary) → koay_commission; others → kc_commission fallback
+  Object.entries(_ovrPerPerson).forEach(([person, amt]) => {
+    if (amt <= 0) return;
+    if (_normP(_prepName) === person)      _prepFinal += amt;
+    else if (_normP(_revName) === person)  _revFinal  += amt;
+    else if (person === 'KC')              _kcCommFinal += amt;
+    else if (person === 'Koay')            _koayCommFinal += amt;
+    else                                   _kcCommFinal += amt;  // ET/Ivy/Cecilia fallback
+  });
   const _adminRetainFinal = adminRetain + _retainExtra2 + _ovrRetain;
   const _abotCostFinal = abotCost + _customRetainAbot + _ovrAbot;
   // Total invoice gross now includes ALL line items
@@ -3024,52 +3039,58 @@ function recalcInvLines() {
     el.value = amt.toFixed(2);
   });
 
-  // ─── Per-line overrides: when a Standard line has prep/rev/abot/retain overrides,
-  // compute its share separately and roll it into the per-person buckets ───
+  // ─── Per-line overrides: aggregate earnings PER PERSON across all override lines
   const invPrep = (document.getElementById('inv-preparer') || {}).value || '';
   const invRev  = (document.getElementById('inv-reviewer') || {}).value || '';
   const invAbotLarge = (document.getElementById('inv-large-abot') || {}).value === 'true';
   const invAbotStd = parseFloat(getSetting('abot_standard', 50));
   const invAbotLg  = parseFloat(getSetting('abot_large', 100));
   const invAbot = invAbotLarge ? invAbotLg : invAbotStd;
-  const _ovrShares = { ET:0, Koay:0, Ivy:0, KC:0, Cecilia:0, retain:0, abot:0, preparer:0, reviewer:0 };
+  const norm = p => p === 'Koay PH' ? 'Koay' : p;
+  // Per-person earnings from override lines
+  const _ovrByPerson = { ET:0, Koay:0, Ivy:0, KC:0, Cecilia:0 };
+  let _ovrRetain = 0, _ovrAbot = 0;
   let _hasOvr = false;
   lines.forEach(l => {
     if (l.alloc !== 'standard' || l.isDisb) return;
     const hasOvr = l.prepOvr || l.revOvr || l.abotOvr || l.retainOvr;
     if (!hasOvr) return;
     _hasOvr = true;
-    const linePrep = l.prepOvr || invPrep;
-    const lineRev  = l.revOvr  || invRev;
+    const linePrep = norm(l.prepOvr || invPrep);
+    const lineRev  = norm(l.revOvr  || invRev);
     const lineAbot = l.abotOvr !== '' ? parseFloat(l.abotOvr || 0) : invAbot;
     const lineRetainPct = l.retainOvr !== '' ? parseFloat(l.retainOvr || 0) / 100 : 0.15;
     const K = Math.max(0, l.amt - lineAbot);
     const L = K * lineRetainPct;
-    const O = K * 0.10;
+    const O = K * 0.10;  // KC commission — always KC regardless of preparer
     const P = K - L - O;
     const prep = P * 0.7;
     const rev = P * 0.3;
-    // Subtract this line's amount from the standard fee total so it isn't double-counted
-    // (We'll do this by reducing inv-amount.) — actually easier: track separately and compensate below
-    _ovrShares.preparer += prep;
-    _ovrShares.reviewer += rev;
-    _ovrShares.retain += L;
-    _ovrShares.abot += lineAbot;
-    // also add line's effective KC commission via existing kc_commission path — handled in save
+    // Credit each share to the right person
+    if (_ovrByPerson.hasOwnProperty(linePrep)) _ovrByPerson[linePrep] += prep;
+    if (_ovrByPerson.hasOwnProperty(lineRev))  _ovrByPerson[lineRev]  += rev;
+    _ovrByPerson.KC += O;  // commission always to KC
+    _ovrRetain += L;
+    _ovrAbot += lineAbot;
   });
-  // Store overridden-line aggregate shares in hidden fields
-  ['ovr-prep','ovr-rev','ovr-retain','ovr-abot','ovr-line-amount'].forEach(id => {
+  // Store aggregated per-person override earnings in hidden fields
+  Object.entries(_ovrByPerson).forEach(([person, amt]) => {
+    let el = document.getElementById('inv-ovr-person-' + person);
+    if (!el) {
+      el = document.createElement('input'); el.type = 'hidden'; el.id = 'inv-ovr-person-' + person;
+      document.body.appendChild(el);
+    }
+    el.value = amt.toFixed(2);
+  });
+  ['ovr-retain','ovr-abot','ovr-line-amount'].forEach(id => {
     let el = document.getElementById('inv-' + id);
     if (!el) {
       el = document.createElement('input'); el.type = 'hidden'; el.id = 'inv-' + id;
       document.body.appendChild(el);
     }
   });
-  document.getElementById('inv-ovr-prep').value = _ovrShares.preparer.toFixed(2);
-  document.getElementById('inv-ovr-rev').value  = _ovrShares.reviewer.toFixed(2);
-  document.getElementById('inv-ovr-retain').value = _ovrShares.retain.toFixed(2);
-  document.getElementById('inv-ovr-abot').value = _ovrShares.abot.toFixed(2);
-  // Subtract overridden-line amounts from the standard fee total used in formula
+  document.getElementById('inv-ovr-retain').value = _ovrRetain.toFixed(2);
+  document.getElementById('inv-ovr-abot').value = _ovrAbot.toFixed(2);
   const ovrLineAmount = lines.filter(l => l.alloc==='standard' && !l.isDisb && (l.prepOvr||l.revOvr||l.abotOvr||l.retainOvr)).reduce((s,l)=>s+l.amt,0);
   document.getElementById('inv-ovr-line-amount').value = ovrLineAmount.toFixed(2);
   if (_hasOvr) {
