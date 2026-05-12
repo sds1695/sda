@@ -4877,6 +4877,7 @@ function renderInvoiceBreakdown() {
   let invs = (INVOICES || []).slice().sort((a, b) => (b.inv_no || '').localeCompare(a.inv_no || ''));
   if (q) invs = invs.filter(i => (i.inv_no || '').toLowerCase().includes(q) || (i.client_name || '').toLowerCase().includes(q));
   if (sf) invs = invs.filter(i => (i.status || '') === sf);
+  else invs = invs.filter(i => (i.status || '') !== 'cancelled');  // hide cancelled by default
   if (!invs.length) { container.innerHTML = '<div style="text-align:center;padding:48px;color:var(--text3)">No invoices match.</div>'; return; }
 
   const fmt = n => {
@@ -4906,7 +4907,7 @@ function renderInvoiceBreakdown() {
     if (rn && out.hasOwnProperty(rn)) out[rn] += rev + top;
     out.KC += kcc;
     out.Koay += koac;
-    if (cec > 0 && pn !== 'Cecilia') out.Cecilia += cec;
+    // Cecilia retainer fee goes to Cec.fee column (firm-side) only; her own preparer earnings count under People-Cecilia separately
     out.retain += parseFloat(a.admin_retain || 0);
     out.abot += parseFloat(a.abot_cost || 0) - top;
     if (out.abot < 0) out.abot = 0;
