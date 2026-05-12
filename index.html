@@ -2480,7 +2480,7 @@ async function openInvoiceModal(id) {
     let _parsedLines = null;
     try { const _p = JSON.parse(inv.desc1||''); if (Array.isArray(_p)) _parsedLines = _p; } catch(e){}
     if (_parsedLines && _parsedLines.length) {
-      _parsedLines.forEach(l => addInvLine(l.desc, l.amt, l.isDisb, l.alloc, l.customSplit, {prepOvr:l.prepOvr,revOvr:l.revOvr,abotOvr:l.abotOvr,retainOvr:l.retainOvr}));
+      _parsedLines.forEach(l => addInvLine(l.desc, l.amt, l.isDisb, l.alloc, l.customSplit, {prepOvr:l.prepOvr,revOvr:l.revOvr,abotOvr:l.abotOvr,retainOvr:l.retainOvr,lineType:l.lineType}));
     } else {
       // Legacy format
       const _legacyDesc = (inv.desc1||'') + (inv.desc2 ? '\n' + inv.desc2 : '');
@@ -2692,7 +2692,11 @@ async function saveInvoice() {
   const client = document.getElementById('inv-client-name').value.trim();
   const amount = parseFloat(document.getElementById('inv-amount').value || 0);
   if (!inv_no || !date || !client) { toast('Please fill in invoice no., date and client.', 'error'); return; }
-  if (!amount) { toast('Please add at least one fee line with an amount.', 'error'); return; }
+  // Validate against the actual total of all lines (handles per-line overrides that zero inv-amount)
+  const _allLinesTotal = (typeof getInvLines === 'function')
+    ? getInvLines().reduce((s,l) => s + (parseFloat(l.amt) || 0), 0)
+    : amount;
+  if (_allLinesTotal <= 0) { toast('Please add at least one line with an amount.', 'error'); return; }
 
   _savingInvoice = true;
   const btn = document.querySelector('#modal-invoice .btn-primary');
@@ -2897,6 +2901,20 @@ function addInvLine(desc, amt, isDisb, alloc) {
       <label style="font-size:11px;color:var(--text2);display:flex;align-items:center;gap:4px;cursor:pointer">
         <input type="checkbox" class="inv-line-isDisb" onchange="recalcInvLines()" /> Disb
       </label>
+      <select class="inv-line-type" onchange="recalcInvLines()" title="Revenue type for this line (Sales Analysis splits by this)" style="font-size:10px;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--surface);color:var(--text1);width:140px;margin-top:2px">
+        <option value="">Type: (invoice)</option>
+        <option value="MBRS">Type: MBRS</option>
+        <option value="FS">Type: FS</option>
+        <option value="Tax">Type: Tax</option>
+        <option value="Bookkeeping">Type: Bookkeeping</option>
+        <option value="Cosec_Retainer">Type: Cosec Retainer</option>
+        <option value="Cosec_Other">Type: Cosec Other</option>
+        <option value="Audit">Type: Audit</option>
+        <option value="Personal_Tax">Type: Personal Tax</option>
+        <option value="Advisory">Type: Advisory</option>
+        <option value="Disbursement">Type: Disbursement</option>
+        <option value="Other">Type: Other</option>
+      </select>
       <button type="button" onclick="toggleLineAdv(this)" style="font-size:10px;color:var(--text3);background:none;border:none;cursor:pointer;text-decoration:underline;padding:0">⚙ override</button>
       <div class="inv-line-adv" style="display:none;border-top:1px dashed var(--border);padding-top:6px;margin-top:4px;width:140px">
         <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Per-line overrides:</div>
@@ -2947,6 +2965,7 @@ function addInvLine(desc, amt, isDisb, alloc) {
     setVal('inv-line-rev-ovr',    ovr.revOvr);
     setVal('inv-line-abot-ovr',   ovr.abotOvr);
     setVal('inv-line-retain-ovr', ovr.retainOvr);
+    setVal('inv-line-type',       ovr.lineType);
     if (ovr.prepOvr || ovr.revOvr || ovr.abotOvr || ovr.retainOvr) {
       const adv = row.querySelector('.inv-line-adv');
       if (adv) adv.style.display = '';
@@ -2975,6 +2994,7 @@ function getInvLines() {
     revOvr:    (row.querySelector('.inv-line-rev-ovr')    || { value: '' }).value,
     abotOvr:   (row.querySelector('.inv-line-abot-ovr')   || { value: '' }).value,
     retainOvr: (row.querySelector('.inv-line-retain-ovr') || { value: '' }).value,
+    lineType:  (row.querySelector('.inv-line-type')       || { value: '' }).value,
   }));
 }
 
@@ -3225,6 +3245,23 @@ function applyDescPreset(sel) {
     if (val === 'Travelling expenses') {
       const allocSel = row.querySelector('.inv-line-alloc');
       if (allocSel) allocSel.value = 'retain';
+    }
+    // Auto-set Revenue Type from preset
+    const typeMap = {
+      'MBRS preparation fees for financial statement submission to Suruhanjaya Syarikat Malaysia': 'MBRS',
+      'Tax computation and submission of Form C': 'Tax',
+      'Preparation of financial statements': 'FS',
+      'Bookkeeping fees': 'Bookkeeping',
+      'Secretarial retainer fees': 'Cosec_Retainer',
+      'Company secretarial services': 'Cosec_Other',
+      'Disbursements': 'Disbursement',
+      'Attestation': 'Disbursement',
+      'Printing and stationeries': 'Disbursement',
+      'Travelling expenses': 'Disbursement',
+    };
+    if (typeMap[val]) {
+      const typeSel = row.querySelector('.inv-line-type');
+      if (typeSel) typeSel.value = typeMap[val];
     }
     sel.value = '';
     recalcInvLines();
