@@ -3886,7 +3886,7 @@ function renderPayoutDetail() {
 
     // ─── FIFO split: which client-paid items are still unpaid? ───
     // Sort client-paid invoices by date ascending (oldest first)
-    const paidRowsAsc = paidRows.slice().sort((a,b) => (a.idate||'').localeCompare(b.idate||''));
+    const paidRowsAsc = paidRows.slice().sort((a,b) => new Date(a.idate||0) - new Date(b.idate||0));
     let voucherPool = totalPaid;  // RM available from voucher payments
     const settledRows = [];   // items already covered by vouchers
     const readyRows = [];     // items still unpaid (the subset that needs paying)
@@ -3905,11 +3905,11 @@ function renderPayoutDetail() {
       }
     });
     const readyHtml = readyRows.length
-      ? readyRows.reverse().map(e => mkRow(e, 'ready')).join('')
+      ? readyRows.slice().reverse().map(e => mkRow(e, 'ready')).join('')
       : '<div style="font-size:12px;color:var(--text3);padding:10px;text-align:center">No client-paid invoices ready for payout.</div>';
     const settledId = 'pay-settled-' + person.replace(/[^a-z0-9]/gi,'_');
     const settledHtml = settledRows.length
-      ? settledRows.reverse().map(e => mkRow(e, 'paidout')).join('')
+      ? settledRows.slice().reverse().map(e => mkRow(e, 'paidout')).join('')
       : '<div style="font-size:12px;color:var(--text3);padding:10px;text-align:center">No invoices settled yet.</div>';
     const awaitHtml = pendingRows.length
       ? pendingRows.sort((a,b) => (b.idate||'').localeCompare(a.idate||'')).map(e => mkRow(e, 'await')).join('')
@@ -3945,7 +3945,7 @@ function renderPayoutDetail() {
       <!-- Ready to pay -->
       <div style="margin-bottom:10px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-          <div style="font-size:11px;color:var(--green);font-weight:600;text-transform:uppercase;letter-spacing:.04em">✓ Ready to pay (${paidRows.length})</div>
+          <div style="font-size:11px;color:var(--green);font-weight:600;text-transform:uppercase;letter-spacing:.04em">✓ Ready to pay (${readyRows.length})</div>
           <button class="btn btn-primary btn-sm" style="background:var(--green);color:#fff;font-size:11px;padding:4px 10px" onclick="event.stopPropagation();openVoucherModalPrefilled('${person}', ${rt.toFixed(2)})">Pay RM ${rt.toFixed(2)} →</button>
         </div>
         <div style="display:flex;flex-direction:column;gap:5px">${readyHtml}</div>
