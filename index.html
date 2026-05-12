@@ -67,7 +67,7 @@
   /* ── APP SHELL ── */
   #app { display: none; min-height: 100vh; }
   .sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 220px; background: var(--accent); display: flex; flex-direction: column; z-index: 100; }
-  .sidebar-logo { padding: 24px 20px 20px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+  .sidebar-logo { padding: 24px 20px 20px; border-bottom: 2px solid var(--brand); }
   .sidebar-logo-name { font-size: 15px; font-weight: 600; color: #fff; line-height: 1.2; }
   .sidebar-logo-reg { font-size: 10px; color: rgba(255,255,255,0.4); margin-top: 2px; font-family: 'DM Mono', monospace; }
   .sidebar-nav { flex: 1; padding: 12px 0; overflow-y: auto; }
@@ -270,6 +270,18 @@
     .form-grid, .form-grid-3 { grid-template-columns: 1fr; }
     .payout-grid { grid-template-columns: 1fr; }
   }
+
+  /* ── Seraya brand accents ── */
+  .page-title { position: relative; }
+  .page-title::after { content: ''; display: block; width: 36px; height: 3px; background: var(--brand); margin-top: 6px; border-radius: 2px; }
+  .card:hover { border-color: var(--brand); transition: border-color 0.15s; }
+  .stat-card { border-top: 3px solid var(--brand); }
+  a[href], .btn-ghost { color: var(--brand-dark); }
+  a[href]:hover { color: var(--brand); }
+  .badge-green { background: var(--green-bg); color: var(--brand-dark); border: 0.5px solid rgba(46,191,165,0.3); }
+  /* Make YTD numbers and key stats use brand color on big metrics */
+  .stat-value { color: var(--text); }
+  .stat-positive { color: var(--brand-dark); font-weight: 600; }
 </style>
 </head>
 <body>
