@@ -3837,96 +3837,111 @@ function renderPayoutDetail() {
           </tr>`).join('')
       : '<tr><td colspan="4" style="color:var(--text3);font-size:12px;padding:10px 12px">No payments recorded yet</td></tr>';
 
-    // Invoice rows split by client status
-    const paidRows    = entries.filter(e => e.status === 'paid');
-    const pendingRows = entries.filter(e => e.status !== 'paid');
-
-    const balanceColor = balance <= 0 ? 'var(--green)' : 'var(--text)';
-
-    // Reconciliation badge — compares balance to user-saved Excel target
+    // ─── NEW LAYOUT: Ready / Awaiting / History per person ──────────────
+    const paidRows    = entries.filter(e => e.status === 'paid');     // client paid invoices
+    const pendingRows = entries.filter(e => e.status !== 'paid');     // awaiting client
+    // Find last voucher payment date for this person
+    const lastVoucher = paidData.vouchers.length
+      ? paidData.vouchers.slice().sort((a,b) => new Date(b.date||0) - new Date(a.date||0))[0]
+      : null;
+    const lastPayLabel = lastVoucher
+      ? `last paid ${formatDate(lastVoucher.date)} · RM ${parseFloat(lastVoucher.amount||0).toFixed(2)}`
+      : 'no payments yet';
+    // Reconciliation target check
     const reconTargets = (typeof getReconTargets === 'function') ? getReconTargets() : {};
     const target = reconTargets[person];
     let reconBadge = '';
     if (target !== undefined) {
       const diff = r2(balance - target);
       if (Math.abs(diff) < 1) {
-        reconBadge = `<span class="badge badge-green" style="margin-left:10px">✓ Reconciled to Excel</span>`;
+        reconBadge = `<span class="badge badge-green" style="margin-left:10px;font-size:10px">✓ Excel</span>`;
       } else {
         const sign = diff > 0 ? '+' : '−';
-        reconBadge = `<span class="badge" style="background:var(--red-bg);color:var(--red);margin-left:10px">⚠ Unreconciled ${sign}RM ${Math.abs(diff).toFixed(2)} vs Excel ${target.toFixed(2)}</span>`;
+        reconBadge = `<span class="badge" style="background:var(--red-bg);color:var(--red);margin-left:10px;font-size:10px">${sign}RM ${Math.abs(diff).toFixed(2)} vs Excel</span>`;
       }
     }
+    const displayName2 = PERSON_LABEL[person] || person;
+    const readyTotal = r2(payableNow);
+    const awaitTotal = r2(awaitClient);
+
+    // Build per-invoice row HTML (compact card style)
+    const mkRow = (e, kind) => {
+      const isReady = kind === 'ready';
+      const isPaid = kind === 'paidout';
+      const dotColor = isReady ? '#97C459' : (isPaid ? 'var(--text3)' : '#F0997B');
+      const opacity = isReady ? '1' : (isPaid ? '0.55' : '0.7');
+      const amtColor = isReady ? 'var(--green)' : 'var(--text)';
+      const tag = isReady ? 'ready to pay' : (isPaid ? 'already paid' : 'awaiting client');
+      return `<div style="background:var(--surface);border-radius:6px;padding:10px 12px;border-left:3px solid ${dotColor};display:flex;align-items:center;gap:10px;opacity:${opacity}" onclick="showPage('invoices');setTimeout(()=>openInvoiceModal('${(INVOICES.find(i=>i.inv_no===e.inv_no)||{}).inv_id||''}'),150)" oncursor="pointer" style="cursor:pointer">
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};flex-shrink:0"></span>
+        <div style="flex:1;min-width:0">
+          <div style="font-family:'DM Mono',monospace;font-size:12px;font-weight:600">${e.inv_no} <span style="font-size:10px;color:var(--text3);font-weight:400">· ${jobTypeBadge(e.job_type) || ''}</span></div>
+          <div style="font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.client} · ${e.date} · ${e.role}</div>
+        </div>
+        <div style="text-align:right;min-width:90px">
+          <div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:600;color:${amtColor}">RM ${e.amount.toFixed(2)}</div>
+          <div style="font-size:10px;color:var(--text3)">${tag}</div>
+        </div>
+      </div>`;
+    };
+
+    const readyHtml = paidRows.length
+      ? paidRows.sort((a,b) => (b.idate||'').localeCompare(a.idate||'')).map(e => mkRow(e, 'ready')).join('')
+      : '<div style="font-size:12px;color:var(--text3);padding:10px;text-align:center">No client-paid invoices ready for payout.</div>';
+    const awaitHtml = pendingRows.length
+      ? pendingRows.sort((a,b) => (b.idate||'').localeCompare(a.idate||'')).map(e => mkRow(e, 'await')).join('')
+      : '';
+    const historyHtml = paidData.vouchers.length
+      ? paidData.vouchers.slice().sort((a,b) => new Date(b.date||0) - new Date(a.date||0)).map(v => `
+        <div style="background:var(--surface2);border-radius:6px;padding:8px 12px;display:flex;align-items:center;gap:10px;font-size:12px">
+          <span style="font-family:'DM Mono',monospace;color:var(--text3)">${formatDate(v.date)}</span>
+          <div style="flex:1;color:var(--text2)">${v.description||v.payee||'—'}</div>
+          <div style="font-family:'DM Mono',monospace;font-weight:600;color:var(--red)">−RM ${parseFloat(v.amount||0).toFixed(2)}</div>
+        </div>`).join('')
+      : '<div style="font-size:12px;color:var(--text3);padding:10px;text-align:center">No payments recorded yet.</div>';
+    const historyId = 'pay-history-' + person.replace(/[^a-z0-9]/gi,'_');
+    const balColor = balance > 0 ? 'var(--amber)' : 'var(--green)';
+    const balBg    = balance > 0 ? 'var(--amber-bg)' : 'var(--green-bg)';
 
     return `
-    <div class="card" style="margin-bottom:24px">
-      <!-- ── Header: recon summary ── -->
-      <div class="card-header" style="background:var(--surface2);flex-wrap:wrap;gap:16px">
+    <div class="card" style="margin-bottom:18px;padding:16px;background:var(--surface2)">
+      <!-- Header -->
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:12px">
         <div>
-          <div style="font-size:16px;font-weight:600">${displayName}${reconBadge}</div>
-          <div style="font-size:12px;color:var(--text2);margin-top:2px">${entries.length} allocation${entries.length!==1?'s':''} across ${[...new Set(entries.map(e=>e.inv_no))].length} invoice${[...new Set(entries.map(e=>e.inv_no))].length!==1?'s':''}</div>
+          <div style="font-size:17px;font-weight:600">${displayName2}${reconBadge}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${paidRows.length + pendingRows.length} invoices · ${lastPayLabel}</div>
         </div>
-        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
-          <!-- Earned -->
-          <div style="text-align:right;padding:8px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px">
-            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">Total Earned</div>
-            ${mono(totalEarned)}
-          </div>
-          <!-- Paid out -->
-          <div style="text-align:right;padding:8px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px">
-            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">Paid Out (${paidData.vouchers.length} pmts)</div>
-            ${mono(totalPaid, 'var(--red)')}
-          </div>
-          <!-- Balance -->
-          <div style="text-align:right;padding:8px 14px;background:${balance>0?'var(--amber-bg)':'var(--green-bg)'};border-radius:8px">
-            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:${balance>0?'var(--amber)':'var(--green)'}">${balance>0?'Balance Owing':'Fully Paid'}</div>
-            <div style="font-family:'DM Mono',monospace;font-weight:700;font-size:20px;color:${balance>0?'var(--amber)':'var(--green)'}">${balance<=0?'✓ ':''} RM ${Math.abs(balance).toFixed(2)}</div>
-          </div>
-          ${balance > 0 ? `
-          <!-- Payable breakdown -->
-          <div style="display:flex;flex-direction:column;gap:6px">
-            <div style="text-align:right;padding:6px 12px;background:var(--green-bg);border-radius:6px">
-              <div style="font-size:10px;color:var(--green);text-transform:uppercase;letter-spacing:.05em">Pay Now ✓</div>
-              <div style="font-family:'DM Mono',monospace;font-weight:700;font-size:15px;color:var(--green)">RM ${payableNow.toFixed(2)}</div>
-            </div>
-            <div style="text-align:right;padding:6px 12px;background:var(--red-bg);border-radius:6px">
-              <div style="font-size:10px;color:var(--red);text-transform:uppercase;letter-spacing:.05em">Await Client</div>
-              <div style="font-family:'DM Mono',monospace;font-weight:700;font-size:15px;color:var(--red)">RM ${awaitClient.toFixed(2)}</div>
-            </div>
-          </div>` : ''}
+        <div style="text-align:right">
+          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Total still owing</div>
+          <div style="font-size:20px;font-weight:700;font-family:'DM Mono',monospace;color:${balColor}">RM ${balance.toFixed(2)}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">Total earned RM ${totalEarned.toFixed(2)} · paid RM ${totalPaid.toFixed(2)}</div>
         </div>
       </div>
 
-      <!-- ── Payments already made ── -->
-      <div style="border-bottom:1px solid var(--border)">
-        <div style="padding:8px 16px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text3)">
-          Payments Made (${paidData.vouchers.length}) — Total ${monoSm(totalPaid,'var(--red)')}
+      ${readyTotal > 0 ? `
+      <!-- Ready to pay -->
+      <div style="margin-bottom:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <div style="font-size:11px;color:var(--green);font-weight:600;text-transform:uppercase;letter-spacing:.04em">✓ Ready to pay (${paidRows.length})</div>
+          <button class="btn btn-primary btn-sm" style="background:var(--green);color:#fff;font-size:11px;padding:4px 10px" onclick="event.stopPropagation();openVoucherModalPrefilled('${person}', ${readyTotal.toFixed(2)})">Pay RM ${readyTotal.toFixed(2)} →</button>
         </div>
-        <div style="overflow-x:auto"><table>
-          <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Amount</th></tr></thead>
-          <tbody>${voucherRows}</tbody>
-        </table></div>
-      </div>
+        <div style="display:flex;flex-direction:column;gap:5px">${readyHtml}</div>
+      </div>` : ''}
 
-      <!-- ── Invoice allocations: client paid ── -->
-      ${paidRows.length ? `
-      <div style="padding:8px 16px 6px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--green)">
-        ✓ Client has paid — ${paidRows.length} invoice${paidRows.length!==1?'s':''} · ${monoSm(earnedFromClientPaid,'var(--green)')}
-      </div>
-      <div style="overflow-x:auto"><table>
-        <thead><tr><th>Invoice</th><th>Client</th><th>Date</th><th>Type</th><th>Role</th><th>Allocation</th><th>Client Status</th></tr></thead>
-        <tbody>${paidRows.map(e => mkInvRow(e, true)).join('')}</tbody>
-      </table></div>` : ''}
+      ${awaitTotal > 0 ? `
+      <!-- Awaiting client -->
+      <div style="margin-bottom:10px">
+        <div style="font-size:11px;color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">◐ Awaiting client (${pendingRows.length})</div>
+        <div style="display:flex;flex-direction:column;gap:5px">${awaitHtml}</div>
+      </div>` : ''}
 
-      <!-- ── Invoice allocations: awaiting client ── -->
-      ${pendingRows.length ? `
-      <div style="padding:8px 16px 6px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--red);${paidRows.length?'border-top:1px solid var(--border)':''}">
-        ⏳ Awaiting client payment — ${pendingRows.length} invoice${pendingRows.length!==1?'s':''} · ${monoSm(earnedFromClientPending,'var(--red)')}
+      <!-- Payment history (collapsed) -->
+      <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px">
+        <button onclick="document.getElementById('${historyId}').style.display = document.getElementById('${historyId}').style.display === 'none' ? '' : 'none'; this.querySelector('.tog').textContent = document.getElementById('${historyId}').style.display === 'none' ? '▸' : '▾';" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:0">
+          <span class="tog">▸</span> Payment history (${paidData.vouchers.length})
+        </button>
+        <div id="${historyId}" style="display:none;margin-top:8px;display:flex;flex-direction:column;gap:5px">${historyHtml}</div>
       </div>
-      <div style="overflow-x:auto"><table>
-        <thead><tr><th>Invoice</th><th>Client</th><th>Date</th><th>Type</th><th>Role</th><th>Allocation</th><th>Client Status</th></tr></thead>
-        <tbody>${pendingRows.map(e => mkInvRow(e, false)).join('')}</tbody>
-      </table></div>` : ''}
-
     </div>`;
   });
 
@@ -5164,6 +5179,29 @@ function editReconTargets() {
   setReconTargets(next);
   if (typeof renderPayoutDetail === 'function') renderPayoutDetail();
   toast('Reconciliation targets saved.', 'success');
+}
+
+
+function openVoucherModalPrefilled(person, amount) {
+  if (typeof openVoucherModal !== 'function') {
+    alert('Voucher modal not available — please use the Vouchers page to record the payment.');
+    return;
+  }
+  openVoucherModal(false);
+  setTimeout(() => {
+    const payeeSel = document.getElementById('pv-payee');
+    if (payeeSel) {
+      // Find a matching option
+      const opts = Array.from(payeeSel.options);
+      const target = opts.find(o => o.value === person);
+      if (target) {
+        payeeSel.value = person;
+        if (typeof onPayeeChange === 'function') onPayeeChange();
+      }
+    }
+    const amtInput = document.getElementById('pv-amount');
+    if (amtInput) amtInput.value = (amount || 0).toFixed(2);
+  }, 100);
 }
 
 // Close modals on overlay click
