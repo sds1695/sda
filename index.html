@@ -316,20 +316,20 @@
   <!-- SIDEBAR -->
   <div class="sidebar">
     <div class="sidebar-logo">
-      <!-- SERAYA wordmark + diagonal arrow ↗ ; matches uploaded brand logo -->
-      <svg width="170" height="48" viewBox="0 0 240 70" xmlns="http://www.w3.org/2000/svg" style="display:block;margin-bottom:4px">
-        <!-- SERAYA wordmark — bold, slightly tight letter-spacing -->
-        <text x="0" y="36" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-weight="800" font-size="38" fill="#ffffff" letter-spacing="0.5">SERAYA</text>
-        <!-- Diagonal up-right arrow in brand mint, sitting at the top-right of the wordmark -->
-        <g transform="translate(186,0)" fill="#2EBFA5">
-          <!-- Shaft (rotated 45°) -->
-          <rect x="0" y="14" width="32" height="7" rx="1" transform="rotate(-45 16 17.5)"/>
-          <!-- Arrowhead triangle -->
-          <polygon points="24,0 32,0 32,8"/>
-          <polygon points="32,0 32,16 16,0"/>
+      <!-- SERAYA wordmark + clean diagonal ↗ arrow ; matches uploaded brand logo -->
+      <svg width="180" height="56" viewBox="0 0 240 70" xmlns="http://www.w3.org/2000/svg" style="display:block;margin-bottom:4px">
+        <!-- SERAYA wordmark — bold, slight letter-spacing -->
+        <text x="0" y="38" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-weight="800" font-size="40" fill="#ffffff" letter-spacing="1">SERAYA</text>
+        <!-- Diagonal up-right arrow drawn as a single stroke with arrowhead.
+             The shaft + two arrowhead sides share line-width and join smoothly. -->
+        <g stroke="#2EBFA5" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <!-- shaft: bottom-left to upper-right -->
+          <line x1="178" y1="34" x2="208" y2="4"/>
+          <!-- arrowhead: horizontal-back + vertical-down meeting at the tip -->
+          <polyline points="186,4 208,4 208,26"/>
         </g>
         <!-- Tagline -->
-        <text x="2" y="58" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-weight="400" font-size="14" fill="rgba(255,255,255,0.7)" letter-spacing="0.3">Empowering Businesses</text>
+        <text x="2" y="60" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-weight="400" font-size="14" fill="rgba(255,255,255,0.7)" letter-spacing="0.3">Empowering Businesses</text>
       </svg>
       <div class="sidebar-logo-reg">JM1027134-P · v26.05.12</div>
     </div>
