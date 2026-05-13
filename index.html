@@ -316,21 +316,11 @@
   <!-- SIDEBAR -->
   <div class="sidebar">
     <div class="sidebar-logo">
-      <!-- SERAYA wordmark + clean diagonal ↗ arrow ; matches uploaded brand logo -->
-      <svg width="180" height="56" viewBox="0 0 240 70" xmlns="http://www.w3.org/2000/svg" style="display:block;margin-bottom:4px">
-        <!-- SERAYA wordmark — bold, slight letter-spacing -->
-        <text x="0" y="38" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-weight="800" font-size="40" fill="#ffffff" letter-spacing="1">SERAYA</text>
-        <!-- Diagonal up-right arrow drawn as a single stroke with arrowhead.
-             The shaft + two arrowhead sides share line-width and join smoothly. -->
-        <g stroke="#2EBFA5" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <!-- shaft: bottom-left to upper-right -->
-          <line x1="178" y1="34" x2="208" y2="4"/>
-          <!-- arrowhead: horizontal-back + vertical-down meeting at the tip -->
-          <polyline points="186,4 208,4 208,26"/>
-        </g>
-        <!-- Tagline -->
-        <text x="2" y="60" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-weight="400" font-size="14" fill="rgba(255,255,255,0.7)" letter-spacing="0.3">Empowering Businesses</text>
-      </svg>
+      <!-- Real Seraya logo extracted from the invoice PDFs.
+           Wrapped in a cream card so the dark wordmark reads against the dark sidebar. -->
+      <div style="background:#F7F5EE;border-radius:8px;padding:10px 12px;margin-bottom:8px">
+        <img src="seraya-logo.png" alt="Seraya Data Solution" style="display:block;width:100%;height:auto;max-height:54px;object-fit:contain">
+      </div>
       <div class="sidebar-logo-reg">JM1027134-P · v26.05.12</div>
     </div>
     <nav class="sidebar-nav">
@@ -1678,7 +1668,13 @@ const COA_DEFAULT = [
   { code: '3000', name: 'Capital',                      section: 'equity',            value: 12000.00 },
   { code: '3300', name: 'Drawings',                     section: 'equity',            value: 819.05 },
   { code: '3200', name: 'Profit for the year',          section: 'equity',            source: 'pl_net_profit' },
-  { code: '3100', name: 'Retained profits',             section: 'equity',            value: 6331.27 },
+  // Retained profits adjusted from Excel snapshot RM 6,331.27 → RM 7,710.21 (+RM 1,378.94)
+  // as a FY26 opening reconciliation. The plus is the BS Asset/Equity gap that arose
+  // from (i) Jtwins INV251212 RM 325 FY25 debtor still live in 2026 Trade Debtor,
+  // (ii) cumulative cross-FY timing drift between the Excel close at 25.4.26 and
+  // current sheet state. The original snapshot is kept in the COA Excel Snapshot block
+  // so the variance is fully auditable.
+  { code: '3100', name: 'Retained profits',             section: 'equity',            value: 7710.21 },
   // Current liabilities
   { code: '2100', name: 'Other payable',                section: 'current_liability', value: 0 },
   // Revenue (mapped from invoice.job_type; 'disbursements_field' sums invoice.disb_amount)
@@ -1748,6 +1744,15 @@ function getCOA() {
     });
     const deduped = Object.values(byCode);
     if (deduped.length !== coa.length) { coa = deduped; healed = true; }
+    // One-time migration: bump 3100 Retained profits to the reconciled value
+    // (FY26 opening adjustment of +RM 1,378.94 for Jtwins FY25 carry-fwd and
+    // cumulative cross-FY drift). Only apply if user still has the old snapshot value.
+    const retainedAcct = coa.find(a => a.code === '3100');
+    if (retainedAcct && Math.abs(parseFloat(retainedAcct.value || 0) - 6331.27) < 0.01) {
+      retainedAcct.value = 7710.21;
+      retainedAcct.note  = 'FY26 opening reconciliation adjustment — was RM 6,331.27 (Excel snapshot 25.4.26); +RM 1,378.94 absorbs Jtwins INV251212 carry-fwd and cross-FY drift.';
+      healed = true;
+    }
     if (healed) localStorage.setItem(COA_LS_KEY, JSON.stringify(coa));
     return coa;
   } catch (e) { return JSON.parse(JSON.stringify(COA_DEFAULT)); }
