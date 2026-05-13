@@ -1052,6 +1052,7 @@
           <option value="pending">Pending</option>
           <option value="done">Done</option>
         </select>
+        <button id="rem-toggle-dismissed" class="btn btn-secondary btn-sm" onclick="remToggleShowDismissed()" title="Show or hide dismissed deadlines" style="font-size:12px">Show dismissed</button>
         <span id="rem-count-label" style="font-size:12px;color:var(--text2);align-self:center"></span>
       </div>
 
@@ -6373,9 +6374,11 @@ async function loadIncomeStatement() {
 // Done detection: matching invoice job_type + manual override (localStorage).
 // Cutoff: only show deadlines on or after 2026-01-01.
 // ══════════════════════════════════════════════════
-const REM_DONE_KEY  = 'seraya_deadlines_done_v1';
-const REM_CUTOFF    = '2026-01-01';
+const REM_DONE_KEY      = 'seraya_deadlines_done_v1';
+const REM_DISMISSED_KEY = 'seraya_deadlines_dismissed_v1';
+const REM_CUTOFF        = '2026-01-01';
 let _remSort = { col: 'deadline', dir: 'asc' };
+let _remShowDismissed = false;   // toggled by the "Show dismissed" filter
 
 function _remGetDoneMap() {
   try { return JSON.parse(localStorage.getItem(REM_DONE_KEY) || '{}'); }
@@ -6387,6 +6390,34 @@ function _remSetManual(key, state) {
   if (state === null) delete map[key];
   else map[key] = { state, ts: new Date().toISOString() };
   localStorage.setItem(REM_DONE_KEY, JSON.stringify(map));
+}
+
+function _remGetDismissedMap() {
+  try { return JSON.parse(localStorage.getItem(REM_DISMISSED_KEY) || '{}'); }
+  catch(e) { return {}; }
+}
+function _remDismiss(key) {
+  const map = _remGetDismissedMap();
+  map[key] = { ts: new Date().toISOString() };
+  localStorage.setItem(REM_DISMISSED_KEY, JSON.stringify(map));
+}
+function _remUndismiss(key) {
+  const map = _remGetDismissedMap();
+  delete map[key];
+  localStorage.setItem(REM_DISMISSED_KEY, JSON.stringify(map));
+}
+function remDismissDeadline(key, label) {
+  if (!confirm('Dismiss this deadline?\n\n' + (label || key) + '\n\nIt will be hidden from the list. You can show dismissed deadlines via the filter and restore them anytime.')) return;
+  _remDismiss(key);
+  renderReminders();
+}
+function remRestoreDismissed(key) {
+  _remUndismiss(key);
+  renderReminders();
+}
+function remToggleShowDismissed() {
+  _remShowDismissed = !_remShowDismissed;
+  renderReminders();
 }
 
 function _remParseYearEnd(s) {
@@ -6416,16 +6447,19 @@ function _remDays(from, to) {
   return Math.floor((to - from) / 86400000);
 }
 
+// Strict matching: each task only marks Done when an invoice with the SAME
+// job_type exists. Previously cp204 and cp204a fell back to 'tax', which made
+// one Form-C invoice silently mark every CP204 / CP204a revision as Done.
 const REM_TASK_INVOICE_MATCH = {
-  tax:        ['tax'],
+  tax:        ['tax', 'form_c'],
   audit:      ['audit', 'fs'],
   mbrs:       ['mbrs'],
-  cp204:      ['cp204', 'tax'],
-  cp204a_1:   ['cp204a', 'tax'],
-  cp204a_2:   ['cp204a', 'tax'],
-  cp204a_3:   ['cp204a', 'tax'],
-  ar:         ['cosec', 'cosec_retainer', 'cosec_other'],
-  bo:         ['cosec', 'cosec_retainer', 'cosec_other'],
+  cp204:      ['cp204'],
+  cp204a_1:   ['cp204a_1', 'cp204a'],
+  cp204a_2:   ['cp204a_2', 'cp204a'],
+  cp204a_3:   ['cp204a_3', 'cp204a'],
+  ar:         ['cosec', 'cosec_retainer', 'cosec_other', 'annual_return', 'ar'],
+  bo:         ['cosec', 'cosec_retainer', 'cosec_other', 'bo', 'beneficial_ownership'],
   form_e:     ['form_e', 'payroll']
 };
 
@@ -6522,17 +6556,26 @@ function _remBuildRows() {
     }
   });
 
-  // Auto-Done detection + manual override
+  // Auto-Done detection + manual override.
+  // Periodic tasks (CP204 revisions) need a tighter date window — the invoice
+  // must fall within ±90 days of the deadline, otherwise one CP204a invoice
+  // would mark every revision in the year as Done.
+  const NARROW_WINDOW_TASKS = new Set(['cp204', 'cp204a_1', 'cp204a_2', 'cp204a_3']);
   out.forEach(row => {
     const matchTypes = REM_TASK_INVOICE_MATCH[row.task] || [];
     let autoDone = false, invRef = null;
     if (matchTypes.length) {
       const invs = invoicesByClient[row.client_id] || [];
+      const narrow = NARROW_WINDOW_TASKS.has(row.task);
       const matched = invs.find(inv => {
         const jt = (inv.job_type || '').toLowerCase();
         if (!matchTypes.includes(jt)) return false;
         const invDate = new Date(inv.inv_date || inv.date || '');
         if (isNaN(invDate)) return false;
+        if (narrow) {
+          const days = Math.abs((invDate - row.deadline) / 86400000);
+          return days <= 90;
+        }
         return Math.abs(invDate.getFullYear() - row.year) <= 1;
       });
       if (matched) { autoDone = true; invRef = matched.inv_no; }
@@ -6616,6 +6659,10 @@ function renderReminders() {
     return;
   }
 
+  // Mark dismissed rows so we can either hide them or render them faded
+  const dismissedMap = _remGetDismissedMap();
+  allRows.forEach(r => { r.dismissed = !!dismissedMap[r.client_id + '|' + r.task + '|' + r.year]; });
+
   _remPopulateClientFilter(allRows);
   _remPopulateTaskFilter(allRows);
 
@@ -6624,6 +6671,8 @@ function renderReminders() {
   const fType   = document.getElementById('rem-f-type').value;
   const fStatus = document.getElementById('rem-f-status').value;
   let rows = allRows.slice();
+  // Default: hide dismissed rows. Toggle via remToggleShowDismissed().
+  if (!_remShowDismissed) rows = rows.filter(r => !r.dismissed);
   if (fClient) rows = rows.filter(r => r.client_id === fClient);
   if (fTask)   rows = rows.filter(r => r.task === fTask);
   if (fType)   rows = rows.filter(r => r.type === fType);
@@ -6649,7 +6698,20 @@ function renderReminders() {
       '<div class="metric-card"><div class="metric-label">Done</div><div class="metric-value">' + counts.done + '</div></div>';
   }
   const cnt = document.getElementById('rem-count-label');
-  if (cnt) cnt.textContent = rows.length + ' of ' + allRows.length + ' deadline' + (allRows.length===1?'':'s');
+  const dismissedCount = allRows.filter(r => r.dismissed).length;
+  if (cnt) {
+    const base = rows.length + ' of ' + allRows.length + ' deadline' + (allRows.length===1?'':'s');
+    cnt.textContent = dismissedCount > 0
+      ? base + '  ·  ' + dismissedCount + ' dismissed'
+      : base;
+  }
+  const togBtn = document.getElementById('rem-toggle-dismissed');
+  if (togBtn) {
+    togBtn.textContent = _remShowDismissed
+      ? 'Hide dismissed (' + dismissedCount + ')'
+      : 'Show dismissed (' + dismissedCount + ')';
+    togBtn.style.display = dismissedCount > 0 ? '' : 'none';
+  }
 
   const dir = _remSort.dir === 'asc' ? 1 : -1;
   rows.sort((a,b) => {
@@ -6683,7 +6745,12 @@ function renderReminders() {
     const doneBtnLabel = r.done ? '✓' : '○';
     const doneBtnTitle = r.manualOverride ? 'Manual override (click to cycle)' : 'Auto-status — click to override';
     const doneBtn = '<button class="btn btn-ghost" onclick="remToggleDone(\'' + r.key + '\')" title="' + doneBtnTitle + '" style="padding:4px 10px;font-size:14px;' + (r.done?'color:var(--green)':'color:var(--text3)') + '">' + doneBtnLabel + '</button>';
-    return '<tr>' +
+    const escLabel = (r.client_name + ' — ' + r.label + ' (' + r.fyLabel + ')').replace(/'/g, "\\'");
+    const delBtn = r.dismissed
+      ? '<button class="btn btn-ghost" onclick="remRestoreDismissed(\'' + r.key + '\')" title="Restore — show this deadline again" style="padding:4px 8px;font-size:13px;color:var(--text2)">↺</button>'
+      : '<button class="btn btn-ghost" onclick="remDismissDeadline(\'' + r.key + '\',\'' + escLabel + '\')" title="Dismiss — hide this deadline" style="padding:4px 8px;font-size:13px;color:var(--text3)">✕</button>';
+    const rowStyle = r.dismissed ? ' style="opacity:0.45"' : '';
+    return '<tr' + rowStyle + '>' +
       '<td>' + statusBadge + '</td>' +
       '<td><strong>' + r.client_name + '</strong></td>' +
       '<td style="font-size:11px;color:var(--text2)">' + r.fyLabel + '</td>' +
@@ -6692,7 +6759,7 @@ function renderReminders() {
       '<td style="font-family:\'DM Mono\',monospace;font-size:12px;color:' + r.status.color + '">' + (days<0?'+':'') + Math.abs(days) + 'd</td>' +
       '<td><span class="badge" style="font-size:11px">' + r.type + '</span></td>' +
       '<td>' + billed + '</td>' +
-      '<td>' + doneBtn + '</td>' +
+      '<td style="white-space:nowrap">' + doneBtn + delBtn + '</td>' +
       '<td></td>' +
     '</tr>';
   }).join('');
