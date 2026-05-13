@@ -876,6 +876,23 @@
           <tbody id="sa-client-tbody"></tbody>
         </table>
       </div>
+
+      <!-- Monthly sales chart -->
+      <div class="card" style="margin-top:20px">
+        <div class="card-header">
+          <div class="card-title">Monthly Sales</div>
+          <span style="font-size:11px;color:var(--text3);align-self:center">Invoice value billed per calendar month</span>
+        </div>
+        <div class="card-body">
+          <div id="sa-monthly-chart" style="display:flex;align-items:flex-end;gap:8px;height:240px;padding:10px 8px;border-bottom:1px solid var(--border);overflow-x:auto"></div>
+          <div id="sa-monthly-legend" style="display:flex;gap:6px;font-size:11px;color:var(--text3);padding:8px 4px 0;overflow-x:auto"></div>
+        </div>
+      </div>
+
+      <!-- Glossary -->
+      <div style="margin-top:14px;font-size:11px;color:var(--text3);padding:10px 14px;background:var(--surface2);border-radius:var(--radius-sm);border-left:3px solid var(--brand)">
+        <strong>What is "Direct"?</strong>  Invoices billed by Seraya Data Solution directly to the end client, without going through a third-party billing entity (FRAZ, EJ Loh, Prithishan, etc.). These rows have an empty <code style="font-size:11px">billing_party</code> field.
+      </div>
     </div>
 
     <!-- ══ DEBTOR AGING ══ -->
@@ -6086,6 +6103,88 @@ async function loadSalesAnalysis() {
       <td style="font-family:'DM Mono',monospace;font-size:13px">${fmt(v.rev)}</td>
       <td style="font-size:12px;color:var(--text3)">${total?(v.rev/total*100).toFixed(1):0}%</td>
     </tr>`).join('');
+
+  // ── Monthly sales chart ──────────────────────────────────────────────
+  // Bucket all (filtered) invoices by YYYY-MM, then render simple CSS bars.
+  // Handles both ISO dates and the JS-toString format the sheet sometimes returns.
+  const _MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const _ymKey = d => {
+    if (!d) return '';
+    if (/^\d{4}-\d{2}/.test(d)) return d.slice(0, 7);
+    const m = d.match(/^[A-Za-z]{3}\s+([A-Za-z]{3})\s+\d+\s+(\d{4})/);
+    if (m) {
+      const idx = _MN.indexOf(m[1]);
+      if (idx >= 0) return m[2] + '-' + String(idx + 1).padStart(2, '0');
+    }
+    try {
+      const dt = new Date(d);
+      if (!isNaN(dt)) return dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0');
+    } catch(e){}
+    return '';
+  };
+  const monthMap = {};
+  data.forEach(i => {
+    const ym = _ymKey(i.inv_date || i.date || '');
+    if (!ym) return;
+    const amt = parseFloat(i.amount || 0) + parseFloat(i.disb_amount || 0);
+    if (!monthMap[ym]) monthMap[ym] = { rev: 0, count: 0 };
+    monthMap[ym].rev   += amt;
+    monthMap[ym].count += 1;
+  });
+
+  // Build a continuous month range from earliest to today so empty months show as gaps
+  const keys = Object.keys(monthMap).sort();
+  const chartHost  = document.getElementById('sa-monthly-chart');
+  const legendHost = document.getElementById('sa-monthly-legend');
+  if (chartHost) {
+    if (!keys.length) {
+      chartHost.innerHTML = '<div style="color:var(--text3);padding:20px;font-size:12px">No invoices in current filter.</div>';
+      if (legendHost) legendHost.innerHTML = '';
+    } else {
+      const first = keys[0];
+      const todayYM = (() => {
+        const t = new Date();
+        return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0');
+      })();
+      const last = keys[keys.length - 1] > todayYM ? keys[keys.length - 1] : todayYM;
+      const range = [];
+      let [y, m] = first.split('-').map(Number);
+      while (true) {
+        const k = y + '-' + String(m).padStart(2, '0');
+        range.push(k);
+        if (k === last) break;
+        m++; if (m > 12) { m = 1; y++; }
+        if (range.length > 60) break;  // safety
+      }
+      const maxRev = Math.max(1, ...range.map(k => (monthMap[k] || {rev:0}).rev));
+      const currentYM = todayYM;
+      chartHost.innerHTML = range.map(k => {
+        const cell = monthMap[k] || { rev: 0, count: 0 };
+        const h = Math.round((cell.rev / maxRev) * 200);   // px, max 200
+        const isCurrent = k === currentYM;
+        const [yy, mm] = k.split('-');
+        const label = _MN[parseInt(mm,10)-1] + (mm === '01' || k === first ? ' ' + yy.slice(2) : '');
+        const tip = cell.rev > 0
+          ? k + ' — ' + fmt(cell.rev) + ' (' + cell.count + ' invoice' + (cell.count===1?'':'s') + ')'
+          : k + ' — no invoices';
+        return `<div style="flex:1;min-width:34px;display:flex;flex-direction:column;align-items:center;gap:4px" title="${tip}">
+          <div style="font-size:10px;color:var(--text3);font-family:'DM Mono',monospace">${cell.rev>0 ? fmt(cell.rev).replace('RM ','').replace(',','k').slice(0,5) : ''}</div>
+          <div style="width:80%;height:${Math.max(2,h)}px;background:${isCurrent ? 'var(--brand)' : 'var(--brand-dark, #1D9E75)'};border-radius:3px 3px 0 0;opacity:${cell.rev>0?1:0.15}"></div>
+          <div style="font-size:10px;color:${isCurrent?'var(--brand)':'var(--text2)'};font-weight:${isCurrent?600:400}">${label}</div>
+        </div>`;
+      }).join('');
+
+      // Legend summary
+      const total12 = range.slice(-12).reduce((s,k) => s + (monthMap[k]||{rev:0}).rev, 0);
+      const avg     = total12 / Math.max(1, range.slice(-12).filter(k => (monthMap[k]||{rev:0}).rev > 0).length);
+      const peak    = range.reduce((best, k) => (monthMap[k]||{rev:0}).rev > best.rev ? {ym:k, rev:(monthMap[k]||{rev:0}).rev} : best, {ym:'', rev:0});
+      legendHost.innerHTML =
+        `<span>Last 12 mo total: <strong>${fmt(total12)}</strong></span>` +
+        `<span style="margin-left:14px">Avg / active month: <strong>${fmt(avg)}</strong></span>` +
+        (peak.ym ? `<span style="margin-left:14px">Peak: <strong>${peak.ym} · ${fmt(peak.rev)}</strong></span>` : '') +
+        `<span style="margin-left:auto;color:var(--brand)">● Current month</span>`;
+    }
+  }
 }
 
 async function loadBalanceSheet() {
