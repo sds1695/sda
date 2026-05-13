@@ -884,7 +884,7 @@
           <span style="font-size:11px;color:var(--text3);align-self:center">Invoice value billed per calendar month</span>
         </div>
         <div class="card-body">
-          <div id="sa-monthly-chart" style="display:flex;align-items:flex-end;gap:8px;height:240px;padding:10px 8px;border-bottom:1px solid var(--border);overflow-x:auto"></div>
+          <div id="sa-monthly-chart" style="display:flex;align-items:flex-end;gap:6px;padding:10px 4px 0;border-bottom:1px solid var(--border);overflow-x:auto"></div>
           <div id="sa-monthly-legend" style="display:flex;gap:6px;font-size:11px;color:var(--text3);padding:8px 4px 0;overflow-x:auto"></div>
         </div>
       </div>
@@ -6158,30 +6158,46 @@ async function loadSalesAnalysis() {
       }
       const maxRev = Math.max(1, ...range.map(k => (monthMap[k] || {rev:0}).rev));
       const currentYM = todayYM;
+      // Compact-but-readable money formatter. Examples:
+      //   850     → "850"
+      //   1530    → "1,530"
+      //   6244    → "6,244"
+      //   12500   → "12.5k"
+      //   125000  → "125k"
+      const fmtMoney = n => {
+        if (!n) return '';
+        if (n >= 100000)        return Math.round(n/1000) + 'k';
+        if (n >=  10000)        return (n/1000).toFixed(1).replace(/\.0$/,'') + 'k';
+        return Math.round(n).toLocaleString('en-MY');
+      };
+      // Reserve room for the top value label + month label so the bar never overlaps them.
+      const CHART_HEIGHT = 240, LABEL_TOP = 18, LABEL_BOTTOM = 18, BAR_MAX = CHART_HEIGHT - LABEL_TOP - LABEL_BOTTOM - 8;
       chartHost.innerHTML = range.map(k => {
         const cell = monthMap[k] || { rev: 0, count: 0 };
-        const h = Math.round((cell.rev / maxRev) * 200);   // px, max 200
+        const h = Math.round((cell.rev / maxRev) * BAR_MAX);
         const isCurrent = k === currentYM;
         const [yy, mm] = k.split('-');
         const label = _MN[parseInt(mm,10)-1] + (mm === '01' || k === first ? ' ' + yy.slice(2) : '');
         const tip = cell.rev > 0
           ? k + ' — ' + fmt(cell.rev) + ' (' + cell.count + ' invoice' + (cell.count===1?'':'s') + ')'
           : k + ' — no invoices';
-        return `<div style="flex:1;min-width:34px;display:flex;flex-direction:column;align-items:center;gap:4px" title="${tip}">
-          <div style="font-size:10px;color:var(--text3);font-family:'DM Mono',monospace">${cell.rev>0 ? fmt(cell.rev).replace('RM ','').replace(',','k').slice(0,5) : ''}</div>
-          <div style="width:80%;height:${Math.max(2,h)}px;background:${isCurrent ? 'var(--brand)' : 'var(--brand-dark, #1D9E75)'};border-radius:3px 3px 0 0;opacity:${cell.rev>0?1:0.15}"></div>
-          <div style="font-size:10px;color:${isCurrent?'var(--brand)':'var(--text2)'};font-weight:${isCurrent?600:400}">${label}</div>
+        const valLabel = cell.rev > 0 ? fmtMoney(cell.rev) : '';
+        return `<div style="flex:1;min-width:42px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:${CHART_HEIGHT}px" title="${tip}">
+          <div style="font-size:11px;color:var(--text2);font-family:'DM Mono',monospace;font-weight:500;height:${LABEL_TOP}px;display:flex;align-items:flex-end">${valLabel}</div>
+          <div style="width:78%;height:${Math.max(2,h)}px;margin:2px 0 4px;background:${isCurrent ? 'var(--brand)' : 'var(--brand-dark, #1D9E75)'};border-radius:3px 3px 0 0;opacity:${cell.rev>0?1:0.15}"></div>
+          <div style="font-size:11px;color:${isCurrent?'var(--brand)':'var(--text2)'};font-weight:${isCurrent?600:400};height:${LABEL_BOTTOM}px;display:flex;align-items:center">${label}</div>
         </div>`;
       }).join('');
 
-      // Legend summary
+      // Legend summary — cap decimals so the average doesn't show as "4,250.517"
+      const fmt2 = n => 'RM ' + n.toLocaleString('en-MY',{minimumFractionDigits:2, maximumFractionDigits:2});
       const total12 = range.slice(-12).reduce((s,k) => s + (monthMap[k]||{rev:0}).rev, 0);
       const avg     = total12 / Math.max(1, range.slice(-12).filter(k => (monthMap[k]||{rev:0}).rev > 0).length);
       const peak    = range.reduce((best, k) => (monthMap[k]||{rev:0}).rev > best.rev ? {ym:k, rev:(monthMap[k]||{rev:0}).rev} : best, {ym:'', rev:0});
       legendHost.innerHTML =
-        `<span>Last 12 mo total: <strong>${fmt(total12)}</strong></span>` +
-        `<span style="margin-left:14px">Avg / active month: <strong>${fmt(avg)}</strong></span>` +
-        (peak.ym ? `<span style="margin-left:14px">Peak: <strong>${peak.ym} · ${fmt(peak.rev)}</strong></span>` : '') +
+        `<span>Last 12 mo total: <strong>${fmt2(total12)}</strong></span>` +
+        `<span style="margin-left:14px">Avg / active month: <strong>${fmt2(avg)}</strong></span>` +
+        (peak.ym ? `<span style="margin-left:14px">Peak: <strong>${peak.ym} · ${fmt2(peak.rev)}</strong></span>` : '') +
         `<span style="margin-left:auto;color:var(--brand)">● Current month</span>`;
     }
   }
