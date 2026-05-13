@@ -6439,13 +6439,15 @@ function _remUndismiss(key) {
   localStorage.setItem(REM_DISMISSED_KEY, JSON.stringify(map));
 }
 function openInvoiceByNo(inv_no) {
-  // Helper: open the invoice modal from anywhere by inv_no (the openInvoiceModal
-  // function expects inv_id). Used by Client Deadlines so the user can verify
-  // the auto-matched billed invoice.
+  // Open the PRINTABLE PDF preview from anywhere by inv_no — used by Client
+  // Deadlines and the Outstanding Debtors widget so the user can verify the
+  // billing document itself, not the data-entry form.
+  // Falls back to the entry modal if PDF preview isn't available.
   if (!inv_no) return;
   const inv = (INVOICES || []).find(x => x.inv_no === inv_no);
-  if (!inv) { toast && toast('Invoice ' + inv_no + ' not found in cache','info'); return; }
-  if (typeof openInvoiceModal === 'function') openInvoiceModal(inv.inv_id);
+  if (!inv) { if (typeof toast === 'function') toast('Invoice ' + inv_no + ' not found in cache','info'); return; }
+  if (typeof previewInvoiceById === 'function')      previewInvoiceById(inv.inv_id);
+  else if (typeof openInvoiceModal === 'function')   openInvoiceModal(inv.inv_id);
 }
 
 function remDismissDeadline(key, label) {
@@ -6599,28 +6601,45 @@ function _remBuildRows() {
   });
 
   // Auto-Done detection + manual override.
-  // Periodic tasks (CP204 revisions) need a tighter date window — the invoice
-  // must fall within ±90 days of the deadline, otherwise one CP204a invoice
-  // would mark every revision in the year as Done.
-  const NARROW_WINDOW_TASKS = new Set(['cp204', 'cp204a_1', 'cp204a_2', 'cp204a_3']);
+  // Match windows by task — invoices are typically raised once work is finished,
+  // so they sit within a bounded window AROUND the statutory deadline. The
+  // window prevents a 2025 invoice from satisfying a 2026 deadline and vice versa.
+  const TASK_WINDOW_DAYS = {
+    cp204:    90,     // CP204 estimate — filed ~30d before YE, invoice nearby
+    cp204a_1: 90,     // each revision is filed in its specific month
+    cp204a_2: 90,
+    cp204a_3: 90,
+    tax:      180,    // Form C — invoice usually raised within ~6 mo of deadline
+    audit:    270,    // Audit/FS — work spans most of the year; allow ±9 mo
+    mbrs:     240,    // MBRS XBRL submission — allow ±8 mo
+    ar:       180,    // Annual Return cosec
+    bo:       180,    // Beneficial Ownership
+    form_e:   180     // Form E (payroll)
+  };
   out.forEach(row => {
     const matchTypes = REM_TASK_INVOICE_MATCH[row.task] || [];
-    let autoDone = false, invRef = null;
+    let autoDone = false, invRef = null, invDateMatched = null;
     if (matchTypes.length) {
       const invs = invoicesByClient[row.client_id] || [];
-      const narrow = NARROW_WINDOW_TASKS.has(row.task);
-      const matched = invs.find(inv => {
+      const windowDays = TASK_WINDOW_DAYS[row.task] || 180;
+      // Pick the closest invoice by date within the window — not just the first found
+      let bestMatch = null;
+      let bestGap   = Infinity;
+      invs.forEach(inv => {
         const jt = (inv.job_type || '').toLowerCase();
-        if (!matchTypes.includes(jt)) return false;
+        if (!matchTypes.includes(jt)) return;
         const invDate = new Date(inv.inv_date || inv.date || '');
-        if (isNaN(invDate)) return false;
-        if (narrow) {
-          const days = Math.abs((invDate - row.deadline) / 86400000);
-          return days <= 90;
+        if (isNaN(invDate)) return;
+        const gap = Math.abs((invDate - row.deadline) / 86400000);
+        if (gap <= windowDays && gap < bestGap) {
+          bestMatch = inv; bestGap = gap;
         }
-        return Math.abs(invDate.getFullYear() - row.year) <= 1;
       });
-      if (matched) { autoDone = true; invRef = matched.inv_no; }
+      if (bestMatch) {
+        autoDone = true;
+        invRef = bestMatch.inv_no;
+        invDateMatched = bestMatch.inv_date || bestMatch.date || '';
+      }
     }
     row.autoDone = autoDone;
     row.invoiceRef = invRef;
