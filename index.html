@@ -316,15 +316,21 @@
   <!-- SIDEBAR -->
   <div class="sidebar">
     <div class="sidebar-logo">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-        <svg width="100" height="22" viewBox="0 0 180 40" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0">
-          <text x="0" y="28" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="26" fill="#ffffff" letter-spacing="-0.5">SERAYA</text>
-          <g transform="translate(140,2)">
-            <path d="M 0,14 L 14,0 L 28,14 L 22,14 L 22,28 L 6,28 L 6,14 Z" fill="#2EBFA5"/>
-          </g>
-        </svg>
-      </div>
-      <div class="sidebar-logo-name" style="font-size:10px;font-weight:400;color:rgba(255,255,255,0.55);letter-spacing:0.04em;text-transform:uppercase">Empowering Businesses</div>
+      <!-- SERAYA wordmark + diagonal arrow ↗ ; matches uploaded brand logo -->
+      <svg width="170" height="48" viewBox="0 0 240 70" xmlns="http://www.w3.org/2000/svg" style="display:block;margin-bottom:4px">
+        <!-- SERAYA wordmark — bold, slightly tight letter-spacing -->
+        <text x="0" y="36" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-weight="800" font-size="38" fill="#ffffff" letter-spacing="0.5">SERAYA</text>
+        <!-- Diagonal up-right arrow in brand mint, sitting at the top-right of the wordmark -->
+        <g transform="translate(186,0)" fill="#2EBFA5">
+          <!-- Shaft (rotated 45°) -->
+          <rect x="0" y="14" width="32" height="7" rx="1" transform="rotate(-45 16 17.5)"/>
+          <!-- Arrowhead triangle -->
+          <polygon points="24,0 32,0 32,8"/>
+          <polygon points="32,0 32,16 16,0"/>
+        </g>
+        <!-- Tagline -->
+        <text x="2" y="58" font-family="'Inter','Helvetica Neue',Arial,sans-serif" font-weight="400" font-size="14" fill="rgba(255,255,255,0.7)" letter-spacing="0.3">Empowering Businesses</text>
+      </svg>
       <div class="sidebar-logo-reg">JM1027134-P · v26.05.12</div>
     </div>
     <nav class="sidebar-nav">
@@ -6091,7 +6097,11 @@ async function loadBalanceSheet() {
                           .reduce((s,r) => s + parseFloat(r.amount||0), 0);
   const bankPvTotal   = _allVouchers.filter(v => !_isBSDrawings(v))
                           .reduce((s,v) => s + parseFloat(v.amount||0), 0);
-  const liveBank      = r2(((COA_OPENING_BALANCES['1010']||{}).amount)||0 + bankRcTotal - bankPvTotal);
+  // Bug-fix: previously `((OB)||0 + RC - PV)` — `+`/`-` bind tighter than `||`,
+  // so when OB was truthy (e.g. 761.96) RC/PV were silently dropped and Bank just
+  // mirrored the opening balance. Force the intended (OB||0) + RC − PV.
+  const _obBank       = parseFloat(((COA_OPENING_BALANCES['1010']||{}).amount) || 0);
+  const liveBank      = r2(_obBank + bankRcTotal - bankPvTotal);
 
   const valueOf = (a) => {
     // Priority: live mapsFrom > hardcoded snapshot > COA_DEFAULT fallback > derived source.
@@ -6118,8 +6128,12 @@ async function loadBalanceSheet() {
   coa.forEach(a => { if (bsAccts[a.section] !== undefined) bsAccts[a.section].push(a); });
   Object.keys(bsAccts).forEach(s => bsAccts[s].sort((a,b) => (a.code||'').localeCompare(b.code||'')));
 
+  // Drawings (3300) is contra-equity — stored as positive but subtracts from equity.
+  // Also treat any other account flagged `contra: true` the same way (future-proof).
+  const isContraEquity = a => a && (a.code === '3300' || a.contra === true);
+  const signedValue    = a => isContraEquity(a) ? -valueOf(a) : valueOf(a);
   const totals = {};
-  COA_BS_ORDER.forEach(s => { totals[s] = r2(bsAccts[s].reduce((sum,a) => sum + valueOf(a), 0)); });
+  COA_BS_ORDER.forEach(s => { totals[s] = r2(bsAccts[s].reduce((sum,a) => sum + signedValue(a), 0)); });
 
   const totalAssets      = r2((totals.non_current_asset||0) + (totals.current_asset||0));
   const totalEquity      = totals.equity || 0;
@@ -6130,7 +6144,9 @@ async function loadBalanceSheet() {
   const fmt    = n => 'RM ' + Math.abs(n).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
   const valStr = n => `${n < 0 ? '(' : ''}${fmt(n)}${n < 0 ? ')' : ''}`;
   const renderRow = (a) => {
-    const v    = valueOf(a);
+    // Show contra-equity (Drawings) as a negative figure so the math is visually
+    // self-consistent with the section total.
+    const v    = signedValue(a);
     const isLive = a.mapsFrom && a.mapsFrom.length;
     if (Math.abs(v) < 0.005 && !isLive) return ''; // hide hardcoded zero accounts
     const code = a.code ? `<span style="color:var(--text3);font-family:'DM Mono',monospace;font-size:11px;margin-right:6px">${a.code}</span>` : '';
