@@ -2215,13 +2215,33 @@ async function loadDashboard() {
   const bankPv    = vouchers.filter(v => !_isDraw(v)).reduce((s,v) => s + parseFloat(v.amount||0), 0);
   const bankBal   = r2(OB_BANK + bankRc - bankPv);
 
+  // ── Recompute "This Month" client-side (server figure was always 0). ──
+  // Match by inv_date or date in current YYYY-MM, regardless of stored format
+  // (ISO '2026-05-13' or 'Wed May 13 2026 ...' both supported).
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm   = String(now.getMonth() + 1).padStart(2, '0');
+  const _MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const _isThisMonth = d => {
+    if (!d) return false;
+    if (/^\d{4}-\d{2}/.test(d)) return d.slice(0,7) === yyyy + '-' + mm;
+    // JS Date toString format e.g. "Wed May 13 2026 ..."
+    const m = d.match(/^[A-Za-z]{3}\s+([A-Za-z]{3})\s+\d+\s+(\d{4})/);
+    if (m) return _MONTH_SHORT[now.getMonth()] === m[1] && String(yyyy) === m[2];
+    try { const dt = new Date(d); return !isNaN(dt) && dt.getFullYear() === yyyy && dt.getMonth() === now.getMonth(); }
+    catch(e) { return false; }
+  };
+  const thisMonthInvs = (INVOICES || []).filter(i =>
+    i.status !== 'cancelled' && _isThisMonth(i.inv_date || i.date || ''));
+  const thisMonthBilled = r2(thisMonthInvs.reduce((s,i) => s + parseFloat(i.amount||0) + parseFloat(i.disb_amount||0), 0));
+
   document.getElementById('dm-billed').textContent     = fmt(d.total_billed);
   document.getElementById('dm-received').textContent   = fmt(d.total_received);
   document.getElementById('dm-outstanding').textContent = fmt(correctedOutstanding);
   document.getElementById('dm-outstanding-count').textContent = outstandingInvs.length + ' invoices';
   document.getElementById('dm-bank').textContent       = fmt(bankBal);
-  document.getElementById('dm-month').textContent      = fmt(d.this_month_billed);
-  document.getElementById('dm-month-count').textContent = d.this_month_count + ' invoices';
+  document.getElementById('dm-month').textContent      = fmt(thisMonthBilled);
+  document.getElementById('dm-month-count').textContent = thisMonthInvs.length + ' invoices';
   document.getElementById('dm-clients').textContent    = d.total_clients;
 
   // Recent invoices
@@ -2234,17 +2254,29 @@ async function loadDashboard() {
       <td>${statusBadge(i.status)}</td>
     </tr>`).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:20px">No invoices yet</td></tr>';
 
-  const outstanding = outstandingInvs.slice(0, 8);
-  document.getElementById('dash-outstanding').innerHTML = outstanding.length ? outstanding.map(i => {
+  // ── Outstanding Debtors: show ALL, sorted oldest first, with a footer total
+  //    that ties to the Trade Debtor line on the Balance Sheet. ──
+  const outstanding = outstandingInvs.slice()
+    .sort((a,b) => (a.inv_date || a.date || '').localeCompare(b.inv_date || b.date || ''));
+  const outstandingTotal = r2(outstanding.reduce((s, i) => s + remaining(i), 0));
+  const rowsHtml = outstanding.map(i => {
     const bal = remaining(i);
     const isPartial = i.status === 'partial' || (paidMap[i.inv_no] && paidMap[i.inv_no] > 0);
     return `
-    <tr>
+    <tr style="cursor:pointer" onclick="openInvoiceByNo('${i.inv_no}')" title="Click to open invoice">
       <td><span style="font-family:'DM Mono',monospace;font-size:12px">${i.inv_no}</span></td>
       <td>${i.client_name}</td>
-      <td>RM ${bal.toLocaleString('en-MY',{minimumFractionDigits:2})}${isPartial?'<span style="font-size:10px;color:var(--text3);margin-left:4px">(partial)</span>':''}</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace">RM ${bal.toLocaleString('en-MY',{minimumFractionDigits:2})}${isPartial?'<span style="font-size:10px;color:var(--text3);margin-left:4px">(partial)</span>':''}</td>
     </tr>`;
-  }).join('') : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:20px">All clear ✓</td></tr>';
+  }).join('');
+  const footerHtml = outstanding.length ? `
+    <tr style="border-top:2px solid var(--border);background:var(--surface2);font-weight:600">
+      <td colspan="2" style="padding:10px 12px">Total (${outstanding.length} invoices)</td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--amber);padding:10px 12px">RM ${outstandingTotal.toLocaleString('en-MY',{minimumFractionDigits:2})}</td>
+    </tr>` : '';
+  document.getElementById('dash-outstanding').innerHTML = outstanding.length
+    ? rowsHtml + footerHtml
+    : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:20px">All clear ✓</td></tr>';
 }
 
 // ══════════════════════════════════════════════════
@@ -6406,6 +6438,16 @@ function _remUndismiss(key) {
   delete map[key];
   localStorage.setItem(REM_DISMISSED_KEY, JSON.stringify(map));
 }
+function openInvoiceByNo(inv_no) {
+  // Helper: open the invoice modal from anywhere by inv_no (the openInvoiceModal
+  // function expects inv_id). Used by Client Deadlines so the user can verify
+  // the auto-matched billed invoice.
+  if (!inv_no) return;
+  const inv = (INVOICES || []).find(x => x.inv_no === inv_no);
+  if (!inv) { toast && toast('Invoice ' + inv_no + ' not found in cache','info'); return; }
+  if (typeof openInvoiceModal === 'function') openInvoiceModal(inv.inv_id);
+}
+
 function remDismissDeadline(key, label) {
   if (!confirm('Dismiss this deadline?\n\n' + (label || key) + '\n\nIt will be hidden from the list. You can show dismissed deadlines via the filter and restore them anytime.')) return;
   _remDismiss(key);
@@ -6740,7 +6782,7 @@ function renderReminders() {
     const days = _remDays(today, r.deadline);
     const statusBadge = '<span class="badge" style="background:' + r.status.color + '20;color:' + r.status.color + ';font-size:11px">' + r.status.label + '</span>';
     const billed = r.invoiceRef
-      ? '<span class="badge badge-green" style="font-size:11px" title="Auto-detected from invoice">' + r.invoiceRef + '</span>'
+      ? '<span class="badge badge-green" onclick="event.stopPropagation();openInvoiceByNo(\'' + r.invoiceRef + '\')" title="Click to open invoice — verify this is the right match" style="font-size:11px;cursor:pointer;text-decoration:underline dotted">' + r.invoiceRef + '</span>'
       : '<span style="color:var(--text3);font-size:11px">—</span>';
     const doneBtnLabel = r.done ? '✓' : '○';
     const doneBtnTitle = r.manualOverride ? 'Manual override (click to cycle)' : 'Auto-status — click to override';
