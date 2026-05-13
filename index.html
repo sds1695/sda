@@ -6358,66 +6358,344 @@ async function loadIncomeStatement() {
 }
 
 
-async function renderReminders() {
-  const tbody = document.getElementById('rem-tbody');
-  if (!tbody) return;
-  if (!INVOICES.length) await loadInvoices();
-  if (!CLIENTS.length) await loadClients();
-  // Build reminder rows from clients with deadlines
-  const today = new Date(); today.setHours(0,0,0,0);
-  const rows = [];
-  (CLIENTS || []).forEach(c => {
-    const meta = (typeof getClientMeta === 'function') ? getClientMeta(c.client_id) : {};
+// ══════════════════════════════════════════════════
+// CLIENT DEADLINES (Reminders)
+// Generates per-client tax / cosec / audit / payroll deadlines from clientMeta.
+// Rules (per user spec, 2026-05-08):
+//   Annual Return (cosec)          : anniversary of incorporation
+//   Beneficial Ownership (cosec)   : same as Annual Return
+//   Audit / FS                     : year_end + 6 months
+//   MBRS XBRL                      : year_end + 7 months
+//   Tax (Form C)                   : year_end + 8 months
+//   CP204                          : 1st of (YE month - 1) calendar (~30d lead before statutory)
+//   CP204a (1st/2nd/3rd revision)  : 1st of 6th, 9th, 11th month of FY
+//   Form E (payroll)               : 31 March of following calendar year
+// Done detection: matching invoice job_type + manual override (localStorage).
+// Cutoff: only show deadlines on or after 2026-01-01.
+// ══════════════════════════════════════════════════
+const REM_DONE_KEY  = 'seraya_deadlines_done_v1';
+const REM_CUTOFF    = '2026-01-01';
+let _remSort = { col: 'deadline', dir: 'asc' };
+
+function _remGetDoneMap() {
+  try { return JSON.parse(localStorage.getItem(REM_DONE_KEY) || '{}'); }
+  catch(e) { return {}; }
+}
+function _remSetManual(key, state) {
+  // state: 'done', 'undone', or null (clear override)
+  const map = _remGetDoneMap();
+  if (state === null) delete map[key];
+  else map[key] = { state, ts: new Date().toISOString() };
+  localStorage.setItem(REM_DONE_KEY, JSON.stringify(map));
+}
+
+function _remParseYearEnd(s) {
+  if (!s) return null;
+  const fmt = formatYearEnd(s);
+  const m = /^([A-Z][a-z]{2})\s+(\d+)$/.exec(fmt || '');
+  if (!m) return null;
+  const monthIdx = _MONTH_NAMES.indexOf(m[1]);
+  const day = parseInt(m[2], 10);
+  if (monthIdx < 0 || !day) return null;
+  return { month: monthIdx, day };
+}
+
+function _remAddMonths(date, months) {
+  const d = new Date(date.getFullYear(), date.getMonth() + months, 1);
+  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  d.setDate(Math.min(date.getDate(), lastDay));
+  return d;
+}
+
+function _remFmtDate(d) {
+  if (!d || isNaN(d)) return '—';
+  return d.toLocaleDateString('en-MY', { day:'numeric', month:'short', year:'numeric' });
+}
+
+function _remDays(from, to) {
+  return Math.floor((to - from) / 86400000);
+}
+
+const REM_TASK_INVOICE_MATCH = {
+  tax:        ['tax'],
+  audit:      ['audit', 'fs'],
+  mbrs:       ['mbrs'],
+  cp204:      ['cp204', 'tax'],
+  cp204a_1:   ['cp204a', 'tax'],
+  cp204a_2:   ['cp204a', 'tax'],
+  cp204a_3:   ['cp204a', 'tax'],
+  ar:         ['cosec', 'cosec_retainer', 'cosec_other'],
+  bo:         ['cosec', 'cosec_retainer', 'cosec_other'],
+  form_e:     ['form_e', 'payroll']
+};
+
+const REM_TASK_TYPE = {
+  tax:'tax', cp204:'tax', cp204a_1:'tax', cp204a_2:'tax', cp204a_3:'tax',
+  audit:'audit', mbrs:'audit',
+  ar:'cosec', bo:'cosec',
+  form_e:'accounting'
+};
+
+function _remBuildRows() {
+  const today  = new Date(); today.setHours(0,0,0,0);
+  const cutoff = new Date(REM_CUTOFF);
+  const doneMap = _remGetDoneMap();
+
+  // Index invoices per client for fast Done lookups
+  const invoicesByClient = {};
+  (INVOICES||[]).forEach(inv => {
+    if (!inv.client_id || inv.status === 'cancelled') return;
+    (invoicesByClient[inv.client_id] = invoicesByClient[inv.client_id] || []).push(inv);
+  });
+
+  const out = [];
+  const push = (c, task, label, dueDate, fyLabel, year) => {
+    if (!dueDate || isNaN(dueDate)) return;
+    if (dueDate < cutoff) return;
+    out.push({
+      client_id: c.client_id,
+      client_name: c.name || '(unnamed)',
+      task, label, fyLabel, year,
+      type: REM_TASK_TYPE[task] || 'other',
+      deadline: dueDate
+    });
+  };
+
+  (CLIENTS||[]).forEach(c => {
+    const meta = getClientMeta(c.client_id);
     const services = meta.services || [];
-    const year_end = meta.year_end;
-    const inc_date = meta.date_of_incorporation;
-    if (!year_end && !inc_date) return;
-    // FS/MBRS deadline: 30 days after year end + 6 months for SSM
-    if (year_end) {
-      try {
-        const ye = new Date(year_end);
-        if (!isNaN(ye)) {
-          // MBRS: 30 days after year end's AGM date (year end + 6 months)
-          const mbrsDue = new Date(ye); mbrsDue.setMonth(mbrsDue.getMonth() + 7);
-          const days = Math.floor((mbrsDue - today) / 86400000);
-          rows.push({client: c.name, type: 'MBRS', due: mbrsDue, days, year_end: ye});
+    const ye = _remParseYearEnd(meta.year_end);
+    // Anniversary of incorporation: stored as "Mon DD" string, parse to month/day only
+    const incMD = meta.date_of_incorporation ? _remParseYearEnd(meta.date_of_incorporation) : null;
+
+    // FY-tied deadlines (audit, mbrs, tax, cp204, cp204a)
+    if (ye) {
+      const baseYears = [];
+      for (let y = today.getFullYear() - 2; y <= today.getFullYear() + 1; y++) {
+        baseYears.push(y);
+      }
+      baseYears.forEach(year => {
+        const yeDate   = new Date(year, ye.month, ye.day);
+        const fyLabel  = _MONTH_NAMES[ye.month] + ' ' + year;
+        if (services.includes('tax')) {
+          push(c, 'tax', 'Tax (Form C)', _remAddMonths(yeDate, 8), fyLabel, year);
         }
-      } catch(e){}
+        if (services.includes('audit')) {
+          push(c, 'audit', 'Audit/FS', _remAddMonths(yeDate, 6), fyLabel, year);
+        } else if (services.includes('fs')) {
+          push(c, 'audit', 'FS (Audit Exemption)', _remAddMonths(yeDate, 6), fyLabel, year);
+        }
+        if (services.includes('mbrs')) {
+          push(c, 'mbrs', 'MBRS XBRL', _remAddMonths(yeDate, 7), fyLabel, year);
+        }
+        if (services.includes('tax')) {
+          let cp204Month = ye.month - 1;
+          let cp204Year  = year;
+          if (cp204Month < 0) { cp204Month = 11; cp204Year = year - 1; }
+          push(c, 'cp204', 'CP204', new Date(cp204Year, cp204Month, 1), fyLabel, year);
+        }
+        if (services.includes('tax')) {
+          const fyStart = new Date(year - 1, ye.month, ye.day);
+          fyStart.setDate(fyStart.getDate() + 1);
+          [{m:5,n:'1st'},{m:8,n:'2nd'},{m:10,n:'3rd'}].forEach((rev, idx) => {
+            const d = new Date(fyStart.getFullYear(), fyStart.getMonth() + rev.m, 1);
+            push(c, 'cp204a_'+(idx+1), 'CP204a (' + rev.n + ' revision)', d, fyLabel, year);
+          });
+        }
+      });
     }
-    if (inc_date) {
-      try {
-        const inc = new Date(inc_date);
-        if (!isNaN(inc)) {
-          // Form E annual: due Mar 31 each year
-          const formE = new Date(today.getFullYear(), 2, 31);
-          if (formE < today) formE.setFullYear(formE.getFullYear() + 1);
-          const days = Math.floor((formE - today) / 86400000);
-          if (services.includes('Form_E')) {
-            rows.push({client: c.name, type: 'Form E', due: formE, days, year_end: inc});
-          }
-        }
-      } catch(e){}
+
+    // Annual Return + BO: anniversary of incorporation (month/day only)
+    if (services.includes('cosec') && incMD) {
+      for (let y = cutoff.getFullYear(); y <= today.getFullYear() + 1; y++) {
+        const anniv = new Date(y, incMD.month, incMD.day);
+        push(c, 'ar', 'Annual Return', anniv, '—', y);
+        push(c, 'bo', 'Beneficial Ownership', anniv, '—', y);
+      }
+    }
+
+    // Form E: 31 March of (calendar year + 1)
+    if (services.includes('form_e')) {
+      for (let y = cutoff.getFullYear() - 1; y <= today.getFullYear(); y++) {
+        push(c, 'form_e', 'Form E', new Date(y + 1, 2, 31), 'CY ' + y, y);
+      }
     }
   });
-  rows.sort((a,b) => a.days - b.days);
+
+  // Auto-Done detection + manual override
+  out.forEach(row => {
+    const matchTypes = REM_TASK_INVOICE_MATCH[row.task] || [];
+    let autoDone = false, invRef = null;
+    if (matchTypes.length) {
+      const invs = invoicesByClient[row.client_id] || [];
+      const matched = invs.find(inv => {
+        const jt = (inv.job_type || '').toLowerCase();
+        if (!matchTypes.includes(jt)) return false;
+        const invDate = new Date(inv.inv_date || inv.date || '');
+        if (isNaN(invDate)) return false;
+        return Math.abs(invDate.getFullYear() - row.year) <= 1;
+      });
+      if (matched) { autoDone = true; invRef = matched.inv_no; }
+    }
+    row.autoDone = autoDone;
+    row.invoiceRef = invRef;
+    row.key = row.client_id + '|' + row.task + '|' + row.year;
+    const manual = doneMap[row.key];
+    if (manual && manual.state === 'done')   row.done = true;
+    else if (manual && manual.state === 'undone') row.done = false;
+    else row.done = autoDone;
+    row.manualOverride = !!manual;
+  });
+
+  return out;
+}
+
+function _remStatus(row, today) {
+  if (row.done) return { key: 'done',     label: 'Done',          color: 'var(--green)' };
+  const days = _remDays(today, row.deadline);
+  if (days < 0)        return { key: 'overdue', label: 'Overdue ' + Math.abs(days) + 'd', color: 'var(--red)' };
+  if (days <= 30)      return { key: 'urgent',  label: 'Due in ' + days + 'd',           color: '#ea580c' };
+  if (days <= 90)      return { key: 'soon',    label: 'Due in ' + days + 'd',           color: '#d97706' };
+  return                       { key: 'far',     label: 'Due in ' + days + 'd',           color: 'var(--green)' };
+}
+
+function remSetSort(col) {
+  if (_remSort.col === col) _remSort.dir = _remSort.dir === 'asc' ? 'desc' : 'asc';
+  else { _remSort.col = col; _remSort.dir = 'asc'; }
+  renderReminders();
+}
+
+function remToggleDone(key) {
+  const map = _remGetDoneMap();
+  const cur = map[key] && map[key].state;
+  let next;
+  if (!cur)              next = 'done';
+  else if (cur==='done') next = 'undone';
+  else                   next = null;
+  _remSetManual(key, next);
+  renderReminders();
+}
+
+function _remPopulateClientFilter(rows) {
+  const sel = document.getElementById('rem-f-client');
+  if (!sel) return;
+  const cur = sel.value;
+  const seen = new Map();
+  rows.forEach(r => { if (!seen.has(r.client_id)) seen.set(r.client_id, r.client_name); });
+  const opts = ['<option value="">All clients</option>'];
+  Array.from(seen.entries())
+    .sort((a,b) => a[1].localeCompare(b[1]))
+    .forEach(([id, name]) => opts.push('<option value="' + id + '"' + (id===cur?' selected':'') + '>' + name + '</option>'));
+  sel.innerHTML = opts.join('');
+}
+
+function _remPopulateTaskFilter(rows) {
+  const sel = document.getElementById('rem-f-task');
+  if (!sel) return;
+  const cur = sel.value;
+  const seen = new Map();
+  rows.forEach(r => { if (!seen.has(r.task)) seen.set(r.task, r.label); });
+  const opts = ['<option value="">All tasks</option>'];
+  Array.from(seen.entries())
+    .sort((a,b) => a[1].localeCompare(b[1]))
+    .forEach(([code, label]) => opts.push('<option value="' + code + '"' + (code===cur?' selected':'') + '>' + label + '</option>'));
+  sel.innerHTML = opts.join('');
+}
+
+function renderReminders() {
+  const tbody  = document.getElementById('rem-tbody');
+  const stats  = document.getElementById('rem-stats');
+  const today  = new Date(); today.setHours(0,0,0,0);
+  const todayLbl = document.getElementById('rem-today-label');
+  if (todayLbl) todayLbl.textContent = 'Today: ' + _remFmtDate(today) + ' · Showing deadlines from ' + _remFmtDate(new Date(REM_CUTOFF)) + ' onwards';
+
+  let allRows;
+  try { allRows = _remBuildRows(); }
+  catch(e) {
+    if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="padding:20px;color:var(--red)">Error: ' + e.message + '</td></tr>';
+    return;
+  }
+
+  _remPopulateClientFilter(allRows);
+  _remPopulateTaskFilter(allRows);
+
+  const fClient = document.getElementById('rem-f-client').value;
+  const fTask   = document.getElementById('rem-f-task').value;
+  const fType   = document.getElementById('rem-f-type').value;
+  const fStatus = document.getElementById('rem-f-status').value;
+  let rows = allRows.slice();
+  if (fClient) rows = rows.filter(r => r.client_id === fClient);
+  if (fTask)   rows = rows.filter(r => r.task === fTask);
+  if (fType)   rows = rows.filter(r => r.type === fType);
+
+  rows.forEach(r => { r.status = _remStatus(r, today); });
+  if (fStatus) {
+    rows = rows.filter(r => {
+      if (fStatus === 'done')    return r.status.key === 'done';
+      if (fStatus === 'overdue') return r.status.key === 'overdue';
+      if (fStatus === 'pending') return r.status.key !== 'done';
+      return true;
+    });
+  }
+
+  const counts = { overdue:0, urgent:0, soon:0, far:0, done:0 };
+  rows.forEach(r => counts[r.status.key]++);
+  if (stats) {
+    stats.innerHTML =
+      '<div class="metric-card"><div class="metric-label">Overdue</div><div class="metric-value red">' + counts.overdue + '</div></div>' +
+      '<div class="metric-card"><div class="metric-label">Due ≤ 30 days</div><div class="metric-value" style="color:#ea580c">' + counts.urgent + '</div></div>' +
+      '<div class="metric-card"><div class="metric-label">Due 31–90 days</div><div class="metric-value amber">' + counts.soon + '</div></div>' +
+      '<div class="metric-card"><div class="metric-label">Due > 90 days</div><div class="metric-value green">' + counts.far + '</div></div>' +
+      '<div class="metric-card"><div class="metric-label">Done</div><div class="metric-value">' + counts.done + '</div></div>';
+  }
+  const cnt = document.getElementById('rem-count-label');
+  if (cnt) cnt.textContent = rows.length + ' of ' + allRows.length + ' deadline' + (allRows.length===1?'':'s');
+
+  const dir = _remSort.dir === 'asc' ? 1 : -1;
+  rows.sort((a,b) => {
+    let av, bv;
+    switch (_remSort.col) {
+      case 'client':   av=a.client_name; bv=b.client_name; break;
+      case 'task':     av=a.label;       bv=b.label;       break;
+      case 'days':     av=a.deadline-today; bv=b.deadline-today; break;
+      case 'urgency': {
+        const order = { overdue:0, urgent:1, soon:2, far:3, done:4 };
+        av = order[a.status.key]; bv = order[b.status.key]; break;
+      }
+      default:         av=a.deadline; bv=b.deadline;
+    }
+    if (av < bv) return -1*dir;
+    if (av > bv) return  1*dir;
+    return 0;
+  });
+
+  if (!tbody) return;
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--text3)">No deadlines configured. Add year-end / incorporation dates to clients to see reminders here.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="padding:30px;text-align:center;color:var(--text3)">No deadlines match the current filters.</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(r => {
-    const overdue = r.days < 0;
-    const soon = r.days >= 0 && r.days < 30;
-    const color = overdue ? 'var(--red)' : (soon ? 'var(--amber)' : 'var(--text)');
-    return `<tr>
-      <td>${r.client}</td>
-      <td><span class="badge" style="background:var(--surface2)">${r.type}</span></td>
-      <td>${r.due.toLocaleDateString('en-MY')}</td>
-      <td style="color:${color};font-weight:600">${overdue ? 'OVERDUE ' + Math.abs(r.days) + 'd' : (r.days + ' days')}</td>
-      <td colspan="6"></td>
-    </tr>`;
+    const days = _remDays(today, r.deadline);
+    const statusBadge = '<span class="badge" style="background:' + r.status.color + '20;color:' + r.status.color + ';font-size:11px">' + r.status.label + '</span>';
+    const billed = r.invoiceRef
+      ? '<span class="badge badge-green" style="font-size:11px" title="Auto-detected from invoice">' + r.invoiceRef + '</span>'
+      : '<span style="color:var(--text3);font-size:11px">—</span>';
+    const doneBtnLabel = r.done ? '✓' : '○';
+    const doneBtnTitle = r.manualOverride ? 'Manual override (click to cycle)' : 'Auto-status — click to override';
+    const doneBtn = '<button class="btn btn-ghost" onclick="remToggleDone(\'' + r.key + '\')" title="' + doneBtnTitle + '" style="padding:4px 10px;font-size:14px;' + (r.done?'color:var(--green)':'color:var(--text3)') + '">' + doneBtnLabel + '</button>';
+    return '<tr>' +
+      '<td>' + statusBadge + '</td>' +
+      '<td><strong>' + r.client_name + '</strong></td>' +
+      '<td style="font-size:11px;color:var(--text2)">' + r.fyLabel + '</td>' +
+      '<td>' + r.label + '</td>' +
+      '<td style="font-family:\'DM Mono\',monospace;font-size:12px">' + _remFmtDate(r.deadline) + '</td>' +
+      '<td style="font-family:\'DM Mono\',monospace;font-size:12px;color:' + r.status.color + '">' + (days<0?'+':'') + Math.abs(days) + 'd</td>' +
+      '<td><span class="badge" style="font-size:11px">' + r.type + '</span></td>' +
+      '<td>' + billed + '</td>' +
+      '<td>' + doneBtn + '</td>' +
+      '<td></td>' +
+    '</tr>';
   }).join('');
-  const stats = document.getElementById('rem-stats');
-  if (stats) stats.textContent = rows.length + ' deadline(s) tracked';
 }
 
 </script>
