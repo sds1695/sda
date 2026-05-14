@@ -2225,9 +2225,22 @@ async function openAccountDrill(code) {
   } catch (e) { console.warn('drill-down data load failed', e); }
   augmentInvoicesWithJobType();
 
-  const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled');
+  // Match the IS page's FY year filter (loadBalanceSheet line ~6698) so the drill total
+  // ties to the IS line. P/L accounts → filter to current FY only. BS accounts → ALL years
+  // (because balance-sheet figures are cumulative, not period-bounded).
+  const _fyYear = String(new Date().getFullYear());
+  const _extractFYYear = d => { if (!d) return ''; if (/^\d{4}/.test(d)) return d.slice(0,4); const m = (d||'').match(/\b(\d{4})\b/); return m ? m[1] : ''; };
+  const _inFY = d => _extractFYYear(d||'') === _fyYear;
+  const _shouldFilterByFY = !isBS;  // P/L accounts only
+  const invoices = (INVOICES||[])
+    .filter(i => i.status !== 'cancelled')
+    .filter(i => !_shouldFilterByFY || _inFY(i.inv_date||i.date||''));
   const receipts = (RECEIPTS||[]);
-  const vouchers = (VOUCHERS||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
+  const vouchers = (VOUCHERS||[])
+    .filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString())
+      && !(v.description||'').startsWith('__VOID__')
+      && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()))
+    .filter(v => !_shouldFilterByFY || _inFY(v.date||''));
 
   const txns = [];
 
@@ -5976,10 +5989,21 @@ function loadCOA() {
   const coa = getCOA();
   const fmt = n => parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
 
-  // Compute live values for every account so we can show them on the page
+  // Compute live values for every account so we can show them on the page.
+  // For P/L accounts: filter to current FY so the value matches the IS line.
+  // For BS accounts: pass unfiltered (cumulative balances) — computeAccountValue is only
+  // ever called for accounts with mapsFrom, which we segregate below.
   augmentInvoicesWithJobType();
-  const invoices = (INVOICES||[]).filter(i => i.status !== 'cancelled');
-  const vouchers = (VOUCHERS||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+  const _fyYearCOA = String(new Date().getFullYear());
+  const _extractFYYearCOA = d => { if (!d) return ''; if (/^\d{4}/.test(d)) return d.slice(0,4); const m = (d||'').match(/\b(\d{4})\b/); return m ? m[1] : ''; };
+  const _inFYCOA = d => _extractFYYearCOA(d||'') === _fyYearCOA;
+  const invoicesAll = (INVOICES||[]).filter(i => i.status !== 'cancelled');
+  const vouchersAll = (VOUCHERS||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+  const invoicesFY  = invoicesAll.filter(i => _inFYCOA(i.inv_date||i.date||''));
+  const vouchersFY  = vouchersAll.filter(v => _inFYCOA(v.date||''));
+  // Backward-compat aliases (the rest of this function still references `invoices`/`vouchers`)
+  const invoices = invoicesAll;
+  const vouchers = vouchersAll;
 
   let bsCnt=0, plCnt=0, liveCnt=0, hardCnt=0;
   coa.forEach(a => {
@@ -6009,8 +6033,11 @@ function loadCOA() {
         const sourceTxt = live
           ? `<span class="badge" style="font-size:10px">live</span> <span style="font-size:11px;color:var(--text3)">${a.mapsFrom.join(', ')}</span>`
           : `<span class="badge" style="font-size:10px">hardcoded</span>`;
-        // Compute the actual displayed value for this account (live or hardcoded)
-        const liveVal = computeAccountValue(a, invoices, vouchers);
+        // Compute the actual displayed value for this account (live or hardcoded).
+        // P/L accounts use FY-filtered data so the COA listing ties to the Income Statement.
+        // BS accounts use unfiltered (cumulative) data.
+        const _isPL_COA = (COA_SECTIONS[a.section]||{}).statement === 'PL';
+        const liveVal = computeAccountValue(a, _isPL_COA ? invoicesFY : invoicesAll, _isPL_COA ? vouchersFY : vouchersAll);
         const valTxt  = fmt(liveVal);
         const valDim  = Math.abs(liveVal) < 0.005 ? 'opacity:0.45' : '';
         html += `<tr>
