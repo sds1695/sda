@@ -2752,6 +2752,29 @@ async function openAccountDrill(code) {
 // ══════════════════════════════════════════════════
 // DASHBOARD
 // ══════════════════════════════════════════════════
+// SHARED CLIENT-MATCHING HELPER
+// ══════════════════════════════════════════════════
+// Returns true when a drawings receipt can be attributed to a known invoice client.
+// Three-tier strategy:
+//   1. inv_no exact match (case-insensitive) — most reliable
+//   2. Full-string substring match: "ABC" ⊆ "ABC Sdn Bhd" or vice-versa
+//   3. Word-level match: any significant word (≥4 chars) shared between the
+//      receipt client_name and an invoice client_name.
+//      Catches notes appended to names, e.g. "Prithishan partial" → "Prithishan a/l Kumar"
+function matchDrawingsClient(rn, rc, iNoSet, iClArr) {
+  if (rn && iNoSet.has(rn)) return true;
+  if (rc.length < 3) return false;
+  if (iClArr.some(ic => ic === rc || ic.includes(rc) || rc.includes(ic))) return true;
+  // Word-level fallback — split on whitespace and common punctuation
+  const rcWords = rc.split(/[\s\/,&()+.]+/).filter(w => w.length >= 4);
+  if (!rcWords.length) return false;
+  return iClArr.some(ic => {
+    const icWords = ic.split(/[\s\/,&()+.]+/).filter(w => w.length >= 4);
+    return rcWords.some(rw => icWords.includes(rw));
+  });
+}
+
+// ══════════════════════════════════════════════════
 // ACCOUNTING HEALTH — called at end of loadDashboard with already-fetched data
 // ══════════════════════════════════════════════════
 function runAccountingHealth(receipts, vouchers) {
@@ -2781,14 +2804,29 @@ function runAccountingHealth(receipts, vouchers) {
     const iClArr   = [...new Set(allInvs.map(i=>(i.client_name||'').toLowerCase().trim()).filter(n=>n.length>=3))];
     const tdDrawRc = receipts.filter(r => {
       if (!_isD(r)) return false;
-      const rn=(r.inv_no||'').toLowerCase().trim(), rc=(r.client_name||'').toLowerCase().trim();
-      return (rn&&iNoSet.has(rn))||(rc.length>=3&&iClArr.some(ic=>ic===rc||ic.includes(rc)||rc.includes(ic)));
+      return matchDrawingsClient((r.inv_no||'').toLowerCase().trim(),(r.client_name||'').toLowerCase().trim(),iNoSet,iClArr);
     }).reduce((s,r)=>s+parseFloat(r.amount||0),0);
     const liveTD = r2(obTD + newInv - bankRc - tdDrawRc);
 
     // ── Trade Debtor (status-based) for drift check ──
     const statusTD = r2(allInvs.filter(i=>i.status==='outstanding'||i.status==='partial').reduce((s,i)=>s+parseFloat(i.amount_outstanding||i.amount||0),0));
     const tdDrift  = r2(statusTD - liveTD); // +ve = invoices not yet marked paid; -ve = receipts without invoices
+
+    // ── Identify WHICH invoices are causing positive drift (paid in transactions but status stale) ──
+    // Build combined receipt map: bank receipts by inv_no + matched drawings receipts by inv_no
+    const _rcptByInv = {};
+    receipts.forEach(r => {
+      const k = (r.inv_no||'').toLowerCase().trim();
+      if (k) _rcptByInv[k] = r2((_rcptByInv[k]||0) + parseFloat(r.amount||0));
+    });
+    const driftInvs = tdDrift > 0.02
+      ? allInvs.filter(i => {
+          if (i.status !== 'outstanding' && i.status !== 'partial') return false;
+          const k = (i.inv_no||'').toLowerCase().trim();
+          const paid = _rcptByInv[k] || 0;
+          return paid >= parseFloat(i.amount||0) * 0.995; // fully covered (0.5% tolerance)
+        })
+      : [];
 
     // ── Drawings ──
     const obDraw      = parseFloat(((COA_OPENING_BALANCES['3300']||{}).amount)||0);
@@ -2825,8 +2863,7 @@ function runAccountingHealth(receipts, vouchers) {
     // ── Unmatched drawings receipts (each one is a potential BS gap driver) ──
     const unmatchedDraw = receipts.filter(r => {
       if (!_isD(r)) return false;
-      const rn=(r.inv_no||'').toLowerCase().trim(), rc=(r.client_name||'').toLowerCase().trim();
-      return !((rn&&iNoSet.has(rn))||(rc.length>=3&&iClArr.some(ic=>ic===rc||ic.includes(rc)||rc.includes(ic))));
+      return !matchDrawingsClient((r.inv_no||'').toLowerCase().trim(),(r.client_name||'').toLowerCase().trim(),iNoSet,iClArr);
     });
 
     // ── Render chips ──
@@ -2846,7 +2883,11 @@ function runAccountingHealth(receipts, vouchers) {
       : `Gap ${bsGap>0?'+':''}${fmtRM(bsGap)} — Assets ${bsGap>0?'>':'<'} Equity+Liabilities${!drawOk?' · caused by unmatched drawings receipt(s) below':''}`;
     const tdDetail   = tdOk
       ? `${allInvs.filter(i=>i.status==='outstanding'||i.status==='partial').length} invoices outstanding — statuses current`
-      : `${fmtRM(Math.abs(tdDrift))} drift — ${tdDrift>0?'invoices outstanding in GSheet but receipts already recorded':'receipts recorded without matching invoice'}`;
+      : tdDrift > 0.02 && driftInvs.length
+        ? `${fmtRM(tdDrift)} drift — GSheet status stale for:<br>` +
+          driftInvs.map(i => `${i.inv_no||'?'} · ${i.client_name||'?'} · ${fmtRM(parseFloat(i.amount||0))}`).join('<br>') +
+          '<br><span style="opacity:.75;font-style:italic">Fix: mark these invoices as "paid" in GSheets Invoices tab</span>'
+        : `${fmtRM(Math.abs(tdDrift))} drift — ${tdDrift>0?'invoices outstanding in GSheet but receipts already recorded':'receipts recorded without matching invoice'}`;
     const drawDetail = drawOk
       ? 'All drawings receipts matched to invoice clients'
       : unmatchedDraw.map(r => {
@@ -2944,14 +2985,20 @@ async function loadDashboard() {
     i.status !== 'cancelled' && _isThisMonth(i.inv_date || i.date || ''));
   const thisMonthBilled = r2(thisMonthInvs.reduce((s,i) => s + parseFloat(i.amount||0), 0)); // amount includes disb
 
-  document.getElementById('dm-billed').textContent     = fmt(d.total_billed);
-  document.getElementById('dm-received').textContent   = fmt(d.total_received);
+  // ── All six metric cards computed client-side from live arrays — no server snapshots ──
+  const ytdBilled   = r2((INVOICES||[]).filter(i => i.status !== 'cancelled')
+                          .reduce((s,i) => s + parseFloat(i.amount||0), 0));
+  const ytdReceived = r2(receipts.reduce((s,r) => s + parseFloat(r.amount||0), 0));
+  const liveClients = CLIENTS.length || d.total_clients; // CLIENTS may not be loaded yet on first render
+
+  document.getElementById('dm-billed').textContent     = fmt(ytdBilled);
+  document.getElementById('dm-received').textContent   = fmt(ytdReceived);
   document.getElementById('dm-outstanding').textContent = fmt(correctedOutstanding);
   document.getElementById('dm-outstanding-count').textContent = outstandingInvs.length + ' invoices';
   document.getElementById('dm-bank').textContent       = fmt(bankBal);
   document.getElementById('dm-month').textContent      = fmt(thisMonthBilled);
   document.getElementById('dm-month-count').textContent = thisMonthInvs.length + ' invoices';
-  document.getElementById('dm-clients').textContent    = d.total_clients;
+  document.getElementById('dm-clients').textContent    = liveClients;
 
   // Recent invoices
   const recent = INVOICES.slice().sort((a,b) => b.created_at > a.created_at ? 1 : -1).slice(0, 6);
@@ -7158,10 +7205,11 @@ async function loadBalanceSheet() {
   const _invClientArr = [...new Set(allInvoices.map(i => (i.client_name||'').toLowerCase().trim()).filter(n => n.length >= 3))];
   const _tdDrawRc     = (RECEIPTS||[]).filter(r => {
     if (!_isBSDrawings(r)) return false;
-    const rn = (r.inv_no||'').toLowerCase().trim();
-    const rc = (r.client_name||'').toLowerCase().trim();
-    return (rn && _invNoSet.has(rn)) ||
-           (rc.length >= 3 && _invClientArr.some(ic => ic === rc || ic.includes(rc) || rc.includes(ic)));
+    return matchDrawingsClient(
+      (r.inv_no||'').toLowerCase().trim(),
+      (r.client_name||'').toLowerCase().trim(),
+      _invNoSet, _invClientArr
+    );
   }).reduce((s,r) => s + parseFloat(r.amount||0), 0);
   const liveDebtors   = r2(_tdOB + _tdNewInv - bankRcTotal - _tdDrawRc);
 
