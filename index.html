@@ -2118,44 +2118,55 @@ function runDataIntegrityChecks() {
   const vouchersRaw = window.VOUCHERS_RAW || [];
   const allocsRaw   = window.ALLOCATIONS_RAW || [];
   const invoicesRaw = window.INVOICES_RAW || [];
+  // Skip stale-blocklist checks if the raw arrays haven't been populated yet —
+  // otherwise we'd false-flag every blocklist entry as "missing from sheet" when
+  // really we just haven't loaded the sheet yet. The check will re-run after the
+  // next data load completes.
+  const haveVouchersRaw = vouchersRaw.length > 0;
+  const haveAllocsRaw   = allocsRaw.length > 0;
+  const haveInvoicesRaw = invoicesRaw.length > 0;
 
   // ── Check 1: VOUCHER_VOID_IDS entries that are NOT __VOID__'d in the sheet ──
-  const voucherBlocklist = window.VOUCHER_VOID_IDS || [];
-  voucherBlocklist.forEach(id => {
-    const v = vouchersRaw.find(x => (x.voucher_id||x.id||'').toString() === id.toString());
-    if (!v) {
-      issues.push({
-        severity: 'low', area: 'Vouchers (blocklist)',
-        summary: `Stale blocklist ID: ${id}`,
-        detail: `'${id}' is in window.VOUCHER_VOID_IDS but no voucher with that ID exists in the live Google Sheet. Safe to remove the entry from index.html line ~1528 to keep the blocklist tidy.`,
-      });
-    } else {
-      const desc = v.description || '';
-      if (!desc.startsWith('__VOID__')) {
+  if (haveVouchersRaw) {
+    const voucherBlocklist = window.VOUCHER_VOID_IDS || [];
+    voucherBlocklist.forEach(id => {
+      const v = vouchersRaw.find(x => (x.voucher_id||x.id||'').toString() === id.toString());
+      if (!v) {
         issues.push({
-          severity: 'high', area: 'Vouchers (split-mechanism mismatch)',
-          summary: `${v.voucher_no || id} hidden by JS but visible in sheet`,
-          detail: `Voucher ${v.voucher_no} (RM ${_integrityFmt(v.amount)}, category=${v.category}) is hidden in the dashboard via window.VOUCHER_VOID_IDS, but its sheet description doesn't start with __VOID__. Any tool that reads the sheet directly (recon scripts, Excel sync, drill-down on another device with localStorage cleared) will see it. This is exactly the class of bug that caused PV26027 to make Sole prop wages short by RM 415.76 on 2026-05-14.`,
-          fix: `Either (a) prefix the voucher's description in the Vouchers sheet with "__VOID__" so all consumers agree it's voided, OR (b) remove '${id}' from window.VOUCHER_VOID_IDS at index.html line ~1528 if it should actually be visible.`,
+          severity: 'low', area: 'Vouchers (blocklist)',
+          summary: `Stale blocklist ID: ${id}`,
+          detail: `'${id}' is in window.VOUCHER_VOID_IDS but no voucher with that ID exists in the live Google Sheet. Safe to remove the entry from index.html line ~1528 to keep the blocklist tidy.`,
         });
+      } else {
+        const desc = v.description || '';
+        if (!desc.startsWith('__VOID__')) {
+          issues.push({
+            severity: 'high', area: 'Vouchers (split-mechanism mismatch)',
+            summary: `${v.voucher_no || id} hidden by JS but visible in sheet`,
+            detail: `Voucher ${v.voucher_no} (RM ${_integrityFmt(v.amount)}, category=${v.category}) is hidden in the dashboard via window.VOUCHER_VOID_IDS, but its sheet description doesn't start with __VOID__. Any tool that reads the sheet directly (recon scripts, Excel sync, drill-down on another device with localStorage cleared) will see it. This is exactly the class of bug that caused PV26027 to make Sole prop wages short by RM 415.76 on 2026-05-14.`,
+            fix: `Either (a) prefix the voucher's description in the Vouchers sheet with "__VOID__" so all consumers agree it's voided, OR (b) remove '${id}' from window.VOUCHER_VOID_IDS at index.html line ~1528 if it should actually be visible.`,
+          });
+        }
       }
-    }
-  });
+    });
+  }
 
   // ── Check 2: ALLOC_VOID_IDS stale entries ──
-  const allocBlocklist = window.ALLOC_VOID_IDS || [];
-  allocBlocklist.forEach(id => {
-    const a = allocsRaw.find(x => (x.alloc_id||'').toString() === id.toString());
-    if (!a) {
-      issues.push({
-        severity: 'low', area: 'Allocations (blocklist)',
-        summary: `Stale blocklist ID: ${id}`,
-        detail: `'${id}' is in window.ALLOC_VOID_IDS but no allocation with that ID exists in the live sheet. Safe to remove from index.html line ~1538.`,
-      });
-    }
-    // (Allocations have no description/__VOID__ field, so we can't cross-check
-    //  the way we do for vouchers. Stale-entry detection is the best we can do.)
-  });
+  if (haveAllocsRaw) {
+    const allocBlocklist = window.ALLOC_VOID_IDS || [];
+    allocBlocklist.forEach(id => {
+      const a = allocsRaw.find(x => (x.alloc_id||'').toString() === id.toString());
+      if (!a) {
+        issues.push({
+          severity: 'low', area: 'Allocations (blocklist)',
+          summary: `Stale blocklist ID: ${id}`,
+          detail: `'${id}' is in window.ALLOC_VOID_IDS but no allocation with that ID exists in the live sheet. Safe to remove from index.html line ~1538.`,
+        });
+      }
+      // (Allocations have no description/__VOID__ field, so we can't cross-check
+      //  the way we do for vouchers. Stale-entry detection is the best we can do.)
+    });
+  }
 
   // ── Check 3: Multi-row allocation splits whose gross_fees don't sum to invoice.amount ──
   // Build alloc-by-inv index from FILTERED ALLOCATIONS (the ones the dashboard actually uses)
@@ -2186,6 +2197,8 @@ function runDataIntegrityChecks() {
   // ── Check 4: Duplicate inv_no or voucher_no ──
   // Differentiate between active duplicates (will double-count → HIGH) and merely
   // cancelled-duplicate-of-active (no compute impact, just data hygiene → LOW).
+  // Skip if raw data isn't loaded yet (would produce a misleading "no duplicates" result).
+  if (haveInvoicesRaw) {
   const seenInv = {}; // inv_no -> {active:n, cancelled:n}
   (invoicesRaw||[]).forEach(i => {
     const k = (i.inv_no||'').toString().trim();
@@ -2215,6 +2228,8 @@ function runDataIntegrityChecks() {
       });
     }
   });
+  } // end haveInvoicesRaw
+  if (haveVouchersRaw) {
   const seenVou = {};
   (vouchersRaw||[]).filter(v => !(v.description||'').startsWith('__VOID__')).forEach(v => {
     const k = (v.voucher_no||'').toString().trim();
@@ -2228,6 +2243,7 @@ function runDataIntegrityChecks() {
       detail: `${n} non-voided rows in the Vouchers sheet share voucher_no "${k}". May be intentional (e.g. split entries) but worth checking.`,
     });
   });
+  } // end haveVouchersRaw
 
   // ── Render banner ──
   renderIntegrityBanner(issues);
@@ -4289,11 +4305,13 @@ async function saveAllocEdit() {
     closeModal('modal-alloc-edit');
     const allocRes = await api({ action: 'get_allocations' });
     if (allocRes.ok) {
+      window.ALLOCATIONS_RAW = (allocRes.data || []).slice();
       ALLOCATIONS = (allocRes.data || []).filter(a =>
         !(a.inv_no || '').startsWith('_DUP_') &&
         !(window.ALLOC_VOID_IDS || []).includes((a.alloc_id || '').toString())
       );
       renderAllocations();
+      try { runDataIntegrityChecks(); } catch(e) { console.warn('integrity check failed', e); }
     }
   } else {
     toast('Save failed: ' + (res.error || 'unknown error'), 'error');
@@ -5692,10 +5710,13 @@ async function loadInvoiceBreakdown() {
   if (!INVOICES.length) await loadInvoices();
   if (!ALLOCATIONS.length) {
     const r = await api({ action: 'get_allocations' });
-    if (r.ok) ALLOCATIONS = (r.data || []).filter(a =>
-      !(a.inv_no || '').startsWith('_DUP_') &&
-      !(window.ALLOC_VOID_IDS || []).includes((a.alloc_id || '').toString())
-    );
+    if (r.ok) {
+      window.ALLOCATIONS_RAW = (r.data || []).slice();
+      ALLOCATIONS = (r.data || []).filter(a =>
+        !(a.inv_no || '').startsWith('_DUP_') &&
+        !(window.ALLOC_VOID_IDS || []).includes((a.alloc_id || '').toString())
+      );
+    }
   }
   if (!RECEIPTS.length) await loadReceipts();
   renderInvoiceBreakdown();
