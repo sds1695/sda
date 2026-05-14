@@ -7360,15 +7360,31 @@ async function loadBalanceSheet() {
   }).reduce((s,r) => s + parseFloat(r.amount||0), 0);
   const liveDebtors   = r2(_tdOB + _tdNewInv - bankRcTotal - _tdDrawRc);
 
+  // Pre-compute live drawings once so the pin and the fallback path both share it.
+  const _liveDrawingsVal = (() => {
+    const ob = parseFloat(((COA_OPENING_BALANCES['3300']||{}).amount) || 0);
+    const drawPv = _allVouchers.filter(v => (v.bank_account||v.payment_account||'').toLowerCase().includes('draw'))
+                               .reduce((s,v) => s + parseFloat(v.amount||0), 0);
+    const drawRc = (RECEIPTS||[]).filter(r => (r.bank_account||r.payment_account||'').toLowerCase().includes('draw'))
+                                 .reduce((s,r) => s + parseFloat(r.amount||0), 0);
+    return r2(ob + drawPv - drawRc);
+  })();
+
   const valueOf = (a) => {
     // Priority: live mapsFrom > hardcoded snapshot > COA_DEFAULT fallback > derived source.
     // BS values are Excel snapshots — they stay fixed until the COA is updated.
     // Drill-down shows live Google Sheets data and flags any variance vs snapshot.
-    // 1010 Bank + 1100 Trade Debtor: always live — never allow stale localStorage/OB
-    // value to override the transaction-based figure. Without this pin, any value
-    // accidentally saved to COA localStorage for these accounts silently breaks the BS.
+    //
+    // ALWAYS-LIVE PINS — these four accounts must NEVER use a stale localStorage value
+    // because any accidental save would silently break the BS equation:
+    //   1010 Bank      → liveBank (OB + receipts − vouchers)
+    //   1100 Debtor    → liveDebtors (OB + invoices − receipts)
+    //   3200 Profit    → plNetProfit (live P&L — stale value caused a 533 gap)
+    //   3300 Drawings  → liveDrawings (OB + drawingsPv − drawingsRc)
     if (a.code === '1010') return liveBank;
     if (a.code === '1100') return liveDebtors;
+    if (a.code === '3200') return plNetProfit;
+    if (a.code === '3300') return _liveDrawingsVal;
     if (a.mapsFrom && a.mapsFrom.length) return computeAccountValue(a, invoices, vouchers);
     const hasValue = a.value !== undefined && a.value !== null && a.value !== '';
     if (hasValue) return parseFloat(a.value);
@@ -7381,34 +7397,10 @@ async function loadBalanceSheet() {
     if (src === 'pl_net_profit')              return plNetProfit;
     if (src === 'live_outstanding_invoices')  return liveDebtors;
     if (src === 'live_drawings') {
-      // Drawings (3300) represents the owner's current account — the net amount the
-      // business owes to the owner. It INCREASES whenever the owner pays any business
-      // expense personally (entertainment, wages, SSM, etc.), and DECREASES when the
-      // owner receives business money directly (e.g. a client pays the owner's personal
-      // account directly). ALL drawings-account vouchers are included regardless of
-      // expense category, because the owner's current-account balance changes whenever
-      // any cash flows through the drawings account — not just "pure" personal drawings.
-      // This mirrors the Excel GL treatment where the drawings column captures every
-      // movement through that account, and the expense columns capture the same items
-      // for P&L purposes (net equity effect = zero because expense ↓ profit and
-      // drawings ↑ owner-account cancel out).
-      const ob = parseFloat(((COA_OPENING_BALANCES['3300']||{}).amount) || 0);
-
-      // All vouchers paid from the drawings / personal account (any category)
-      const drawingsPv = (window.VOUCHERS || []).filter(v =>
-        (v.bank_account || v.payment_account || '').toLowerCase().includes('draw') &&
-        !isDeleted('vouchers', (v.voucher_id||v.id||'').toString()) &&
-        !(v.description||'').startsWith('__VOID__')
-      ).reduce((s, v) => s + parseFloat(v.amount || 0), 0);
-
-      // Receipts banked directly into the drawings account reduce the balance
-      // (e.g. a client pays the owner personally → business owes owner less).
-      // Check both bank_account and payment_account for consistency with _isBSDrawings.
-      const drawingsRc = (RECEIPTS || []).filter(r =>
-        (r.bank_account || r.payment_account || '').toLowerCase().includes('draw')
-      ).reduce((s, r) => s + parseFloat(r.amount || 0), 0);
-
-      return r2(ob + drawingsPv - drawingsRc);
+      // 3300 is already pinned above — this fallback path is only reached for OTHER
+      // accounts that happen to carry 'live_drawings' as their source, which should
+      // not exist in practice. Return the pre-computed value for safety.
+      return _liveDrawingsVal;
     }
     return 0;
   };
