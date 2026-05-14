@@ -1611,13 +1611,18 @@ function showApp() {
 }
 
 async function loadStartupSequence() {
+  // Settings must come first (used by subsequent loaders)
   await loadSettings();
-  await loadInvoices();
-  await loadAllocations();
-  await loadClients();
-  // Prefetch vouchers + receipts BEFORE dashboard so bank balance
-  // calculation has both sides of the ledger (receipts in, vouchers out).
-  await prefetchGlobals();
+  // All data fetches run in PARALLEL — previously sequential (5 round-trips back-to-back).
+  // Google Apps Script handles concurrent requests fine; total wait = slowest single call
+  // instead of the sum of all calls (~15–20 s → ~3–5 s on cold start).
+  // loadDashboard waits for all of them so every metric card renders with complete data.
+  await Promise.all([
+    loadInvoices(),
+    loadAllocations(),
+    loadClients(),
+    prefetchGlobals(),   // fetches VOUCHERS + RECEIPTS in parallel internally
+  ]);
   await loadDashboard();
 }
 
@@ -2967,6 +2972,9 @@ async function loadDashboard() {
 
   // ── Build paid-amount map from receipts (inv_no → total received), excluding voided ──
   const receipts = (rcRes.ok ? rcRes.data : []).filter(r => (!isDeleted('receipts',(r.receipt_id||r.id||'').toString()) && !(r.notes||'').startsWith('__VOID__')));
+  // Keep global RECEIPTS in sync with this fresh fetch so the Balance Sheet page
+  // (which reads RECEIPTS directly) always uses the same dataset as the health panel.
+  if (rcRes.ok) RECEIPTS = receipts;
   // ── Vouchers: fetch directly if not yet cached, so bank balance is correct
   //    on the FIRST render. Previously we fell back to an empty array, which
   //    showed OB+RC (no PV subtracted) for a few seconds — a misleading flicker.
@@ -7193,6 +7201,16 @@ async function loadBalanceSheet() {
   try { markPageSynced('balance-sheet'); } catch(e){}
   document.getElementById('bs-assets').innerHTML = '<div style="padding:20px;color:var(--text3)">Loading…</div>';
   try {
+
+  // Ensure globals are populated. Startup loads all data in parallel, so by the time
+  // the user navigates here they are normally already cached. Only re-fetch if empty
+  // (e.g. direct deep-link or session restore without going via Dashboard first).
+  if (!INVOICES.length || !RECEIPTS.length || !VOUCHERS.length) {
+    await Promise.all([
+      !INVOICES.length ? loadInvoices()    : Promise.resolve(),
+      !RECEIPTS.length || !VOUCHERS.length ? prefetchGlobals() : Promise.resolve(),
+    ]);
+  }
 
   // Filter to current FY (matches Excel BS at 31.12.YYYY) — drawings/profit/etc. are "for the year"
   const fyYear = String(new Date().getFullYear());
