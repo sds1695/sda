@@ -1798,6 +1798,28 @@ function formatYearEnd(s) {
   const t = String(s).trim();
   // Already in our canonical format?
   if (/^[A-Z][a-z]{2} \d{1,2}$/.test(t)) return t;
+  // JS Date.toString — what Google Sheets returns once it auto-converts a date
+  //   "Thu Dec 31 2026 00:00:00 GMT+0800 (Singapore Standard Time)"
+  // We only care about month+day (year-end is annual). Extract them.
+  const mJsDate = /^[A-Z][a-z]{2}\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+\d{4}/.exec(t);
+  if (mJsDate) {
+    const mon = mJsDate[1];
+    const day = parseInt(mJsDate[2], 10);
+    if (_MONTH_NAMES.includes(mon) && day >= 1 && day <= 31) return mon + ' ' + day;
+  }
+  // ISO date "2026-12-31" (also from Sheets when format is date-only)
+  const mISO = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+  if (mISO) {
+    const mm = parseInt(mISO[2],10), dd = parseInt(mISO[3],10);
+    if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) return _MONTH_NAMES[mm-1] + ' ' + dd;
+  }
+  // dd/mm/yyyy or dd-mm-yyyy or dd.mm.yyyy
+  const mDmy = /^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.]\d{2,4}$/.exec(t);
+  if (mDmy) {
+    let dd = parseInt(mDmy[1],10), mm = parseInt(mDmy[2],10);
+    if (mm > 12 && dd <= 12) { const tmp=mm; mm=dd; dd=tmp; }
+    if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) return _MONTH_NAMES[mm-1] + ' ' + dd;
+  }
   // 4-digit MMDD without separator (e.g. "1231", "0630")
   const m4 = /^(\d{2})(\d{2})$/.exec(t);
   if (m4) {
