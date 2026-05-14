@@ -1243,6 +1243,31 @@
 </div>
 
 <!-- ══ MODAL: INVOICE PDF PREVIEW ══ -->
+<!-- Account drill-down modal — opens when user clicks a row on IS / BS / COA -->
+<div class="modal-overlay" id="modal-account-drill">
+  <div class="modal" style="max-width:920px">
+    <div class="modal-header">
+      <div class="modal-title" id="drill-title">Account</div>
+      <button class="modal-close" onclick="closeModal('modal-account-drill')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="drill-summary" style="margin-bottom:14px;font-size:13px;color:var(--text2)"></div>
+      <table style="width:100%">
+        <thead>
+          <tr>
+            <th style="text-align:left;font-size:11px;color:var(--text3)">Date</th>
+            <th style="text-align:left;font-size:11px;color:var(--text3)">Ref</th>
+            <th style="text-align:left;font-size:11px;color:var(--text3)">Description</th>
+            <th style="text-align:right;font-size:11px;color:var(--text3)">Amount</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="drill-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-pdf">
   <div class="modal" style="max-width:680px">
     <div class="modal-header">
@@ -7528,16 +7553,22 @@ function renderReminders() {
     '</tr>';
   };
   const renderSettled = r => {
-    const billed = r.invoiceRef ? '<span class="badge badge-green" onclick="event.stopPropagation();openInvoiceByNo(\'' + r.invoiceRef + '\')" title="Open invoice" style="font-size:11px;cursor:pointer;text-decoration:underline dotted">' + r.invoiceRef + '</span>' : '\u2014';
+    const billed = r.invoiceRef ? '<span class="badge badge-green" onclick="event.stopPropagation();openInvoiceByNo(\'' + r.invoiceRef + '\')" title="Open invoice PDF" style="font-size:11px;cursor:pointer;text-decoration:underline dotted">' + r.invoiceRef + '</span>' : '\u2014';
     const escLabel = (r.client_name + ' \u2014 ' + r.label + ' (' + r.fyLabel + ')').replace(/'/g, "\\'");
-    return '<tr style="opacity:0.8">' +
+    const escName  = (r.client_name || '').replace(/'/g, "\\'");
+    // Relink: opens the same invoice picker that links from a pending row.
+    // Picking a new invoice overwrites the previously stored linked_inv_no.
+    const relinkBtn = '<button class="btn btn-ghost" onclick="openDeadlineInvoicePicker(\'' + r.client_id + '\',\'' + r.task + '\',' + r.year + ',\'' + escName + '\')" title="Change which invoice is linked to this deadline" style="padding:4px 8px;font-size:11px;color:var(--brand-dark);margin-left:4px">Change</button>';
+    // Unlink: removes the deadline status entirely so it goes back to pending
+    const unlinkBtn = '<button class="btn btn-ghost" onclick="if(confirm(\'Unlink this invoice? Deadline goes back to pending.\'))setDeadlineStatus(\'' + r.client_id + '\',\'' + r.task + '\',' + r.year + ',null,\'' + escName + '\')" title="Unlink invoice \u2014 move back to active deadlines" style="padding:4px 8px;font-size:11px;color:var(--text3);margin-left:2px">Unlink</button>';
+    return '<tr style="opacity:0.85">' +
       '<td style="font-size:12px;color:var(--text)">' + r.client_name + '</td>' +
       '<td style="font-size:11px;color:var(--text3)">' + r.fyLabel + '</td>' +
       '<td style="font-size:12px;color:var(--text2)">' + r.label + '</td>' +
       '<td style="font-family:\'DM Mono\',monospace;font-size:12px;color:var(--text3)">' + _remFmtDate(r.deadline) + '</td>' +
       '<td><span class="badge" style="font-size:11px">' + r.type + '</span></td>' +
-      '<td>' + billed + '</td>' +
-      '<td><button class="btn btn-ghost" onclick="remDismissDeadline(\'' + r.key + '\',\'' + escLabel + '\')" title="Dismiss" style="padding:4px 8px;font-size:13px;color:var(--text3)">\u2715</button></td>' +
+      '<td style="white-space:nowrap">' + billed + relinkBtn + unlinkBtn + '</td>' +
+      '<td><button class="btn btn-ghost" onclick="remDismissDeadline(\'' + r.key + '\',\'' + escLabel + '\')" title="Dismiss \u2014 hide entirely" style="padding:4px 8px;font-size:13px;color:var(--text3)">\u2715</button></td>' +
     '</tr>';
   };
 
