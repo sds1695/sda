@@ -1623,17 +1623,29 @@ async function loadStartupSequence() {
 
 // Silently pre-load VOUCHERS and RECEIPTS so reports can use cached data
 async function prefetchGlobals() {
-  if (!VOUCHERS.length) {
-    const r = await api({action:'get_vouchers'});
-    if (r.ok) {
-      window.VOUCHERS_RAW = (r.data||[]).slice();
-      VOUCHERS = (r.data||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
-    }
-  augmentInvoicesWithJobType();
+  // Fetch vouchers and receipts in PARALLEL — previously sequential (2× slower)
+  const needV = !VOUCHERS.length;
+  const needR = !RECEIPTS.length;
+  if (!needV && !needR) return; // nothing to do
+
+  const [vRes, rRes] = await Promise.all([
+    needV ? api({action:'get_vouchers'})  : Promise.resolve(null),
+    needR ? api({action:'get_receipts'})  : Promise.resolve(null),
+  ]);
+  if (needV && vRes && vRes.ok) {
+    window.VOUCHERS_RAW = (vRes.data||[]).slice();
+    VOUCHERS = (vRes.data||[]).filter(v =>
+      !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) &&
+      !(v.description||'').startsWith('__VOID__') &&
+      !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString())
+    );
+    augmentInvoicesWithJobType();
   }
-  if (!RECEIPTS.length) {
-    const r = await api({action:'get_receipts'});
-    if (r.ok) RECEIPTS = (r.data||[]).filter(r => !isDeleted('receipts',(r.receipt_id||r.id||'').toString()) && !(r.notes||'').startsWith('__VOID__'));
+  if (needR && rRes && rRes.ok) {
+    RECEIPTS = (rRes.data||[]).filter(r =>
+      !isDeleted('receipts',(r.receipt_id||r.id||'').toString()) &&
+      !(r.notes||'').startsWith('__VOID__')
+    );
   }
   try { runDataIntegrityChecks(); } catch(e) { console.warn('integrity check failed', e); }
 }
@@ -2245,6 +2257,30 @@ function runDataIntegrityChecks() {
     });
   });
   } // end haveVouchersRaw
+
+  // ── Check: Live-source accounts must NOT have a hardcoded value in COA localStorage ──
+  // Accounts 1010, 1100, 3300 and 3200 derive their BS figure from live transaction data.
+  // If a value is stored in localStorage for any of them, valueOf() returns that stale
+  // snapshot BEFORE reaching the live-source handler — silently breaking the Balance Sheet.
+  // 1010 and 1100 are now pinned (always-live guards added to valueOf), but 3300 and 3200
+  // still fall through to hasValue, so we flag them here as a safety net.
+  const _liveAccts = { '1010':'Bank (CIMB)', '1100':'Trade Debtor', '3200':'Profit for Year', '3300':'Drawings' };
+  try {
+    const _coa = getCOA();
+    Object.entries(_liveAccts).forEach(([code, name]) => {
+      const a = _coa.find(x => x.code === code);
+      if (!a) return;
+      const v = a.value;
+      if (v !== undefined && v !== null && v !== '') {
+        issues.push({
+          severity: 'high', area: 'COA — stale snapshot',
+          summary: `${code} ${name}: hardcoded value RM ${parseFloat(v).toLocaleString('en-MY',{minimumFractionDigits:2})} overrides live calculation`,
+          detail: `Account ${code} (${name}) is driven by live transaction data but has a static value saved in the browser's localStorage COA. valueOf() returns this snapshot before it reaches the live-source handler, causing the Balance Sheet to show a wrong figure and a false gap. This is the most common cause of a permanent BS imbalance.`,
+          fix: `Open COA Editor → find ${code} ${name} → clear the Value field → Save. The account will then recompute live from transactions every time.`,
+        });
+      }
+    });
+  } catch(e) { /* getCOA not ready yet */ }
 
   // ── Render banner ──
   renderIntegrityBanner(issues);
@@ -5669,19 +5705,25 @@ async function loadGL() {
   const source = document.getElementById('gl-filter-source').value;
   document.getElementById('gl-tbody').innerHTML = '<tr class="loading-row"><td colspan="8">Loading GL…</td></tr>';
 
-  // Ensure caches are populated
-  if (!INVOICES.length) await loadInvoices();
-  if (!RECEIPTS.length) await prefetchGlobals();
-  if (!VOUCHERS.length) await prefetchGlobals();
-  if (!ALLOCATIONS || !ALLOCATIONS.length) { try { await loadAllocations(); } catch(e){} }
+  // ── Fetch all required data in PARALLEL ──────────────────────────────────
+  // Previously: 4–5 sequential API calls (each 2–4 s) = up to 20 s first load.
+  // Now: all missing caches fire simultaneously; total wait = slowest single call.
+  const needInv   = !INVOICES.length;
+  const needPF    = !RECEIPTS.length || !VOUCHERS.length; // prefetchGlobals covers both
+  const needAlloc = !ALLOCATIONS || !ALLOCATIONS.length;
+  const needGL    = !window._GL_JOURNALS_CACHE;           // get_gl cached after first load
+
+  await Promise.all([
+    needInv   ? loadInvoices()                                         : Promise.resolve(),
+    needPF    ? prefetchGlobals()                                      : Promise.resolve(),
+    needAlloc ? loadAllocations().catch(()=>{})                        : Promise.resolve(),
+    needGL    ? api({ action: 'get_gl' }).then(jr => {
+                  window._GL_JOURNALS_CACHE = (jr && jr.ok && Array.isArray(jr.data)) ? jr.data : [];
+                }).catch(() => { window._GL_JOURNALS_CACHE = []; })    : Promise.resolve(),
+  ]);
   augmentInvoicesWithJobType();
 
-  // Try to fetch manual journal entries (if backend supports get_gl)
-  let manualJournals = [];
-  try {
-    const jr = await api({ action: 'get_gl' });
-    if (jr && jr.ok && Array.isArray(jr.data)) manualJournals = jr.data;
-  } catch(e) {}
+  const manualJournals = window._GL_JOURNALS_CACHE || [];
 
   // Build GL from cache + merge manual journals
   let rows = buildGLFromCache();
@@ -6739,6 +6781,7 @@ async function smartReclassCombos() {
     else { fail++; console.error(`✗ ${p.inv_no}:`, res); }
     await new Promise(r => setTimeout(r, 200));
   }
+  window._GL_JOURNALS_CACHE = null; // invalidate cache so next GL load re-fetches
   if (fail === 0) toast(`Posted ${ok} combo reclass JVs. Refresh GL to see them.`,'success');
   else toast(`Posted ${ok}, failed ${fail}. Check console.`,'error');
   renderCOAAudit();
@@ -6844,6 +6887,7 @@ async function autoReclassVariances() {
     else { fail++; console.error('Reclass JV failed for ' + r.acct.code + ':', res); }
     await new Promise(r => setTimeout(r, 200));
   }
+  window._GL_JOURNALS_CACHE = null; // invalidate cache so next GL load re-fetches
   if (fail === 0) toast(`Posted ${ok} reconciliation JVs. Refresh the GL to see them.`, 'success');
   else toast(`Posted ${ok}, failed ${fail}. Check console for details.`, 'error');
   renderCOAAudit();
@@ -7220,8 +7264,11 @@ async function loadBalanceSheet() {
     // Priority: live mapsFrom > hardcoded snapshot > COA_DEFAULT fallback > derived source.
     // BS values are Excel snapshots — they stay fixed until the COA is updated.
     // Drill-down shows live Google Sheets data and flags any variance vs snapshot.
-    // Bank (1010): always live — never allow stale localStorage/OB value to show on BS.
+    // 1010 Bank + 1100 Trade Debtor: always live — never allow stale localStorage/OB
+    // value to override the transaction-based figure. Without this pin, any value
+    // accidentally saved to COA localStorage for these accounts silently breaks the BS.
     if (a.code === '1010') return liveBank;
+    if (a.code === '1100') return liveDebtors;
     if (a.mapsFrom && a.mapsFrom.length) return computeAccountValue(a, invoices, vouchers);
     const hasValue = a.value !== undefined && a.value !== null && a.value !== '';
     if (hasValue) return parseFloat(a.value);
