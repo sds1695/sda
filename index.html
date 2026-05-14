@@ -7056,9 +7056,10 @@ async function loadBalanceSheet() {
       ).reduce((s, v) => s + parseFloat(v.amount || 0), 0);
 
       // Receipts banked directly into the drawings account reduce the balance
-      // (e.g. a client pays the owner personally → business owes owner less)
+      // (e.g. a client pays the owner personally → business owes owner less).
+      // Check both bank_account and payment_account for consistency with _isBSDrawings.
       const drawingsRc = (RECEIPTS || []).filter(r =>
-        (r.bank_account || '').toLowerCase().includes('draw')
+        (r.bank_account || r.payment_account || '').toLowerCase().includes('draw')
       ).reduce((s, r) => s + parseFloat(r.amount || 0), 0);
 
       return r2(ob + drawingsPv - drawingsRc);
