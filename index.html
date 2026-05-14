@@ -2809,12 +2809,15 @@ function runAccountingHealth(receipts, vouchers) {
     const netProfit = r2(plRev - plExp);
 
     // ── Full BS equation ──
-    const fixedAssets = r2(
-      parseFloat(((COA_OPENING_BALANCES['1700']||{}).amount)||0) +
-      parseFloat(((COA_OPENING_BALANCES['1500']||{}).amount)||0) +
-      parseFloat(((COA_OPENING_BALANCES['1600']||{}).amount)||0)
-    );
-    const _cv    = code => r2(parseFloat((coa.find(a=>a.code===code)||{}).value||0) || parseFloat(((COA_OPENING_BALANCES[code]||{}).amount)||0));
+    // _cv reads the live COA value (localStorage) and falls back to OB only if value is absent.
+    // Defined first so fixedAssets can use it — avoids diverging from the actual BS page when
+    // asset values are updated in the COA editor.
+    const _cv    = code => {
+      const acct = coa.find(a => a.code === code);
+      const v    = acct ? parseFloat(acct.value ?? '') : NaN;
+      return r2(isNaN(v) ? parseFloat(((COA_OPENING_BALANCES[code]||{}).amount)||0) : v);
+    };
+    const fixedAssets = r2(_cv('1700') + _cv('1500') + _cv('1600'));
     const totalAssets = r2(fixedAssets + liveTD + liveBank);
     const totalEL     = r2(_cv('3000') + _cv('3100') + netProfit + liveDrawings + _cv('2100'));
     const bsGap       = r2(totalAssets - totalEL);
@@ -2840,13 +2843,21 @@ function runAccountingHealth(receipts, vouchers) {
 
     const bsDetail   = bsOk
       ? `Assets ${fmtRM(totalAssets)} = Equity + Liabilities`
-      : `Gap ${bsGap>0?'+':''}${fmtRM(bsGap)} — Assets ${bsGap>0?'>':'<'} Equity+Liabilities`;
+      : `Gap ${bsGap>0?'+':''}${fmtRM(bsGap)} — Assets ${bsGap>0?'>':'<'} Equity+Liabilities${!drawOk?' · caused by unmatched drawings receipt(s) below':''}`;
     const tdDetail   = tdOk
       ? `${allInvs.filter(i=>i.status==='outstanding'||i.status==='partial').length} invoices outstanding — statuses current`
       : `${fmtRM(Math.abs(tdDrift))} drift — ${tdDrift>0?'invoices outstanding in GSheet but receipts already recorded':'receipts recorded without matching invoice'}`;
     const drawDetail = drawOk
       ? 'All drawings receipts matched to invoice clients'
-      : `${unmatchedDraw.length} drawings receipt(s) not linked to any invoice — each widens the BS gap`;
+      : unmatchedDraw.map(r => {
+          const amt = fmtRM(parseFloat(r.amount||0));
+          const dt  = r.date   ? ` · <b>${r.date}</b>`                      : '';
+          const cl  = r.client_name ? ` · ${r.client_name}`                 : '';
+          const inv = r.inv_no      ? ` · ref: ${r.inv_no}`                 : '';
+          const rid = (r.receipt_id||r.id) ? ` · id: ${r.receipt_id||r.id}` : '';
+          return `${amt}${dt}${cl}${inv}${rid}`;
+        }).join('<br>') +
+        '<br><span style="opacity:.75;font-style:italic">Fix: correct client_name or inv_no in Receipts sheet to match an invoice, or reclassify account to Bank</span>';
 
     el.innerHTML = `
       <div class="card" style="padding:12px 16px 14px">
