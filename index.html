@@ -1684,15 +1684,9 @@ const COA_DEFAULT = [
   { code: '1010', name: 'Bank balance (CIMB)',          section: 'current_asset' },
   // Equity (per Excel: Capital + Drawings + Profit + Retained)
   { code: '3000', name: 'Capital',                      section: 'equity',            value: 12000.00 },
-  { code: '3300', name: 'Drawings',                     section: 'equity',            value: 819.05 },
+  { code: '3300', name: 'Drawings',                     section: 'equity',            source: 'live_drawings' },
   { code: '3200', name: 'Profit for the year',          section: 'equity',            source: 'pl_net_profit' },
-  // Retained profits adjusted from Excel snapshot RM 6,331.27 → RM 7,710.21 (+RM 1,378.94)
-  // as a FY26 opening reconciliation. The plus is the BS Asset/Equity gap that arose
-  // from (i) Jtwins INV251212 RM 325 FY25 debtor still live in 2026 Trade Debtor,
-  // (ii) cumulative cross-FY timing drift between the Excel close at 25.4.26 and
-  // current sheet state. The original snapshot is kept in the COA Excel Snapshot block
-  // so the variance is fully auditable.
-  { code: '3100', name: 'Retained profits',             section: 'equity',            value: 7710.21 },
+  { code: '3100', name: 'Retained profits',             section: 'equity',            value: 6331.27 },
   // Current liabilities
   { code: '2100', name: 'Other payable',                section: 'current_liability', value: 0 },
   // Revenue (mapped from invoice.job_type; 'disbursements_field' sums invoice.disb_amount)
@@ -1762,13 +1756,14 @@ function getCOA() {
     });
     const deduped = Object.values(byCode);
     if (deduped.length !== coa.length) { coa = deduped; healed = true; }
-    // One-time migration: bump 3100 Retained profits to the reconciled value
-    // (FY26 opening adjustment of +RM 1,378.94 for Jtwins FY25 carry-fwd and
-    // cumulative cross-FY drift). Only apply if user still has the old snapshot value.
+    // Reverse-migration: if user had the old plug value 7,710.21, restore
+    // the proper FY25 closing balance 6,331.27. The plug was confusing and
+    // didn't match Excel — proper accounting handles reconciliation via real
+    // journal entries, not value plugs.
     const retainedAcct = coa.find(a => a.code === '3100');
-    if (retainedAcct && Math.abs(parseFloat(retainedAcct.value || 0) - 6331.27) < 0.01) {
-      retainedAcct.value = 7710.21;
-      retainedAcct.note  = 'FY26 opening reconciliation adjustment — was RM 6,331.27 (Excel snapshot 25.4.26); +RM 1,378.94 absorbs Jtwins INV251212 carry-fwd and cross-FY drift.';
+    if (retainedAcct && Math.abs(parseFloat(retainedAcct.value || 0) - 7710.21) < 0.01) {
+      retainedAcct.value = 6331.27;
+      delete retainedAcct.note;
       healed = true;
     }
     if (healed) localStorage.setItem(COA_LS_KEY, JSON.stringify(coa));
@@ -6404,6 +6399,24 @@ async function loadBalanceSheet() {
     const src = a.source || (defEntry && defEntry.source) || '';
     if (src === 'pl_net_profit')              return plNetProfit;
     if (src === 'live_outstanding_invoices')  return liveDebtors;
+    if (src === 'live_drawings') {
+      // Drawings = sum of vouchers paid from the personal/drawings bank with NO real
+      // business P&L category. Vouchers with category entertainment / wages / etc.
+      // are NOT drawings — they were paid personally but for business and flow into
+      // P&L expense instead. Add opening b/f from COA_OPENING_BALANCES.
+      const ob = parseFloat(((COA_OPENING_BALANCES['3300']||{}).amount) || 0);
+      const isPersonal = v => {
+        const bank = (v.bank_account || '').toLowerCase();
+        const cat  = (v.category || '').trim().toLowerCase();
+        if (!bank.includes('draw')) return false;
+        // Personal if category is empty or self-describes as drawings/personal
+        return !cat || cat === 'drawings' || cat === 'personal';
+      };
+      const fyDrawings = (window.VOUCHERS || []).filter(v =>
+        isPersonal(v) && !isDeleted('vouchers', (v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__')
+      ).reduce((s, v) => s + parseFloat(v.amount || 0), 0);
+      return r2(ob + fyDrawings);
+    }
     return 0;
   };
 
@@ -6420,13 +6433,8 @@ async function loadBalanceSheet() {
   COA_BS_ORDER.forEach(s => { totals[s] = r2(bsAccts[s].reduce((sum,a) => sum + signedValue(a), 0)); });
 
   const totalAssets      = r2((totals.non_current_asset||0) + (totals.current_asset||0));
-  const rawEquity        = totals.equity || 0;
+  const totalEquity      = totals.equity || 0;
   const totalLiabilities = r2((totals.current_liability||0) + (totals.non_current_liability||0));
-  // Auto-plug: any residual difference between Assets and (rawEquity+Liab) is
-  // shown as a live "Opening Reconciliation Adjustment" line so the BS always
-  // tallies and the variance is fully visible/audit-traceable.
-  const recAdj           = r2(totalAssets - rawEquity - totalLiabilities);
-  const totalEquity      = r2(rawEquity + recAdj);
   const totalEquityLiab  = r2(totalEquity + totalLiabilities);
   const gap              = r2(totalAssets - totalEquityLiab);
 
@@ -6458,21 +6466,13 @@ async function loadBalanceSheet() {
     <div class="fin-row total"><span>TOTAL ASSETS</span><span class="fin-amt">${fmt(totalAssets)}</span></div>
   `;
 
-  const adjRow = Math.abs(recAdj) > 0.02
-    ? `<div class="fin-row indent" title="Auto-balancing line: absorbs cross-FY timing differences (e.g. FY25 invoices still in 2026 Trade Debtor) and snapshot drift from the Excel close at 25.4.26. Recalculated live every BS render."><span style="font-style:italic;color:var(--text2)">— Opening reconciliation adjustment</span><span class="fin-amt" style="color:var(--text2)">${valStr(recAdj)}</span></div>`
-    : '';
-  // After the auto-plug the BS tallies exactly — show that.
-  const gapRow = `<div class="fin-row" style="background:var(--green-bg);padding:8px 16px;margin-top:6px"><span style="color:var(--green);font-size:12px">✓ Balance sheet tallies</span><span class="fin-amt" style="color:var(--green)">RM 0.00</span></div>`;
-
-  // Inject the adjustment row right before the Total Equity subtotal, AND override
-  // the subtotal to include the adjustment so the visible numbers add up.
-  const oldTotalEquityRow = `<div class="fin-row subtotal"><span>Total Equity</span><span class="fin-amt">${fmt(rawEquity)}</span></div>`;
-  const newTotalEquityRow = adjRow + `<div class="fin-row subtotal"><span>Total Equity</span><span class="fin-amt">${fmt(totalEquity)}</span></div>`;
-  const equityHtml = renderSection('equity','Equity').replace(oldTotalEquityRow, newTotalEquityRow);
+  const gapRow = Math.abs(gap) > 0.02
+    ? `<div class="fin-row" style="background:var(--amber-bg);padding:8px 16px;margin-top:6px" title="Real gap between Assets and Equity+Liabilities. Trace the residual via the Income Statement page to identify which transactions are unbalanced."><span style="color:var(--amber);font-size:12px">⚠ Difference (Assets vs Equity + Liabilities)</span><span class="fin-amt" style="color:var(--amber)">${valStr(gap)}</span></div>`
+    : `<div class="fin-row" style="background:var(--green-bg);padding:8px 16px;margin-top:6px"><span style="color:var(--green);font-size:12px">✓ Balance sheet tallies</span><span class="fin-amt" style="color:var(--green)">RM 0.00</span></div>`;
 
   document.getElementById('bs-equity').innerHTML = `
     <div class="fin-section-title">Equity & Liabilities</div>
-    ${equityHtml}
+    ${renderSection('equity','Equity')}
     ${(bsAccts.non_current_liability||[]).length ? renderSection('non_current_liability','Non-Current Liabilities') : ''}
     ${renderSection('current_liability','Current Liabilities')}
     <div class="fin-row total"><span>TOTAL EQUITY & LIABILITIES</span><span class="fin-amt">${fmt(totalEquityLiab)}</span></div>
