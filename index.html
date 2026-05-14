@@ -1522,11 +1522,22 @@ let ALLOCATIONS = [];
 let VOUCHERS = [];
 let RECEIPTS = [];
 let SETTINGS = {};
+// Raw (unfiltered) backend data, kept alongside the filtered arrays above so the
+// data-integrity guard can compare "what's hidden" against "what's in the sheet".
+// Populated by every loader that hydrates the filtered arrays. Don't read these
+// for normal rendering — use the filtered VOUCHERS/INVOICES/ALLOCATIONS instead.
+window.VOUCHERS_RAW    = [];
+window.INVOICES_RAW    = [];
+window.ALLOCATIONS_RAW = [];
 
 // Voucher IDs to treat as voided (since save_voucher API can't update existing rows).
 // Use this when a voucher has been "split" or replaced — the original gets ignored everywhere.
 window.VOUCHER_VOID_IDS = [
-  'PV1776953367192',  // PV26027 — replaced by PV26048 (RM 236.24 wages) + PV26049 (RM 179.52 dividend)
+  // 2026-05-14 reconciliation: REMOVED 'PV1776953367192' (PV26027). It was originally
+  // hidden because someone split it into PV26048 (236.24 wages) + PV26049 (179.52
+  // dividend), but per the reconciliation against Excel the consolidated PV26027
+  // (RM 415.76, wages_et) is the correct posting. PV26048 + PV26049 have been
+  // __VOID__'d at the description level instead.
 ];
 
 // Allocation IDs to treat as voided (since save_allocation API also creates new rows
@@ -1613,13 +1624,17 @@ async function loadStartupSequence() {
 async function prefetchGlobals() {
   if (!VOUCHERS.length) {
     const r = await api({action:'get_vouchers'});
-    if (r.ok) VOUCHERS = (r.data||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
+    if (r.ok) {
+      window.VOUCHERS_RAW = (r.data||[]).slice();
+      VOUCHERS = (r.data||[]).filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()));
+    }
   augmentInvoicesWithJobType();
   }
   if (!RECEIPTS.length) {
     const r = await api({action:'get_receipts'});
     if (r.ok) RECEIPTS = (r.data||[]).filter(r => !isDeleted('receipts',(r.receipt_id||r.id||'').toString()) && !(r.notes||'').startsWith('__VOID__'));
   }
+  try { runDataIntegrityChecks(); } catch(e) { console.warn('integrity check failed', e); }
 }
 
 // Retention Recon page
@@ -2076,6 +2091,216 @@ function setClientMeta(client_id, meta) {
     date_of_incorporation: meta.date_of_incorporation || ''
   };
   localStorage.setItem(CLIENT_META_KEY, JSON.stringify(all));
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// DATA INTEGRITY GUARD
+// Runs on every data load (vouchers/invoices/allocations) and surfaces silent
+// inconsistencies so they don't manifest as mysterious "drill doesn't tally"
+// gaps. The classes of bug this catches (each one historically wasted hours):
+//   • Voucher hidden by JS blocklist BUT not __VOID__'d in sheet — the drill
+//     hides it but Excel/recon scripts see it → totals diverge.
+//   • Stale blocklist entries (ID no longer exists in the sheet at all) — safe
+//     to remove but currently invisible.
+//   • Multi-row allocation splits whose gross_fees don't sum to invoice.amount
+//     (likely an entry typo).
+//   • Duplicate inv_no or voucher_no.
+// Surfaces issues via a fixed-position banner at the top of the page;
+// click to open a modal with full details + fix instructions.
+// ══════════════════════════════════════════════════════════════════════════
+
+function _integrityFmt(n) {
+  return (parseFloat(n)||0).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+
+function runDataIntegrityChecks() {
+  const issues = [];
+  const vouchersRaw = window.VOUCHERS_RAW || [];
+  const allocsRaw   = window.ALLOCATIONS_RAW || [];
+  const invoicesRaw = window.INVOICES_RAW || [];
+
+  // ── Check 1: VOUCHER_VOID_IDS entries that are NOT __VOID__'d in the sheet ──
+  const voucherBlocklist = window.VOUCHER_VOID_IDS || [];
+  voucherBlocklist.forEach(id => {
+    const v = vouchersRaw.find(x => (x.voucher_id||x.id||'').toString() === id.toString());
+    if (!v) {
+      issues.push({
+        severity: 'low', area: 'Vouchers (blocklist)',
+        summary: `Stale blocklist ID: ${id}`,
+        detail: `'${id}' is in window.VOUCHER_VOID_IDS but no voucher with that ID exists in the live Google Sheet. Safe to remove the entry from index.html line ~1528 to keep the blocklist tidy.`,
+      });
+    } else {
+      const desc = v.description || '';
+      if (!desc.startsWith('__VOID__')) {
+        issues.push({
+          severity: 'high', area: 'Vouchers (split-mechanism mismatch)',
+          summary: `${v.voucher_no || id} hidden by JS but visible in sheet`,
+          detail: `Voucher ${v.voucher_no} (RM ${_integrityFmt(v.amount)}, category=${v.category}) is hidden in the dashboard via window.VOUCHER_VOID_IDS, but its sheet description doesn't start with __VOID__. Any tool that reads the sheet directly (recon scripts, Excel sync, drill-down on another device with localStorage cleared) will see it. This is exactly the class of bug that caused PV26027 to make Sole prop wages short by RM 415.76 on 2026-05-14.`,
+          fix: `Either (a) prefix the voucher's description in the Vouchers sheet with "__VOID__" so all consumers agree it's voided, OR (b) remove '${id}' from window.VOUCHER_VOID_IDS at index.html line ~1528 if it should actually be visible.`,
+        });
+      }
+    }
+  });
+
+  // ── Check 2: ALLOC_VOID_IDS stale entries ──
+  const allocBlocklist = window.ALLOC_VOID_IDS || [];
+  allocBlocklist.forEach(id => {
+    const a = allocsRaw.find(x => (x.alloc_id||'').toString() === id.toString());
+    if (!a) {
+      issues.push({
+        severity: 'low', area: 'Allocations (blocklist)',
+        summary: `Stale blocklist ID: ${id}`,
+        detail: `'${id}' is in window.ALLOC_VOID_IDS but no allocation with that ID exists in the live sheet. Safe to remove from index.html line ~1538.`,
+      });
+    }
+    // (Allocations have no description/__VOID__ field, so we can't cross-check
+    //  the way we do for vouchers. Stale-entry detection is the best we can do.)
+  });
+
+  // ── Check 3: Multi-row allocation splits whose gross_fees don't sum to invoice.amount ──
+  // Build alloc-by-inv index from FILTERED ALLOCATIONS (the ones the dashboard actually uses)
+  const allocByInv = {};
+  (ALLOCATIONS||[]).forEach(a => {
+    const k = (a.inv_no||'').toString().trim();
+    if (!k) return;
+    (allocByInv[k] = allocByInv[k] || []).push(a);
+  });
+  (INVOICES||[]).filter(i => i.status !== 'cancelled').forEach(inv => {
+    const k    = (inv.inv_no||'').toString().trim();
+    const rows = allocByInv[k] || [];
+    if (rows.length < 2) return;  // single allocation: nothing to validate
+    const amt   = parseFloat(inv.amount||0);
+    const disb  = parseFloat(inv.disb_amount||0);
+    const sumGF = rows.reduce((s,a) => s + parseFloat(a.gross_fee||0), 0);
+    const expected = amt - disb;
+    if (Math.abs(sumGF - expected) > 0.01) {
+      issues.push({
+        severity: 'high', area: 'Allocations (split totals)',
+        summary: `${inv.inv_no} split allocations don't add up`,
+        detail: `Invoice ${inv.inv_no} has ${rows.length} allocation rows whose gross_fee values sum to RM ${_integrityFmt(sumGF)}, but invoice.amount minus invoice.disb_amount = ${_integrityFmt(amt)} − ${_integrityFmt(disb)} = RM ${_integrityFmt(expected)}. Variance: RM ${_integrityFmt(sumGF - expected)}.`,
+        fix: `Edit the allocation rows in the Allocations sheet so their gross_fee values sum to ${_integrityFmt(expected)}, OR adjust the invoice's amount/disb_amount to match the splits.`,
+      });
+    }
+  });
+
+  // ── Check 4: Duplicate inv_no or voucher_no ──
+  // Differentiate between active duplicates (will double-count → HIGH) and merely
+  // cancelled-duplicate-of-active (no compute impact, just data hygiene → LOW).
+  const seenInv = {}; // inv_no -> {active:n, cancelled:n}
+  (invoicesRaw||[]).forEach(i => {
+    const k = (i.inv_no||'').toString().trim();
+    if (!k) return;
+    seenInv[k] = seenInv[k] || { active: 0, cancelled: 0 };
+    if ((i.status||'').toLowerCase() === 'cancelled') seenInv[k].cancelled++;
+    else seenInv[k].active++;
+  });
+  Object.entries(seenInv).forEach(([k, c]) => {
+    if (c.active > 1) {
+      issues.push({
+        severity: 'high', area: 'Invoices (duplicates)',
+        summary: `Duplicate active inv_no: ${k} (${c.active} active rows)`,
+        detail: `${c.active} non-cancelled rows in the Invoices sheet share inv_no "${k}". This breaks per-invoice aggregation logic and double-counts revenue. Open the Invoices sheet, find the duplicates, and either rename one or delete the spurious row.`,
+      });
+    } else if (c.active === 1 && c.cancelled > 0) {
+      issues.push({
+        severity: 'low', area: 'Invoices (duplicates)',
+        summary: `Cancelled duplicate of ${k} (${c.cancelled} cancelled row${c.cancelled>1?'s':''})`,
+        detail: `Invoice ${k} has 1 active row + ${c.cancelled} cancelled duplicate(s). No current impact on the IS (cancelled rows are filtered out), but it's noise — consider deleting the cancelled rows from the Invoices sheet, or renaming them (e.g. ${k}-CANCELLED) to avoid future confusion.`,
+      });
+    } else if (c.active === 0 && c.cancelled > 1) {
+      issues.push({
+        severity: 'low', area: 'Invoices (duplicates)',
+        summary: `All-cancelled duplicates of ${k} (${c.cancelled} rows)`,
+        detail: `${c.cancelled} cancelled rows share inv_no "${k}" and none are active. No impact, but tidy up by deleting all but one.`,
+      });
+    }
+  });
+  const seenVou = {};
+  (vouchersRaw||[]).filter(v => !(v.description||'').startsWith('__VOID__')).forEach(v => {
+    const k = (v.voucher_no||'').toString().trim();
+    if (!k) return;
+    seenVou[k] = (seenVou[k]||0) + 1;
+  });
+  Object.entries(seenVou).filter(([k,n]) => n > 1).forEach(([k,n]) => {
+    issues.push({
+      severity: 'medium', area: 'Vouchers (duplicates)',
+      summary: `Duplicate voucher_no: ${k} (${n} active rows)`,
+      detail: `${n} non-voided rows in the Vouchers sheet share voucher_no "${k}". May be intentional (e.g. split entries) but worth checking.`,
+    });
+  });
+
+  // ── Render banner ──
+  renderIntegrityBanner(issues);
+  // Cache for the modal
+  window.__INTEGRITY_ISSUES = issues;
+  return issues;
+}
+
+function renderIntegrityBanner(issues) {
+  let banner = document.getElementById('integrity-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'integrity-banner';
+    document.body.appendChild(banner);
+  }
+  if (!issues || !issues.length) {
+    banner.style.display = 'none';
+    return;
+  }
+  const high = issues.filter(i => i.severity === 'high').length;
+  const med  = issues.filter(i => i.severity === 'medium').length;
+  const low  = issues.filter(i => i.severity === 'low').length;
+  const bg   = high > 0 ? '#dc2626' : (med > 0 ? '#d97706' : '#6b7280');
+  const parts = [];
+  if (high) parts.push(`<strong>${high}</strong> high`);
+  if (med)  parts.push(`<strong>${med}</strong> medium`);
+  if (low)  parts.push(`<strong>${low}</strong> low`);
+  banner.style.cssText = `position:fixed;top:0;left:0;right:0;z-index:9999;background:${bg};color:white;padding:8px 16px;display:flex;align-items:center;gap:12px;font-size:13px;font-family:'DM Sans',system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.15)`;
+  banner.innerHTML = `
+    <span style="font-size:16px">⚠</span>
+    <span style="font-weight:600">Data Integrity Alert</span>
+    <span>${parts.join(' · ')} issue${issues.length>1?'s':''} detected — click for details</span>
+    <button onclick="showIntegrityModal()" style="margin-left:auto;background:white;color:${bg};border:none;padding:5px 12px;border-radius:4px;font-weight:600;cursor:pointer;font-size:12px">View Details</button>
+    <button onclick="document.getElementById('integrity-banner').style.display='none'" style="background:transparent;color:white;border:1px solid rgba(255,255,255,0.4);padding:4px 8px;border-radius:4px;cursor:pointer;font-size:12px">Dismiss</button>
+  `;
+}
+
+function showIntegrityModal() {
+  const issues = window.__INTEGRITY_ISSUES || runDataIntegrityChecks();
+  const sevColor = { high: '#dc2626', medium: '#d97706', low: '#6b7280' };
+  const sevLabel = { high: 'HIGH', medium: 'MEDIUM', low: 'LOW' };
+  const html = (issues.length ? issues : []).map(i => `
+    <div style="padding:14px;border-left:4px solid ${sevColor[i.severity]||'#888'};margin-bottom:10px;background:rgba(0,0,0,0.03);border-radius:4px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <span style="background:${sevColor[i.severity]||'#888'};color:white;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:600">${sevLabel[i.severity]||'INFO'}</span>
+        <span style="font-size:11px;color:#888">${i.area}</span>
+      </div>
+      <div style="font-weight:600;margin-bottom:6px">${i.summary}</div>
+      <div style="color:#555;font-size:12px;margin-bottom:8px;line-height:1.5">${i.detail}</div>
+      ${i.fix ? `<div style="font-family:'DM Mono',monospace;font-size:11px;background:#f4f4f5;padding:8px;border-radius:4px;border:1px solid #e4e4e7;color:#222"><strong style="color:#0f172a">FIX:</strong> ${i.fix}</div>` : ''}
+    </div>
+  `).join('') || '<div style="color:#555;text-align:center;padding:30px">No integrity issues detected — all clear.</div>';
+  // Remove any existing modal
+  const old = document.getElementById('integrity-modal-overlay');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'integrity-modal-overlay';
+  wrap.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:10001;display:flex;align-items:center;justify-content:center;padding:20px;font-family:DM Sans,system-ui,sans-serif';
+  wrap.innerHTML = `
+    <div style="background:white;border-radius:8px;max-width:760px;width:100%;max-height:85vh;overflow:auto;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,0.4)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <h2 style="margin:0;font-size:18px;color:#0f172a">Data Integrity Issues (${issues.length})</h2>
+        <button onclick="document.getElementById('integrity-modal-overlay').remove()" style="background:none;border:none;font-size:24px;cursor:pointer;color:#64748b;padding:0;line-height:1">×</button>
+      </div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:16px">These checks run automatically every time invoices, vouchers, or allocations load. Resolving them prevents drill-vs-IS mismatches and category drift.</div>
+      ${html}
+      <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">
+        <button onclick="runDataIntegrityChecks();showIntegrityModal()" style="background:#f1f5f9;border:1px solid #cbd5e1;padding:8px 14px;border-radius:5px;cursor:pointer;font-size:13px">Re-check</button>
+        <button onclick="document.getElementById('integrity-modal-overlay').remove()" style="background:#0f172a;color:white;border:none;padding:8px 16px;border-radius:5px;cursor:pointer;font-size:13px">Close</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
 }
 
 function computeAccountValue(acct, invoices, vouchers) {
@@ -2907,8 +3132,10 @@ async function loadInvoices() {
   try { markPageSynced('invoices'); } catch(e){}
   const res = await api({ action: 'get_invoices' });
   if (res.ok) {
+    window.INVOICES_RAW = (res.data || []).slice();
     INVOICES = res.data.filter(i => !isDeleted('invoices', (i.inv_id||i.id||'').toString()));
     invalidateJtCache(); renderInvoices(); loadDashboard(); populateInvoiceDropdowns();
+    try { runDataIntegrityChecks(); } catch(e) { console.warn('integrity check failed', e); }
   }
 }
 
@@ -3957,11 +4184,13 @@ function printInvoice() {
 async function loadAllocations() {
   const res = await api({ action: 'get_allocations' });
   if (res.ok) {
+    window.ALLOCATIONS_RAW = (res.data || []).slice();
     ALLOCATIONS = (res.data || []).filter(a =>
       !(a.inv_no || '').startsWith('_DUP_') &&
       !(window.ALLOC_VOID_IDS || []).includes((a.alloc_id || '').toString())
     );
     invalidateJtCache(); renderAllocations();
+    try { runDataIntegrityChecks(); } catch(e) { console.warn('integrity check failed', e); }
   }
 }
 
@@ -4816,12 +5045,14 @@ async function loadVouchers() {
   try { markPageSynced('vouchers'); } catch(e){}
   const res = await api({ action: 'get_vouchers' });
   if (!res.ok) return;
+  window.VOUCHERS_RAW = (res.data || []).slice();  // unfiltered, for integrity checks
   // Filter: exclude local-deleted and any backend-voided
   VOUCHERS = (res.data || []).filter(v => {
     const id = (v.voucher_id||v.id||'').toString();
     return !isDeleted('vouchers', id) && !(v.description||'').startsWith('__VOID__');
   });
   renderVoucherRows(VOUCHERS);
+  try { runDataIntegrityChecks(); } catch(e) { console.warn('integrity check failed', e); }
 }
 
 let pvAmountEdited = false;
