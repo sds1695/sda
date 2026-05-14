@@ -6991,44 +6991,66 @@ function _remBuildRows() {
   });
 
   // Auto-Done detection + manual override.
-  // Match windows by task — invoices are typically raised once work is finished,
-  // so they sit within a bounded window AROUND the statutory deadline. The
-  // window prevents a 2025 invoice from satisfying a 2026 deadline and vice versa.
-  const TASK_WINDOW_DAYS = {
-    cp204:    90,     // CP204 estimate — filed ~30d before YE, invoice nearby
-    cp204a_1: 90,     // each revision is filed in its specific month
-    cp204a_2: 90,
-    cp204a_3: 90,
-    tax:      180,    // Form C — invoice usually raised within ~6 mo of deadline
-    audit:    270,    // Audit/FS — work spans most of the year; allow ±9 mo
-    mbrs:     240,    // MBRS XBRL submission — allow ±8 mo
-    ar:       180,    // Annual Return cosec
-    bo:       180,    // Beneficial Ownership
-    form_e:   180     // Form E (payroll)
+  // ─── Strict FY-year matching (with tight date-window fallback) ───────────
+  // Primary signal: extract the FY year(s) mentioned in the invoice description
+  // (e.g. "FY 31.12.2024", "FY30.6.2025", "year ended 31 Aug 2025"). The deadline
+  // is only marked done if the invoice's stated FY year matches `row.year`.
+  //
+  // Fallback (only when no year can be parsed from the description): ±60 day
+  // date window. Tight enough that a Jan 2026 invoice can't satisfy a 2027
+  // deadline, generous enough to cover the case where you bill in the same
+  // month as the deadline.
+  const _extractInvFYYears = inv => {
+    const txt = ((inv.desc1 || '') + ' ' + (inv.desc2 || '')).toLowerCase();
+    const years = new Set();
+    // Pattern: dd[./-]mm[./-]yyyy → capture yyyy
+    const m1 = txt.match(/\b\d{1,2}[\.\/\-]\d{1,2}[\.\/\-](20\d{2})\b/g);
+    if (m1) m1.forEach(s => {
+      const y = s.match(/(20\d{2})/); if (y) years.add(parseInt(y[1],10));
+    });
+    // Pattern: dd Mon yyyy or Mon yyyy (e.g. "31 Dec 2024", "Dec 2024")
+    const m2 = txt.match(/\b(?:\d{1,2}\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(20\d{2})\b/g);
+    if (m2) m2.forEach(s => {
+      const y = s.match(/(20\d{2})/); if (y) years.add(parseInt(y[1],10));
+    });
+    // Pattern: bare "FY <year>" or "year ended ... yyyy"
+    const m3 = txt.match(/\b(?:fy|fye|year\s+ended)\D{0,40}?(20\d{2})\b/g);
+    if (m3) m3.forEach(s => {
+      const y = s.match(/(20\d{2})/); if (y) years.add(parseInt(y[1],10));
+    });
+    return years;
   };
+  const FALLBACK_DAYS = 60;  // only used when description has zero year info
   out.forEach(row => {
     const matchTypes = REM_TASK_INVOICE_MATCH[row.task] || [];
     let autoDone = false, invRef = null, invDateMatched = null;
     if (matchTypes.length) {
       const invs = invoicesByClient[row.client_id] || [];
-      const windowDays = TASK_WINDOW_DAYS[row.task] || 180;
-      // Pick the closest invoice by date within the window — not just the first found
-      let bestMatch = null;
-      let bestGap   = Infinity;
+      // Prefer matches where the invoice's stated FY year equals row.year.
+      // If no such match exists, fall back to a ±60 day window match — but only
+      // for invoices whose description had NO parseable year at all.
+      let strictMatch = null, fallbackMatch = null, fallbackGap = Infinity;
       invs.forEach(inv => {
         const jt = (inv.job_type || '').toLowerCase();
         if (!matchTypes.includes(jt)) return;
+        const years = _extractInvFYYears(inv);
+        if (years.size > 0) {
+          if (years.has(row.year) && !strictMatch) strictMatch = inv;
+          return;  // had years but didn't match → not eligible for fallback either
+        }
+        // No year in description — eligible for date-window fallback
         const invDate = new Date(inv.inv_date || inv.date || '');
         if (isNaN(invDate)) return;
         const gap = Math.abs((invDate - row.deadline) / 86400000);
-        if (gap <= windowDays && gap < bestGap) {
-          bestMatch = inv; bestGap = gap;
+        if (gap <= FALLBACK_DAYS && gap < fallbackGap) {
+          fallbackMatch = inv; fallbackGap = gap;
         }
       });
-      if (bestMatch) {
+      const matched = strictMatch || fallbackMatch;
+      if (matched) {
         autoDone = true;
-        invRef = bestMatch.inv_no;
-        invDateMatched = bestMatch.inv_date || bestMatch.date || '';
+        invRef = matched.inv_no;
+        invDateMatched = matched.inv_date || matched.date || '';
       }
     }
     row.autoDone = autoDone;
