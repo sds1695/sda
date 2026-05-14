@@ -1040,6 +1040,7 @@
         <div class="page-sub" id="rem-today-label"></div>
         <div class="page-actions">
           <button class="btn btn-secondary" onclick="renderReminders()">↻ Refresh</button>
+          <button class="btn btn-primary" onclick="openCustomDeadlineModal()" style="margin-left:6px">+ Custom deadline</button>
         </div>
       </div>
 
@@ -1243,6 +1244,57 @@
 </div>
 
 <!-- ══ MODAL: INVOICE PDF PREVIEW ══ -->
+<div class="modal-overlay" id="modal-coa-edit">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-header">
+      <div class="modal-title" id="coa-edit-title">Edit Account</div>
+      <button class="modal-close" onclick="closeModal('modal-coa-edit')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="coa-edit-orig-code" />
+      <div class="form-grid">
+        <div class="form-field">
+          <label>Code *</label>
+          <input type="text" id="coa-edit-code" placeholder="e.g. 4080" />
+        </div>
+        <div class="form-field">
+          <label>Section *</label>
+          <select id="coa-edit-section">
+            <option value="non_current_asset">Non-Current Asset</option>
+            <option value="current_asset">Current Asset</option>
+            <option value="non_current_liability">Non-Current Liability</option>
+            <option value="current_liability">Current Liability</option>
+            <option value="equity">Equity</option>
+            <option value="revenue">Revenue</option>
+            <option value="other_income">Other Income</option>
+            <option value="direct_cost">Direct Cost</option>
+            <option value="admin_expense">Administrative Expense</option>
+            <option value="depreciation">Depreciation</option>
+          </select>
+        </div>
+        <div class="form-field form-full">
+          <label>Account Name *</label>
+          <input type="text" id="coa-edit-name" placeholder="e.g. Advisory income" />
+        </div>
+        <div class="form-field form-full">
+          <label>Maps from (comma-separated voucher.category or invoice.job_type)</label>
+          <input type="text" id="coa-edit-mapsFrom" placeholder="e.g. wages_txy_2  (leave blank to use a hardcoded value below)" />
+          <small style="color:var(--text3);font-size:11px">For Revenue accounts, use job_type strings (e.g. mbrs, tax). For Expense accounts, use voucher categories (e.g. wages_et). Special: <code>disbursements_field</code> sums invoice disb_amount.</small>
+        </div>
+        <div class="form-field form-full">
+          <label>Hardcoded Value (RM) — used only when "Maps from" is blank</label>
+          <input type="number" id="coa-edit-value" step="0.01" placeholder="0.00" />
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-coa-edit')">Cancel</button>
+      <button class="btn btn-ghost" id="coa-edit-delete-btn" onclick="deleteCurrentAccount()" style="color:var(--red)">Delete</button>
+      <button class="btn btn-primary" onclick="saveAccountEdit()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Account drill-down modal — opens when user clicks a row on IS / BS / COA -->
 <div class="modal-overlay" id="modal-account-drill">
   <div class="modal" style="max-width:920px">
@@ -1513,6 +1565,7 @@ async function api(payload) {
 // INIT
 // ══════════════════════════════════════════════════
 window.onload = async () => {
+  try { ensureModalsExist(); } catch(e){}
   document.getElementById('dash-date').textContent = new Date().toLocaleDateString('en-MY', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
 
   // Check saved session
@@ -1733,6 +1786,7 @@ setInterval(() => {
 }, 15000);
 
 function showPage(id) {
+  try { ensureModalsExist(); } catch(e){}
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('page-' + id).classList.add('active');
@@ -6994,6 +7048,76 @@ function exportRemNotes() {
   }
 }
 
+// ─── Runtime integrity check ────────────────────────────────────────────
+// Safety net: if a future Edit truncates HTML and drops one of the critical
+// modals, this re-injects them from JS so the UI keeps working. Called on
+// window.load and again whenever a tab navigates to a page that needs them.
+const _CRITICAL_MODALS = {
+  'modal-account-drill': `<div class="modal-overlay" id="modal-account-drill"><div class="modal" style="max-width:920px"><div class="modal-header"><div class="modal-title" id="drill-title">Account</div><button class="modal-close" onclick="closeModal('modal-account-drill')">&#10005;</button></div><div class="modal-body"><div id="drill-summary" style="margin-bottom:14px;font-size:13px;color:var(--text2)"></div><table style="width:100%"><thead><tr><th style="text-align:left;font-size:11px;color:var(--text3)">Date</th><th style="text-align:left;font-size:11px;color:var(--text3)">Ref</th><th style="text-align:left;font-size:11px;color:var(--text3)">Description</th><th style="text-align:right;font-size:11px;color:var(--text3)">Amount</th><th></th></tr></thead><tbody id="drill-tbody"></tbody></table></div></div></div>`,
+  'modal-coa-edit': `<div class="modal-overlay" id="modal-coa-edit"><div class="modal" style="max-width:560px"><div class="modal-header"><div class="modal-title" id="coa-edit-title">Edit Account</div><button class="modal-close" onclick="closeModal('modal-coa-edit')">&#10005;</button></div><div class="modal-body"><input type="hidden" id="coa-edit-orig-code" /><div class="form-grid"><div class="form-field"><label>Code *</label><input type="text" id="coa-edit-code" /></div><div class="form-field"><label>Section *</label><select id="coa-edit-section"><option value="non_current_asset">Non-Current Asset</option><option value="current_asset">Current Asset</option><option value="non_current_liability">Non-Current Liability</option><option value="current_liability">Current Liability</option><option value="equity">Equity</option><option value="revenue">Revenue</option><option value="other_income">Other Income</option><option value="direct_cost">Direct Cost</option><option value="admin_expense" selected>Administrative Expense</option><option value="depreciation">Depreciation</option></select></div><div class="form-field form-full"><label>Account Name *</label><input type="text" id="coa-edit-name" /></div><div class="form-field form-full"><label>Maps from</label><input type="text" id="coa-edit-mapsFrom" /></div><div class="form-field form-full"><label>Hardcoded Value (RM)</label><input type="number" id="coa-edit-value" step="0.01" /></div></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-coa-edit')">Cancel</button><button class="btn btn-ghost" id="coa-edit-delete-btn" onclick="deleteCurrentAccount()" style="color:var(--red)">Delete</button><button class="btn btn-primary" onclick="saveAccountEdit()">Save</button></div></div></div>`
+};
+function ensureModalsExist() {
+  Object.entries(_CRITICAL_MODALS).forEach(([id, html]) => {
+    if (!document.getElementById(id)) {
+      const wrap = document.createElement('div');
+      wrap.innerHTML = html;
+      document.body.appendChild(wrap.firstChild);
+      console.warn('[integrity] re-injected missing modal:', id);
+    }
+  });
+}
+
+// ─── Custom (user-defined) deadlines ────────────────────────────────────
+const CUSTOM_DEADLINES_KEY = 'seraya_custom_deadlines_v1';
+function getCustomDeadlines() {
+  try { return JSON.parse(localStorage.getItem(CUSTOM_DEADLINES_KEY) || '[]'); } catch(e) { return []; }
+}
+function setCustomDeadlines(list) { localStorage.setItem(CUSTOM_DEADLINES_KEY, JSON.stringify(list)); }
+function addCustomDeadline(payload) {
+  const list = getCustomDeadlines();
+  const id = 'CD_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+  const row = Object.assign({ id, created_at: new Date().toISOString() }, payload);
+  list.push(row);
+  setCustomDeadlines(list);
+  try { if (typeof api === 'function') api({ action: 'save_custom_deadline', data: row }).then(()=>{}).catch(()=>{}); } catch(e){}
+  renderReminders();
+}
+function deleteCustomDeadline(id) {
+  if (!confirm('Delete this custom deadline?')) return;
+  setCustomDeadlines(getCustomDeadlines().filter(d => d.id !== id));
+  try { if (typeof api === 'function') api({ action: 'delete_custom_deadline', data: { id } }).then(()=>{}).catch(()=>{}); } catch(e){}
+  renderReminders();
+}
+function openCustomDeadlineModal() {
+  let m = document.getElementById('modal-custom-deadline');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = 'modal-custom-deadline';
+    m.style.cssText = 'display:flex;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1100;align-items:center;justify-content:center';
+    m.innerHTML = '<div style="background:var(--surface);border-radius:10px;padding:22px 24px;width:480px;max-width:92vw;border:1px solid var(--border)"><div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:14px"><div style="font-size:16px;font-weight:600;color:var(--text)">Add custom deadline</div><span onclick="document.getElementById(\'modal-custom-deadline\').style.display=\'none\'" style="cursor:pointer;font-size:20px;color:var(--text3);padding:0 4px">&#215;</span></div><div style="display:flex;flex-direction:column;gap:12px"><div><label style="display:block;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Client</label><select id="cd-client" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px"></select></div><div><label style="display:block;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Task / Description</label><input id="cd-task" type="text" placeholder="e.g. Audit fieldwork commencement" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px" /></div><div><label style="display:block;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Due date</label><input id="cd-date" type="date" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit" /></div><div><label style="display:block;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Type</label><select id="cd-type" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px"><option value="other">Other</option><option value="audit">Audit</option><option value="tax">Tax</option><option value="cosec">Cosec</option><option value="accounting">Bookkeeping / Payroll</option></select></div><div><label style="display:block;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Notes (optional)</label><textarea id="cd-notes" placeholder="Anything the team should know" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit;min-height:60px;resize:vertical"></textarea></div></div><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px"><button onclick="document.getElementById(\'modal-custom-deadline\').style.display=\'none\'" style="font-size:13px;padding:8px 16px;background:transparent;border:0.5px solid var(--border);border-radius:6px;cursor:pointer">Cancel</button><button onclick="saveCustomDeadlineFromModal()" style="font-size:13px;padding:8px 16px;background:var(--brand);color:white;border:none;border-radius:6px;cursor:pointer">Add deadline</button></div></div>';
+    document.body.appendChild(m);
+  }
+  // Populate client dropdown freshly
+  const sel = document.getElementById('cd-client');
+  sel.innerHTML = '<option value="">— Select client —</option>' + (CLIENTS||[]).sort((a,b) => (a.name||'').localeCompare(b.name||'')).map(c => `<option value="${c.client_id}|${(c.name||'').replace(/"/g,'')}">${c.name}</option>`).join('');
+  document.getElementById('cd-task').value = '';
+  document.getElementById('cd-date').value = '';
+  document.getElementById('cd-notes').value = '';
+  document.getElementById('cd-type').value = 'other';
+  m.style.display = 'flex';
+}
+function saveCustomDeadlineFromModal() {
+  const c = document.getElementById('cd-client').value;
+  const task = (document.getElementById('cd-task').value || '').trim();
+  const date = document.getElementById('cd-date').value;
+  const type = document.getElementById('cd-type').value;
+  const notes = (document.getElementById('cd-notes').value || '').trim();
+  if (!c || !task || !date) { alert('Client, task and due date are required.'); return; }
+  const [client_id, client_name] = c.split('|');
+  addCustomDeadline({ client_id, client_name, task, due_date: date, type, notes });
+  document.getElementById('modal-custom-deadline').style.display = 'none';
+}
+
 // ─── Deadline status (per-deadline manual link + remark) ────────────────
 // Stored locally in seraya_deadline_status_v1 AND mirrored to the Google
 // Sheet's Deadline_Status tab when the Apps Script backend has the
@@ -7156,14 +7280,16 @@ const REM_TASK_INVOICE_MATCH = {
   cp204a_3:   ['cp204a_3', 'cp204a'],
   ar:         ['cosec', 'cosec_retainer', 'cosec_other', 'annual_return', 'ar'],
   bo:         ['cosec', 'cosec_retainer', 'cosec_other', 'bo', 'beneficial_ownership'],
-  form_e:     ['form_e', 'payroll']
+  form_e:     ['form_e', 'payroll'],
+  res_approve_fs: ['cosec', 'cosec_retainer', 'cosec_other']
 };
 
 const REM_TASK_TYPE = {
   tax:'tax', cp204:'tax', cp204a_1:'tax', cp204a_2:'tax', cp204a_3:'tax',
   audit:'audit', mbrs:'audit',
   ar:'cosec', bo:'cosec',
-  form_e:'accounting'
+  form_e:'accounting',
+  res_approve_fs:'cosec'
 };
 
 function _remBuildRows() {
@@ -7246,6 +7372,16 @@ function _remBuildRows() {
         push(c, 'bo', 'Beneficial Ownership', anniv, '—', y);
       }
     }
+    // Resolution to approve FS — cosec task, 6 months after year-end.
+    // Directors\' resolution to approve the financial statements before they
+    // can be circulated to shareholders / laid before AGM. (Malaysian CA 2016.)
+    if (services.includes('cosec') && ye) {
+      for (let y = today.getFullYear() - 2; y <= today.getFullYear() + 1; y++) {
+        const yeDate = new Date(y, ye.month, ye.day);
+        const fyLabel = _MONTH_NAMES[ye.month] + ' ' + y;
+        push(c, 'res_approve_fs', 'Resolution Approve FS', _remAddMonths(yeDate, 6), fyLabel, y);
+      }
+    }
 
     // Form E: 31 March of (calendar year + 1)
     if (services.includes('form_e')) {
@@ -7253,6 +7389,29 @@ function _remBuildRows() {
         push(c, 'form_e', 'Form E', new Date(y + 1, 2, 31), 'CY ' + y, y);
       }
     }
+  });
+
+  // ── Merge user-added custom deadlines ─────────────────────────────────
+  getCustomDeadlines().forEach(cd => {
+    if (!cd.due_date) return;
+    const dl = new Date(cd.due_date);
+    if (isNaN(dl)) return;
+    if (dl < cutoff) return;
+    const yr = dl.getFullYear();
+    const c = (CLIENTS || []).find(x => String(x.client_id) === String(cd.client_id));
+    out.push({
+      client_id:   cd.client_id,
+      client_name: (c && c.name) || cd.client_name || '(unknown client)',
+      task:        'custom__' + cd.id,
+      label:       cd.task || 'Custom',
+      fyLabel:     '—',
+      year:        yr,
+      type:        cd.type || 'other',
+      deadline:    dl,
+      isCustom:    true,
+      customId:    cd.id,
+      customNotes: cd.notes || ''
+    });
   });
 
   // Auto-Done detection + manual override.
