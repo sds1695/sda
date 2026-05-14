@@ -1926,6 +1926,16 @@ function formatYearEnd(s) {
     const idx = _MONTH_NAMES.findIndex(n => n.toLowerCase() === m2[1].toLowerCase().slice(0,3));
     if (idx >= 0) return _MONTH_NAMES[idx] + ' ' + parseInt(m2[2],10);
   }
+  // Bare month name only ("Jun", "December") — assume last day of that month
+  // (common Malaysian usage where the company year-end is implied to be month-end)
+  const mBare = /^([A-Za-z]{3,})$/.exec(t);
+  if (mBare) {
+    const idx = _MONTH_NAMES.findIndex(n => n.toLowerCase() === mBare[1].toLowerCase().slice(0,3));
+    if (idx >= 0) {
+      const lastDay = [31,28,31,30,31,30,31,31,30,31,30,31][idx];
+      return _MONTH_NAMES[idx] + ' ' + lastDay;
+    }
+  }
   return s;  // unrecognized — preserve as-is
 }
 
