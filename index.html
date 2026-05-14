@@ -1045,6 +1045,8 @@
 
       <!-- Stats bar -->
       <div class="metrics" id="rem-stats"></div>
+      <!-- Task-type counter chips — clickable to filter -->
+      <div id="rem-task-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 14px;font-size:11px"></div>
 
       <!-- Legend -->
       <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;font-size:12px;color:var(--text2)">
@@ -1724,7 +1726,7 @@ function showPage(id) {
   if (id === 'aging')             loadAging();
   if (id === 'retention')         loadRetention();
   if (id === 'coa')               loadCOA();
-  if (id === 'reminders')         renderReminders();
+  if (id === 'reminders')         { (async () => { await loadClients(); renderReminders(); })(); }
   if (id === 'invoice-allocations') loadInvoiceBreakdown();
   if (id === 'team-members')        renderTeamMembers();
 }
@@ -7291,6 +7293,28 @@ function renderReminders() {
 
   const counts = { overdue:0, urgent:0, soon:0, far:0, done:0 };
   rows.forEach(r => counts[r.status.key]++);
+
+  // ── Task-type chips (clickable to filter by task) ─────────────────────
+  const TASK_LABELS = {
+    'mbrs':'MBRS XBRL', 'audit':'Audit/FS', 'tax':'Form C (Tax)',
+    'cp204':'CP204', 'cp204a_1':'CP204a 1st', 'cp204a_2':'CP204a 2nd',
+    'cp204a_3':'CP204a 3rd', 'ar':'Annual Return', 'bo':'Beneficial Ownership',
+    'form_e':'Form E'
+  };
+  const taskCounts = {};
+  rows.forEach(r => { taskCounts[r.task] = (taskCounts[r.task]||0) + 1; });
+  const chipsHost = document.getElementById('rem-task-chips');
+  if (chipsHost) {
+    const cur = document.getElementById('rem-f-task').value;
+    const chips = Object.entries(taskCounts)
+      .sort((a,b) => b[1]-a[1])
+      .map(([t, n]) => {
+        const isActive = (cur === t);
+        const label = TASK_LABELS[t] || t;
+        return `<span onclick="document.getElementById('rem-f-task').value='${isActive?'':t}';renderReminders()" style="padding:4px 10px;border-radius:999px;border:1px solid ${isActive?'var(--brand)':'var(--border)'};background:${isActive?'var(--brand)':'var(--surface)'};color:${isActive?'#fff':'var(--text2)'};cursor:pointer;font-weight:${isActive?500:400}">${label} <strong>${n}</strong></span>`;
+      }).join('');
+    chipsHost.innerHTML = chips || '<span style="color:var(--text3);font-style:italic">No deadlines</span>';
+  }
   if (stats) {
     stats.innerHTML =
       '<div class="metric-card"><div class="metric-label">Overdue</div><div class="metric-value red">' + counts.overdue + '</div></div>' +
