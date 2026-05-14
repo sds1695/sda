@@ -1088,6 +1088,29 @@
         </table>
       </div>
 
+      <!-- ── Completed deadlines (Done with invoice) — collapsed by default ── -->
+      <div id="rem-done-wrap" class="card" style="margin-top:14px;padding:12px 14px;display:none">
+        <button onclick="document.getElementById('rem-done-body').style.display = document.getElementById('rem-done-body').style.display === 'none' ? '' : 'none'; this.querySelector('.tog').textContent = document.getElementById('rem-done-body').style.display === 'none' ? '▸' : '▾';" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:0">
+          <span class="tog">▸</span> Completed <span id="rem-done-count" style="color:var(--text3);font-weight:400;text-transform:none;letter-spacing:0">(0)</span>
+        </button>
+        <div id="rem-done-body" style="display:none;margin-top:10px">
+          <table>
+            <thead>
+              <tr>
+                <th style="font-size:11px;color:var(--text3)">Client</th>
+                <th style="font-size:11px;color:var(--text3)">YE</th>
+                <th style="font-size:11px;color:var(--text3)">Task</th>
+                <th style="font-size:11px;color:var(--text3)">Deadline</th>
+                <th style="font-size:11px;color:var(--text3)">Type</th>
+                <th style="font-size:11px;color:var(--text3)">Billed</th>
+                <th style="font-size:11px;color:var(--text3)"></th>
+              </tr>
+            </thead>
+            <tbody id="rem-done-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- ── Team To-Do / Notes sidebar (collapsible) ── -->
       <div id="rem-notes-card" class="card" style="margin-top:18px;padding:14px 16px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
@@ -1883,8 +1906,12 @@ function getClientMeta(client_id) {
 }
 
 function setClientMeta(client_id, meta) {
+  // localStorage-only mirror. Source of truth is the Google Sheet — written via
+  // saveClient() in a single atomic save_client API call (no more two-call
+  // pattern that could leave the Sheet half-updated). This function exists only
+  // so the dashboard has an instant local mirror after a save without waiting
+  // for the next CLIENTS fetch.
   if (!client_id) return;
-  // 1) Always cache locally for instant UI / offline support
   const all = getAllClientMeta();
   all[client_id] = {
     services: meta.services || [],
@@ -1892,31 +1919,6 @@ function setClientMeta(client_id, meta) {
     date_of_incorporation: meta.date_of_incorporation || ''
   };
   localStorage.setItem(CLIENT_META_KEY, JSON.stringify(all));
-  // 2) Also persist to the Google Sheet so the data survives cache clears and
-  //    is available on every device. Fire-and-forget; UI doesn't block.
-  try {
-    if (typeof api === 'function') {
-      api({ action: 'save_client', data: {
-        client_id,
-        // year_end/services/ar_date live on the same Clients row as the rest of
-        // the client record. The backend save_client merges these into the
-        // existing row instead of overwriting other fields.
-        year_end: meta.year_end || '',
-        services: Array.isArray(meta.services) ? JSON.stringify(meta.services) : (meta.services || ''),
-        ar_date:  meta.date_of_incorporation || ''
-      }, partial: true }).then(res => {
-        // Refresh local cache of CLIENTS so getClientMeta sees the new values
-        if (res && res.ok && typeof CLIENTS !== 'undefined') {
-          const c = CLIENTS.find(x => String(x.client_id) === String(client_id));
-          if (c) {
-            c.year_end = meta.year_end || '';
-            c.services = JSON.stringify(meta.services || []);
-            c.ar_date  = meta.date_of_incorporation || '';
-          }
-        }
-      }).catch(() => { /* offline / API down — localStorage cache still has it */ });
-    }
-  } catch(e) { /* never block on this */ }
 }
 
 function computeAccountValue(acct, invoices, vouchers) {
@@ -2539,29 +2541,61 @@ function openClientModal(id) {
 }
 
 async function saveClient() {
+  // Build the COMPLETE record in one go — services, year_end, ar_date all live on
+  // the same Clients row, so we send them together with the rest. No more two-API
+  // call pattern: one atomic save = no risk of half-saved client meta.
+  const services = Array.from(document.querySelectorAll('.cl-svc-chk:checked')).map(el => el.value);
+  const year_end = formatYearEnd(document.getElementById('cl-year-end').value.trim()) || '';
+  const inc_date = formatYearEnd(document.getElementById('cl-inc-date').value.trim()) || '';
+
   const data = {
-    client_id: editingClientId,
-    name: document.getElementById('cl-name').value.trim(),
-    reg_no: document.getElementById('cl-reg').value.trim(),
-    type: document.getElementById('cl-type').value,
+    client_id:     editingClientId,
+    name:          document.getElementById('cl-name').value.trim(),
+    reg_no:        document.getElementById('cl-reg').value.trim(),
+    type:          document.getElementById('cl-type').value,
     billing_party: document.getElementById('cl-billing').value.trim(),
-    billing_reg: document.getElementById('cl-billing-reg').value.trim(),
-    billing_addr: document.getElementById('cl-billing-addr').value.trim(),
-    client_addr: document.getElementById('cl-client-addr').value.trim(),
+    billing_reg:   document.getElementById('cl-billing-reg').value.trim(),
+    billing_addr:  document.getElementById('cl-billing-addr').value.trim(),
+    client_addr:   document.getElementById('cl-client-addr').value.trim(),
+    year_end:      year_end,
+    services:      JSON.stringify(services),
+    ar_date:       inc_date,
   };
   if (!data.name) { toast('Client name is required.', 'error'); return; }
+
+  const saveBtn = document.querySelector('#modal-client [onclick="saveClient()"]');
+  if (saveBtn) { saveBtn.textContent = 'Saving…'; saveBtn.disabled = true; }
+
   const res = await api({ action: 'save_client', data });
-  if (res.ok) {
-    // Persist services + year_end in localStorage sidecar
-    const services = Array.from(document.querySelectorAll('.cl-svc-chk:checked')).map(el => el.value);
-    const year_end = document.getElementById('cl-year-end').value.trim();
-    const date_of_incorporation = formatYearEnd(document.getElementById('cl-inc-date').value.trim()) || '';
-    const id = (res.data && res.data.client_id) || data.client_id;
-    if (id) setClientMeta(id, { services, year_end: formatYearEnd(year_end), date_of_incorporation });
-    toast('Client saved.', 'success');
-    closeModal('modal-client');
-    loadClients();
-  } else toast(res.error, 'error');
+
+  if (saveBtn) { saveBtn.textContent = 'Save Client'; saveBtn.disabled = false; }
+
+  if (!res || !res.ok) {
+    toast('Save FAILED — ' + ((res && res.error) || 'no response from server. Data NOT written to the Google Sheet. Please retry.'), 'error');
+    return;
+  }
+
+  const id = (res.data && res.data.client_id) || data.client_id;
+  // Hard-update local CLIENTS cache so the deadlines page sees the change immediately
+  if (id && typeof CLIENTS !== 'undefined' && Array.isArray(CLIENTS)) {
+    let c = CLIENTS.find(x => String(x.client_id) === String(id));
+    if (!c) { c = { client_id: id }; CLIENTS.push(c); }
+    Object.assign(c, {
+      name: data.name, reg_no: data.reg_no, type: data.type,
+      billing_party: data.billing_party, billing_reg: data.billing_reg,
+      billing_addr: data.billing_addr, client_addr: data.client_addr,
+      year_end: data.year_end, services: data.services, ar_date: data.ar_date,
+    });
+  }
+  // Mirror to localStorage cache (so the data survives across page navigations
+  // even before a fresh fetch). Source of truth is still the Sheet.
+  if (id) setClientMeta(id, { services, year_end, date_of_incorporation: inc_date });
+
+  toast('Client saved to Google Sheet ✓', 'success');
+  closeModal('modal-client');
+  loadClients();
+  // Invalidate the deadlines render cache so it re-pulls
+  try { renderReminders(); } catch(e){}
 }
 const CLIENT_DELETED_KEY = 'seraya_clients_deleted_v1';
 function getDeletedClients() {
@@ -7067,8 +7101,7 @@ function renderReminders() {
   const stats  = document.getElementById('rem-stats');
   const today  = new Date(); today.setHours(0,0,0,0);
   const todayLbl = document.getElementById('rem-today-label');
-  if (todayLbl) todayLbl.textContent = 'Today: ' + _remFmtDate(today) + ' · Showing deadlines from ' + _remFmtDate(new Date(REM_CUTOFF)) + ' onwards';
-  // Refresh the side To-Do / Notes panel every time we render this page
+  if (todayLbl) todayLbl.textContent = 'Today: ' + _remFmtDate(today) + ' \u00b7 Showing deadlines from ' + _remFmtDate(new Date(REM_CUTOFF)) + ' onwards';
   try { renderRemTodos(); loadRemFreeNotes(); } catch(e){}
 
   let allRows;
@@ -7078,7 +7111,6 @@ function renderReminders() {
     return;
   }
 
-  // Mark dismissed rows
   const dismissedMap = _remGetDismissedMap();
   allRows.forEach(r => { r.dismissed = !!dismissedMap[r.client_id + '|' + r.task + '|' + r.year]; });
 
@@ -7110,8 +7142,8 @@ function renderReminders() {
   if (stats) {
     stats.innerHTML =
       '<div class="metric-card"><div class="metric-label">Overdue</div><div class="metric-value red">' + counts.overdue + '</div></div>' +
-      '<div class="metric-card"><div class="metric-label">Due ≤ 30 days</div><div class="metric-value" style="color:#ea580c">' + counts.urgent + '</div></div>' +
-      '<div class="metric-card"><div class="metric-label">Due 31–90 days</div><div class="metric-value amber">' + counts.soon + '</div></div>' +
+      '<div class="metric-card"><div class="metric-label">Due \u2264 30 days</div><div class="metric-value" style="color:#ea580c">' + counts.urgent + '</div></div>' +
+      '<div class="metric-card"><div class="metric-label">Due 31\u201390 days</div><div class="metric-value amber">' + counts.soon + '</div></div>' +
       '<div class="metric-card"><div class="metric-label">Due > 90 days</div><div class="metric-value green">' + counts.far + '</div></div>' +
       '<div class="metric-card"><div class="metric-label">Done</div><div class="metric-value">' + counts.done + '</div></div>';
   }
@@ -7119,7 +7151,7 @@ function renderReminders() {
   const cnt = document.getElementById('rem-count-label');
   if (cnt) {
     const base = rows.length + ' of ' + allRows.length + ' deadline' + (allRows.length===1?'':'s');
-    cnt.textContent = dismissedCount > 0 ? base + '  ·  ' + dismissedCount + ' dismissed' : base;
+    cnt.textContent = dismissedCount > 0 ? base + '  \u00b7  ' + dismissedCount + ' dismissed' : base;
   }
   const togBtn = document.getElementById('rem-toggle-dismissed');
   if (togBtn) {
@@ -7148,45 +7180,42 @@ function renderReminders() {
   });
 
   if (!tbody) return;
-  if (!rows.length) {
-    // Self-diagnostic: tell the user WHY the list is empty
+
+  // Split: completed-with-invoice rows go to the bottom "Completed" table
+  const isSettled = r => r.done && r.invoiceRef;
+  const activeRows  = rows.filter(r => !isSettled(r));
+  const settledRows = rows.filter(isSettled);
+
+  if (!activeRows.length && !settledRows.length) {
+    // Self-diagnostic when there is genuinely nothing to show
     const cliCount  = (typeof CLIENTS !== 'undefined' && Array.isArray(CLIENTS)) ? CLIENTS.length : 0;
     const withYe    = cliCount ? CLIENTS.filter(c => c.year_end).length : 0;
     const withSvc   = cliCount ? CLIENTS.filter(c => c.services).length : 0;
-    const builtRows = allRows.length;
-    const sample    = cliCount ? CLIENTS.find(c => c.year_end) : null;
     let diag = '<div style="padding:24px;font-size:13px;line-height:1.7;color:var(--text2)">';
     diag += '<div style="font-weight:600;color:var(--text);margin-bottom:8px">No deadlines to show. Diagnostic:</div>';
     diag += '<ul style="margin:0 0 12px 20px;padding:0">';
     diag += '<li>Clients loaded from server: <strong>' + cliCount + '</strong></li>';
     diag += '<li>With year_end set: <strong>' + withYe + '</strong></li>';
     diag += '<li>With services set: <strong>' + withSvc + '</strong></li>';
-    diag += '<li>Deadlines generated: <strong>' + builtRows + '</strong> (cutoff ' + REM_CUTOFF + ')</li>';
-    diag += '<li>Filtered out by current filters/dismissed: <strong>' + (builtRows - rows.length) + '</strong></li>';
-    if (sample) diag += '<li>Sample client with data: <em>' + sample.name + '</em> · YE=<code>' + sample.year_end + '</code> · services=<code>' + (sample.services || '').toString().slice(0,40) + '</code></li>';
-    diag += '</ul>';
-    if (cliCount === 0)        diag += '<div style="color:var(--red)">→ CLIENTS array is empty. Try clicking ↻ Refresh or hard-reload (Ctrl+Shift+R).</div>';
-    else if (withYe === 0)     diag += '<div style="color:var(--amber)">→ No clients have year_end. The API may not be returning that column. Open a client on the Clients page — does year_end show? If yes, deploy the latest index.html (UPLOAD.bat). If no, the column may be hidden by the Apps Script backend.</div>';
-    else if (builtRows === 0)  diag += '<div style="color:var(--amber)">→ Clients have data but no deadlines were generated. Check that year_end values are real dates (e.g. "30 Jun") and the cutoff date (' + REM_CUTOFF + ') doesn\'t exclude everything.</div>';
-    else                       diag += '<div style="color:var(--text3)">→ Deadlines exist but all are filtered out. Reset the dropdowns above to "All".</div>';
-    diag += '</div>';
+    diag += '</ul></div>';
     tbody.innerHTML = '<tr><td colspan="10">' + diag + '</td></tr>';
+    const dw = document.getElementById('rem-done-wrap'); if (dw) dw.style.display = 'none';
     return;
   }
 
-  tbody.innerHTML = rows.map(r => {
+  const renderActive = r => {
     const days = _remDays(today, r.deadline);
     const statusBadge = '<span class="badge" style="background:' + r.status.color + '20;color:' + r.status.color + ';font-size:11px">' + r.status.label + '</span>';
     const billed = r.invoiceRef
-      ? '<span class="badge badge-green" onclick="event.stopPropagation();openInvoiceByNo(\'' + r.invoiceRef + '\')" title="Click to open invoice — verify this is the right match" style="font-size:11px;cursor:pointer;text-decoration:underline dotted">' + r.invoiceRef + '</span>'
-      : '<span style="color:var(--text3);font-size:11px">—</span>';
-    const doneBtnLabel = r.done ? '✓' : '○';
-    const doneBtnTitle = r.manualOverride ? 'Manual override (click to cycle)' : 'Auto-status — click to override';
+      ? '<span class="badge badge-green" onclick="event.stopPropagation();openInvoiceByNo(\'' + r.invoiceRef + '\')" title="Click to open invoice" style="font-size:11px;cursor:pointer;text-decoration:underline dotted">' + r.invoiceRef + '</span>'
+      : '<span style="color:var(--text3);font-size:11px">\u2014</span>';
+    const doneBtnLabel = r.done ? '\u2713' : '\u25cb';
+    const doneBtnTitle = r.manualOverride ? 'Manual override (click to cycle)' : 'Auto-status \u2014 click to override';
     const doneBtn = '<button class="btn btn-ghost" onclick="remToggleDone(\'' + r.key + '\')" title="' + doneBtnTitle + '" style="padding:4px 10px;font-size:14px;' + (r.done?'color:var(--green)':'color:var(--text3)') + '">' + doneBtnLabel + '</button>';
-    const escLabel = (r.client_name + ' — ' + r.label + ' (' + r.fyLabel + ')').replace(/'/g, "\\'");
+    const escLabel = (r.client_name + ' \u2014 ' + r.label + ' (' + r.fyLabel + ')').replace(/'/g, "\\'");
     const delBtn = r.dismissed
-      ? '<button class="btn btn-ghost" onclick="remRestoreDismissed(\'' + r.key + '\')" title="Restore — show this deadline again" style="padding:4px 8px;font-size:13px;color:var(--text2)">↺</button>'
-      : '<button class="btn btn-ghost" onclick="remDismissDeadline(\'' + r.key + '\',\'' + escLabel + '\')" title="Dismiss — hide this deadline" style="padding:4px 8px;font-size:13px;color:var(--text3)">✕</button>';
+      ? '<button class="btn btn-ghost" onclick="remRestoreDismissed(\'' + r.key + '\')" title="Restore" style="padding:4px 8px;font-size:13px;color:var(--text2)">\u21ba</button>'
+      : '<button class="btn btn-ghost" onclick="remDismissDeadline(\'' + r.key + '\',\'' + escLabel + '\')" title="Dismiss" style="padding:4px 8px;font-size:13px;color:var(--text3)">\u2715</button>';
     const rowStyle = r.dismissed ? ' style="opacity:0.45"' : '';
     return '<tr' + rowStyle + '>' +
       '<td>' + statusBadge + '</td>' +
@@ -7200,7 +7229,37 @@ function renderReminders() {
       '<td style="white-space:nowrap">' + doneBtn + delBtn + '</td>' +
       '<td></td>' +
     '</tr>';
-  }).join('');
+  };
+  const renderSettled = r => {
+    const billed = '<span class="badge badge-green" onclick="event.stopPropagation();openInvoiceByNo(\'' + r.invoiceRef + '\')" title="Open invoice" style="font-size:11px;cursor:pointer;text-decoration:underline dotted">' + r.invoiceRef + '</span>';
+    const escLabel = (r.client_name + ' \u2014 ' + r.label + ' (' + r.fyLabel + ')').replace(/'/g, "\\'");
+    return '<tr style="opacity:0.8">' +
+      '<td style="font-size:12px;color:var(--text)">' + r.client_name + '</td>' +
+      '<td style="font-size:11px;color:var(--text3)">' + r.fyLabel + '</td>' +
+      '<td style="font-size:12px;color:var(--text2)">' + r.label + '</td>' +
+      '<td style="font-family:\'DM Mono\',monospace;font-size:12px;color:var(--text3)">' + _remFmtDate(r.deadline) + '</td>' +
+      '<td><span class="badge" style="font-size:11px">' + r.type + '</span></td>' +
+      '<td>' + billed + '</td>' +
+      '<td><button class="btn btn-ghost" onclick="remDismissDeadline(\'' + r.key + '\',\'' + escLabel + '\')" title="Dismiss" style="padding:4px 8px;font-size:13px;color:var(--text3)">\u2715</button></td>' +
+    '</tr>';
+  };
+
+  tbody.innerHTML = activeRows.length
+    ? activeRows.map(renderActive).join('')
+    : '<tr><td colspan="10" style="padding:24px;text-align:center;color:var(--text3);font-size:13px">All caught up \u2014 no open deadlines. Completed items listed below.</td></tr>';
+
+  const doneWrap   = document.getElementById('rem-done-wrap');
+  const doneTbody  = document.getElementById('rem-done-tbody');
+  const doneCount  = document.getElementById('rem-done-count');
+  if (doneWrap && doneTbody) {
+    if (settledRows.length) {
+      doneWrap.style.display = '';
+      if (doneCount) doneCount.textContent = '(' + settledRows.length + ')';
+      doneTbody.innerHTML = settledRows.map(renderSettled).join('');
+    } else {
+      doneWrap.style.display = 'none';
+    }
+  }
 }
 
 </script>
