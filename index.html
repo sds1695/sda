@@ -1543,9 +1543,9 @@ window.VOUCHER_VOID_IDS = [
 // Allocation IDs to treat as voided (since save_allocation API also creates new rows
 // instead of updating). Add the OLD alloc_id when you've replaced an allocation.
 window.ALLOC_VOID_IDS = [
-  'A1778404624955',  // INV260405 old row (G=370 Q1-style); replaced by A1778407474039 (G=270 Q2)
+  // 2026-05-14: removed 'A1778404624955' and 'A1778408865159' (no longer present in
+  // the live Allocations sheet, so the blocklist entries were no-ops).
   'A1778408856421',  // INV251210 Dejavu — added then voided (overshoots ET balance)
-  'A1778408865159',  // INV251214B Elite ET — added then voided (overshoots ET balance)
 ];
 
 // ══════════════════════════════════════════════════
