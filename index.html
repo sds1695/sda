@@ -1523,6 +1523,7 @@ let ALLOCATIONS = [];
 let VOUCHERS = [];
 let RECEIPTS = [];
 let SETTINGS = {};
+let GL_ALL_ROWS = [];
 // Raw (unfiltered) backend data, kept alongside the filtered arrays above so the
 // data-integrity guard can compare "what's hidden" against "what's in the sheet".
 // Populated by every loader that hydrates the filtered arrays. Don't read these
@@ -5775,6 +5776,87 @@ async function loadGL() {
   }
 
   renderGLRows(GL_ALL_ROWS);
+}
+
+// ── GL render & filter helpers ───────────────────────────────────────────────
+
+function renderGLRows(rows) {
+  const tbody = document.getElementById('gl-tbody');
+  if (!tbody) return;
+  if (!rows || !rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text3)">No entries found.</td></tr>';
+    return;
+  }
+  const fmt = n => parseFloat(n || 0).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const srcBadge = t => {
+    const m = { invoice: 'badge-green', receipt: 'badge-blue', voucher: 'badge-amber', journal: 'badge-purple' };
+    return `<span class="badge ${m[t] || 'badge-gray'}">${t || '—'}</span>`;
+  };
+  tbody.innerHTML = rows.map(g => `<tr>
+    <td style="font-size:12px;color:var(--text2)">${g.date || '—'}</td>
+    <td style="font-family:'DM Mono',monospace;font-size:12px">${g.ref || '—'}</td>
+    <td>${g.description || '—'}</td>
+    <td style="font-size:12px">${g.dr_account || '—'}</td>
+    <td style="font-size:12px">${g.cr_account || '—'}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace">RM ${fmt(g.amount)}</td>
+    <td>${srcBadge(g.source_type)}</td>
+  </tr>`).join('');
+}
+
+function populateGLAccountFilter() {
+  const sel = document.getElementById('gl-filter-account');
+  if (!sel || !GL_ALL_ROWS.length) return;
+  // Collect all unique DR + CR account names from current full set
+  const accounts = new Set();
+  GL_ALL_ROWS.forEach(g => {
+    if (g.dr_account) accounts.add(g.dr_account);
+    if (g.cr_account) accounts.add(g.cr_account);
+  });
+  // Remove any previously added dynamic options (keep first 3 static ones)
+  while (sel.options.length > 3) sel.remove(3);
+  // Append dynamic account options
+  [...accounts].sort().forEach(name => {
+    const o = document.createElement('option');
+    o.value = 'acct:' + name;
+    o.textContent = name;
+    sel.appendChild(o);
+  });
+}
+
+function filterGLByAccount() {
+  const sel = document.getElementById('gl-filter-account');
+  if (!sel) return;
+  const val = sel.value;
+  let filtered = GL_ALL_ROWS;
+  if (val === 'expense')       filtered = GL_ALL_ROWS.filter(g => g.source_type === 'voucher');
+  else if (val === 'income')   filtered = GL_ALL_ROWS.filter(g => g.source_type === 'invoice');
+  else if (val.startsWith('acct:')) {
+    const acct = val.slice(5);
+    filtered = GL_ALL_ROWS.filter(g => g.dr_account === acct || g.cr_account === acct);
+  }
+  renderGLRows(filtered);
+}
+
+function sortAndRenderGL() {
+  const sel = document.getElementById('gl-sort');
+  if (!sel) return;
+  const val = sel.value;
+  // Re-apply the account filter first so sort respects current filter
+  const acctSel = document.getElementById('gl-filter-account');
+  const acctVal = acctSel ? acctSel.value : '';
+  let rows = GL_ALL_ROWS;
+  if (acctVal === 'expense')     rows = rows.filter(g => g.source_type === 'voucher');
+  else if (acctVal === 'income') rows = rows.filter(g => g.source_type === 'invoice');
+  else if (acctVal.startsWith('acct:')) {
+    const acct = acctVal.slice(5);
+    rows = rows.filter(g => g.dr_account === acct || g.cr_account === acct);
+  }
+  const sorted = [...rows];
+  if      (val === 'date-desc')   sorted.sort((a,b) => (b.date||'').localeCompare(a.date||''));
+  else if (val === 'date-asc')    sorted.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+  else if (val === 'account-asc') sorted.sort((a,b) => (a.dr_account||'').localeCompare(b.dr_account||''));
+  else if (val === 'amount-desc') sorted.sort((a,b) => parseFloat(b.amount||0) - parseFloat(a.amount||0));
+  renderGLRows(sorted);
 }
 
 // ══════════════════════════════════════════════════
