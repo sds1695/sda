@@ -412,9 +412,14 @@
           <tbody id="dash-recent-inv"><tr class="loading-row"><td colspan="4">Loading…</td></tr></tbody></table>
         </div>
         <div class="card">
-          <div class="card-header"><div class="card-title">Outstanding Debtors</div></div>
-          <table><thead><tr><th>Invoice</th><th>Client</th><th>Amount</th></tr></thead>
-          <tbody id="dash-outstanding"><tr class="loading-row"><td colspan="3">Loading…</td></tr></tbody></table>
+          <div class="card-header"><div class="card-title">Outstanding Debtors</div><span id="dash-outstanding-hint" style="font-size:11px;color:var(--text3)">click a header to sort</span></div>
+          <table><thead><tr>
+            <th onclick="setDashOutSort('inv_no')"  style="cursor:pointer;user-select:none">Invoice <span class="dash-out-arrow" data-col="inv_no"></span></th>
+            <th onclick="setDashOutSort('date')"    style="cursor:pointer;user-select:none">Date <span class="dash-out-arrow" data-col="date"></span></th>
+            <th onclick="setDashOutSort('client')"  style="cursor:pointer;user-select:none">Client <span class="dash-out-arrow" data-col="client"></span></th>
+            <th onclick="setDashOutSort('amount')"  style="cursor:pointer;user-select:none;text-align:right">Amount <span class="dash-out-arrow" data-col="amount"></span></th>
+          </tr></thead>
+          <tbody id="dash-outstanding"><tr class="loading-row"><td colspan="4">Loading…</td></tr></tbody></table>
         </div>
       </div>
     </div>
@@ -1081,6 +1086,20 @@
           </thead>
           <tbody id="rem-tbody"></tbody>
         </table>
+      </div>
+
+      <!-- ── Team To-Do / Notes sidebar (collapsible) ── -->
+      <div id="rem-notes-card" class="card" style="margin-top:18px;padding:14px 16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div style="font-size:13px;font-weight:600;color:var(--text)">Team To-Do · Notes <span style="font-size:11px;font-weight:400;color:var(--text3);margin-left:6px">(saved on this device)</span></div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-ghost btn-sm" onclick="addRemTodo()" title="Add a new to-do" style="font-size:12px">+ Add</button>
+            <button class="btn btn-ghost btn-sm" onclick="exportRemNotes()" title="Copy to-do list as text — paste into Slack / email" style="font-size:12px">Export</button>
+          </div>
+        </div>
+        <div id="rem-todos" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>
+        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Free-form notes</div>
+        <textarea id="rem-notes-box" placeholder="Anything the team should know — paste reminders, links, internal SOPs, etc." oninput="saveRemFreeNotes()" style="width:100%;min-height:90px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-family:inherit;font-size:13px;background:var(--surface);resize:vertical"></textarea>
       </div>
     </div>
 
@@ -2251,9 +2270,20 @@ async function loadDashboard() {
 
   // ── Build paid-amount map from receipts (inv_no → total received), excluding voided ──
   const receipts = (rcRes.ok ? rcRes.data : []).filter(r => (!isDeleted('receipts',(r.receipt_id||r.id||'').toString()) && !(r.notes||'').startsWith('__VOID__')));
-  // Use cached VOUCHERS for bank balance (populated by prefetchGlobals after startup)
-  const vouchers = VOUCHERS.length ? VOUCHERS
-    : (rcRes.ok ? [] : []);  // fallback to empty if not yet loaded
+  // ── Vouchers: fetch directly if not yet cached, so bank balance is correct
+  //    on the FIRST render. Previously we fell back to an empty array, which
+  //    showed OB+RC (no PV subtracted) for a few seconds — a misleading flicker.
+  let vouchers = VOUCHERS.length ? VOUCHERS : null;
+  if (!vouchers) {
+    const vRes = await api({ action: 'get_vouchers' });
+    vouchers = (vRes && vRes.ok && Array.isArray(vRes.data)) ? vRes.data : [];
+    // Populate the global cache so the rest of the dashboard sees it too
+    if (Array.isArray(VOUCHERS) && vouchers.length) {
+      VOUCHERS.length = 0;
+      vouchers.forEach(v => VOUCHERS.push(v));
+    }
+  }
+  vouchers = vouchers.filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
   const paidMap = {};  // inv_no → total paid
   receipts.forEach(r => {
     if (r.inv_no) paidMap[r.inv_no] = r2((paidMap[r.inv_no] || 0) + parseFloat(r.amount || 0));
@@ -2316,10 +2346,35 @@ async function loadDashboard() {
       <td>${statusBadge(i.status)}</td>
     </tr>`).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:20px">No invoices yet</td></tr>';
 
-  // ── Outstanding Debtors: show ALL, sorted oldest first, with a footer total
+  // ── Outstanding Debtors: show ALL, sortable, with Date column and footer total
   //    that ties to the Trade Debtor line on the Balance Sheet. ──
-  const outstanding = outstandingInvs.slice()
-    .sort((a,b) => (a.inv_date || a.date || '').localeCompare(b.inv_date || b.date || ''));
+  const sortCfg = window.__dashOutSort || { col: 'date', dir: 'asc' };
+  const _norm = d => {
+    if (!d) return '';
+    if (/^\d{4}-\d{2}-\d{2}/.test(d)) return d.slice(0,10);
+    try { const dt = new Date(d); return isNaN(dt) ? '' : dt.toISOString().slice(0,10); }
+    catch(e) { return ''; }
+  };
+  const _fmtDate = d => {
+    const iso = _norm(d);
+    if (!iso) return '—';
+    const [y,m,da] = iso.split('-');
+    return `${da}/${m}/${y.slice(2)}`;
+  };
+  const outstanding = outstandingInvs.slice().sort((a,b) => {
+    const dir = sortCfg.dir === 'asc' ? 1 : -1;
+    let av, bv;
+    switch (sortCfg.col) {
+      case 'inv_no': av = a.inv_no || ''; bv = b.inv_no || ''; break;
+      case 'client': av = a.client_name || ''; bv = b.client_name || ''; break;
+      case 'amount': av = remaining(a); bv = remaining(b); break;
+      case 'date':
+      default:       av = _norm(a.inv_date || a.date); bv = _norm(b.inv_date || b.date); break;
+    }
+    if (av < bv) return -dir;
+    if (av > bv) return  dir;
+    return 0;
+  });
   const outstandingTotal = r2(outstanding.reduce((s, i) => s + remaining(i), 0));
   const rowsHtml = outstanding.map(i => {
     const bal = remaining(i);
@@ -2327,18 +2382,32 @@ async function loadDashboard() {
     return `
     <tr style="cursor:pointer" onclick="openInvoiceByNo('${i.inv_no}')" title="Click to open invoice">
       <td><span style="font-family:'DM Mono',monospace;font-size:12px">${i.inv_no}</span></td>
+      <td style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text2)">${_fmtDate(i.inv_date || i.date)}</td>
       <td>${i.client_name}</td>
       <td style="text-align:right;font-family:'DM Mono',monospace">RM ${bal.toLocaleString('en-MY',{minimumFractionDigits:2})}${isPartial?'<span style="font-size:10px;color:var(--text3);margin-left:4px">(partial)</span>':''}</td>
     </tr>`;
   }).join('');
   const footerHtml = outstanding.length ? `
     <tr style="border-top:2px solid var(--border);background:var(--surface2);font-weight:600">
-      <td colspan="2" style="padding:10px 12px">Total (${outstanding.length} invoices)</td>
+      <td colspan="3" style="padding:10px 12px">Total (${outstanding.length} invoices)</td>
       <td style="text-align:right;font-family:'DM Mono',monospace;color:var(--amber);padding:10px 12px">RM ${outstandingTotal.toLocaleString('en-MY',{minimumFractionDigits:2})}</td>
     </tr>` : '';
   document.getElementById('dash-outstanding').innerHTML = outstanding.length
     ? rowsHtml + footerHtml
-    : '<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:20px">All clear ✓</td></tr>';
+    : '<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:20px">All clear ✓</td></tr>';
+  // Update sort-indicator arrows in the header
+  document.querySelectorAll('.dash-out-arrow').forEach(s => {
+    s.textContent = s.dataset.col === sortCfg.col ? (sortCfg.dir === 'asc' ? '↑' : '↓') : '';
+  });
+}
+
+// Toggle/cycle the Outstanding Debtors sort. Called from the table headers.
+function setDashOutSort(col) {
+  const cur = window.__dashOutSort || { col: 'date', dir: 'asc' };
+  if (cur.col === col) cur.dir = cur.dir === 'asc' ? 'desc' : 'asc';
+  else { cur.col = col; cur.dir = (col === 'amount') ? 'desc' : 'asc'; }
+  window.__dashOutSort = cur;
+  loadDashboard();
 }
 
 // ══════════════════════════════════════════════════
@@ -6611,6 +6680,98 @@ function _remUndismiss(key) {
   delete map[key];
   localStorage.setItem(REM_DISMISSED_KEY, JSON.stringify(map));
 }
+// ─── Team To-Do / Notes panel on the Client Deadlines page ────────────────
+// Stored in localStorage (this device only). Provides an Export button that
+// copies a Markdown-formatted snapshot to the clipboard so team members can
+// paste it into Slack / email / a shared doc.
+const REM_TODO_KEY  = 'seraya_rem_todos_v1';
+const REM_NOTES_KEY = 'seraya_rem_notes_v1';
+function _getRemTodos() {
+  try { return JSON.parse(localStorage.getItem(REM_TODO_KEY) || '[]'); } catch(e) { return []; }
+}
+function _setRemTodos(list) {
+  localStorage.setItem(REM_TODO_KEY, JSON.stringify(list));
+}
+function renderRemTodos() {
+  const host = document.getElementById('rem-todos');
+  if (!host) return;
+  const todos = _getRemTodos();
+  if (!todos.length) {
+    host.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:8px 0;font-style:italic">No to-dos yet. Click "+ Add" to create one.</div>';
+    return;
+  }
+  host.innerHTML = todos.map((t,i) => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dashed var(--border)">
+      <input type="checkbox" ${t.done?'checked':''} onchange="toggleRemTodo(${i})" style="cursor:pointer;flex-shrink:0">
+      <input type="text" value="${(t.text||'').replace(/"/g,'&quot;')}" oninput="updateRemTodoText(${i}, this.value)" style="flex:1;border:none;background:transparent;font-size:13px;font-family:inherit;color:${t.done?'var(--text3)':'var(--text)'};text-decoration:${t.done?'line-through':'none'};outline:none" placeholder="To-do…">
+      <span style="font-size:10px;color:var(--text3);font-family:'DM Mono',monospace">${t.added||''}</span>
+      <button class="btn btn-ghost" onclick="removeRemTodo(${i})" title="Delete" style="padding:2px 6px;font-size:13px;color:var(--text3)">✕</button>
+    </div>`).join('');
+}
+function addRemTodo() {
+  const todos = _getRemTodos();
+  todos.unshift({ text:'', done:false, added: new Date().toISOString().slice(0,10) });
+  _setRemTodos(todos);
+  renderRemTodos();
+  // Focus the new (top) row
+  setTimeout(() => {
+    const first = document.querySelector('#rem-todos input[type="text"]');
+    if (first) first.focus();
+  }, 50);
+}
+function toggleRemTodo(i) {
+  const todos = _getRemTodos();
+  if (todos[i]) { todos[i].done = !todos[i].done; _setRemTodos(todos); renderRemTodos(); }
+}
+function updateRemTodoText(i, txt) {
+  const todos = _getRemTodos();
+  if (todos[i]) { todos[i].text = txt; _setRemTodos(todos); }
+}
+function removeRemTodo(i) {
+  const todos = _getRemTodos();
+  todos.splice(i,1);
+  _setRemTodos(todos);
+  renderRemTodos();
+}
+function saveRemFreeNotes() {
+  const el = document.getElementById('rem-notes-box');
+  if (el) localStorage.setItem(REM_NOTES_KEY, el.value);
+}
+function loadRemFreeNotes() {
+  const el = document.getElementById('rem-notes-box');
+  if (el) el.value = localStorage.getItem(REM_NOTES_KEY) || '';
+}
+function exportRemNotes() {
+  const todos = _getRemTodos();
+  const free  = (localStorage.getItem(REM_NOTES_KEY) || '').trim();
+  let md = '## Team To-Do — ' + new Date().toLocaleDateString('en-MY') + '\n\n';
+  if (todos.length) {
+    todos.forEach(t => {
+      md += (t.done ? '- [x] ' : '- [ ] ') + (t.text || '(empty)') + (t.added ? '  _(' + t.added + ')_' : '') + '\n';
+    });
+  } else {
+    md += '_(no to-dos)_\n';
+  }
+  if (free) {
+    md += '\n## Notes\n\n' + free + '\n';
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(md).then(() => {
+      if (typeof toast === 'function') toast('Copied to clipboard — paste into Slack / email.','success');
+      else alert('Copied to clipboard');
+    });
+  } else {
+    // Older browsers fallback
+    const ta = document.createElement('textarea');
+    ta.value = md;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); if (typeof toast==='function') toast('Copied.','success'); else alert('Copied'); }
+    catch(e) { alert(md); }
+    document.body.removeChild(ta);
+  }
+}
+
 function openInvoiceByNo(inv_no) {
   // Open the PRINTABLE PDF preview from anywhere by inv_no — used by Client
   // Deadlines and the Outstanding Debtors widget so the user can verify the
@@ -6885,6 +7046,8 @@ function renderReminders() {
   const today  = new Date(); today.setHours(0,0,0,0);
   const todayLbl = document.getElementById('rem-today-label');
   if (todayLbl) todayLbl.textContent = 'Today: ' + _remFmtDate(today) + ' · Showing deadlines from ' + _remFmtDate(new Date(REM_CUTOFF)) + ' onwards';
+  // Refresh the side To-Do / Notes panel every time we render this page
+  try { renderRemTodos(); loadRemFreeNotes(); } catch(e){}
 
   let allRows;
   try { allRows = _remBuildRows(); }
@@ -6893,7 +7056,7 @@ function renderReminders() {
     return;
   }
 
-  // Mark dismissed rows so we can either hide them or render them faded
+  // Mark dismissed rows
   const dismissedMap = _remGetDismissedMap();
   allRows.forEach(r => { r.dismissed = !!dismissedMap[r.client_id + '|' + r.task + '|' + r.year]; });
 
@@ -6905,7 +7068,6 @@ function renderReminders() {
   const fType   = document.getElementById('rem-f-type').value;
   const fStatus = document.getElementById('rem-f-status').value;
   let rows = allRows.slice();
-  // Default: hide dismissed rows. Toggle via remToggleShowDismissed().
   if (!_remShowDismissed) rows = rows.filter(r => !r.dismissed);
   if (fClient) rows = rows.filter(r => r.client_id === fClient);
   if (fTask)   rows = rows.filter(r => r.task === fTask);
@@ -6931,13 +7093,11 @@ function renderReminders() {
       '<div class="metric-card"><div class="metric-label">Due > 90 days</div><div class="metric-value green">' + counts.far + '</div></div>' +
       '<div class="metric-card"><div class="metric-label">Done</div><div class="metric-value">' + counts.done + '</div></div>';
   }
-  const cnt = document.getElementById('rem-count-label');
   const dismissedCount = allRows.filter(r => r.dismissed).length;
+  const cnt = document.getElementById('rem-count-label');
   if (cnt) {
     const base = rows.length + ' of ' + allRows.length + ' deadline' + (allRows.length===1?'':'s');
-    cnt.textContent = dismissedCount > 0
-      ? base + '  ·  ' + dismissedCount + ' dismissed'
-      : base;
+    cnt.textContent = dismissedCount > 0 ? base + '  ·  ' + dismissedCount + ' dismissed' : base;
   }
   const togBtn = document.getElementById('rem-toggle-dismissed');
   if (togBtn) {
@@ -6967,9 +7127,31 @@ function renderReminders() {
 
   if (!tbody) return;
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="padding:30px;text-align:center;color:var(--text3)">No deadlines match the current filters.</td></tr>';
+    // Self-diagnostic: tell the user WHY the list is empty
+    const cliCount  = (typeof CLIENTS !== 'undefined' && Array.isArray(CLIENTS)) ? CLIENTS.length : 0;
+    const withYe    = cliCount ? CLIENTS.filter(c => c.year_end).length : 0;
+    const withSvc   = cliCount ? CLIENTS.filter(c => c.services).length : 0;
+    const builtRows = allRows.length;
+    const sample    = cliCount ? CLIENTS.find(c => c.year_end) : null;
+    let diag = '<div style="padding:24px;font-size:13px;line-height:1.7;color:var(--text2)">';
+    diag += '<div style="font-weight:600;color:var(--text);margin-bottom:8px">No deadlines to show. Diagnostic:</div>';
+    diag += '<ul style="margin:0 0 12px 20px;padding:0">';
+    diag += '<li>Clients loaded from server: <strong>' + cliCount + '</strong></li>';
+    diag += '<li>With year_end set: <strong>' + withYe + '</strong></li>';
+    diag += '<li>With services set: <strong>' + withSvc + '</strong></li>';
+    diag += '<li>Deadlines generated: <strong>' + builtRows + '</strong> (cutoff ' + REM_CUTOFF + ')</li>';
+    diag += '<li>Filtered out by current filters/dismissed: <strong>' + (builtRows - rows.length) + '</strong></li>';
+    if (sample) diag += '<li>Sample client with data: <em>' + sample.name + '</em> · YE=<code>' + sample.year_end + '</code> · services=<code>' + (sample.services || '').toString().slice(0,40) + '</code></li>';
+    diag += '</ul>';
+    if (cliCount === 0)        diag += '<div style="color:var(--red)">→ CLIENTS array is empty. Try clicking ↻ Refresh or hard-reload (Ctrl+Shift+R).</div>';
+    else if (withYe === 0)     diag += '<div style="color:var(--amber)">→ No clients have year_end. The API may not be returning that column. Open a client on the Clients page — does year_end show? If yes, deploy the latest index.html (UPLOAD.bat). If no, the column may be hidden by the Apps Script backend.</div>';
+    else if (builtRows === 0)  diag += '<div style="color:var(--amber)">→ Clients have data but no deadlines were generated. Check that year_end values are real dates (e.g. "30 Jun") and the cutoff date (' + REM_CUTOFF + ') doesn\'t exclude everything.</div>';
+    else                       diag += '<div style="color:var(--text3)">→ Deadlines exist but all are filtered out. Reset the dropdowns above to "All".</div>';
+    diag += '</div>';
+    tbody.innerHTML = '<tr><td colspan="10">' + diag + '</td></tr>';
     return;
   }
+
   tbody.innerHTML = rows.map(r => {
     const days = _remDays(today, r.deadline);
     const statusBadge = '<span class="badge" style="background:' + r.status.color + '20;color:' + r.status.color + ';font-size:11px">' + r.status.label + '</span>';
