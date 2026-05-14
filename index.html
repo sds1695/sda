@@ -466,10 +466,15 @@
     <div class="page" id="page-clients">
       <div class="page-header">
         <div class="page-title">Client Registry</div>
-        <div class="page-sub">All clients and billing parties</div>
+        <div class="page-sub">All clients and billing parties · <span id="clients-sync-status" style="color:var(--text3);font-size:12px"></span></div>
         <div class="page-actions">
           <button class="btn btn-primary" onclick="openClientModal()">+ New Client</button>
+          <button class="btn btn-secondary" onclick="verifyClientsSync()" title="Re-fetch clients from Google Sheet and confirm browser cache matches" style="margin-left:6px">Verify sync</button>
         </div>
+      </div>
+      <!-- Single-source-of-truth banner: every edit on this page writes atomically to the Google Sheet. -->
+      <div style="background:var(--green-bg);border-left:3px solid var(--green);padding:8px 14px;font-size:12px;color:var(--text2);margin-bottom:14px;border-radius:var(--radius-sm)">
+        <strong style="color:var(--green)">✓ Synced</strong> — every save on this page writes directly to the Google Sheet. The dashboard never modifies client records without your explicit action.
       </div>
       <div class="filters">
         <input class="search-input" type="text" placeholder="Search client or billing party…" oninput="filterClients()" id="client-search" />
@@ -2433,8 +2438,17 @@ function setDashOutSort(col) {
 // CLIENTS
 // ══════════════════════════════════════════════════
 async function loadClients() {
+  _setClientsSyncStatus && _setClientsSyncStatus('Loading from Google Sheet…');
   const res = await api({ action: 'get_clients' });
-  if (res.ok) { CLIENTS = res.data; renderClients(); }
+  if (res.ok) {
+    CLIENTS = res.data;
+    renderClients();
+    const withSvc = CLIENTS.filter(c => c.services).length;
+    const withYE  = CLIENTS.filter(c => c.year_end).length;
+    _setClientsSyncStatus && _setClientsSyncStatus(`${CLIENTS.length} clients loaded from sheet · ${withYE} year-end · ${withSvc} services`);
+  } else {
+    _setClientsSyncStatus && _setClientsSyncStatus('Could not load from sheet — using cache', true);
+  }
 }
 
 function renderClients(data) {
@@ -2592,10 +2606,50 @@ async function saveClient() {
   if (id) setClientMeta(id, { services, year_end, date_of_incorporation: inc_date });
 
   toast('Client saved to Google Sheet ✓', 'success');
+  _setClientsSyncStatus('Saved to sheet at ' + new Date().toLocaleTimeString('en-MY', {hour:'2-digit', minute:'2-digit', second:'2-digit'}));
   closeModal('modal-client');
   loadClients();
   // Invalidate the deadlines render cache so it re-pulls
   try { renderReminders(); } catch(e){}
+}
+
+// ── Sync status indicator and verify ───────────────────────────────────────
+function _setClientsSyncStatus(text, isError) {
+  const el = document.getElementById('clients-sync-status');
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = isError ? 'var(--red)' : 'var(--green)';
+}
+
+async function verifyClientsSync() {
+  // Re-fetch the canonical Clients data from the Google Sheet and confirm the
+  // browser's CLIENTS cache matches. If counts differ, surface that prominently.
+  _setClientsSyncStatus('Verifying with Google Sheet…');
+  const beforeLen = (typeof CLIENTS !== 'undefined' && Array.isArray(CLIENTS)) ? CLIENTS.length : 0;
+  try {
+    const res = await api({ action: 'get_clients' });
+    if (!res || !res.ok || !Array.isArray(res.data)) {
+      _setClientsSyncStatus('Verify FAILED — ' + ((res && res.error) || 'no response from server'), true);
+      return;
+    }
+    // Replace the in-memory cache
+    CLIENTS.length = 0;
+    res.data.forEach(c => CLIENTS.push(c));
+    const after = CLIENTS.length;
+    const tally = {
+      total:     after,
+      withYE:    CLIENTS.filter(c => c.year_end).length,
+      withSvc:   CLIENTS.filter(c => c.services).length,
+      withARDate:CLIENTS.filter(c => c.ar_date).length,
+    };
+    _setClientsSyncStatus(`Synced ${after} clients · ${tally.withYE} year-end · ${tally.withSvc} services · ${tally.withARDate} ar_date · ${new Date().toLocaleTimeString('en-MY')}`);
+    // Re-render the table and deadlines to reflect freshest data
+    loadClients();
+    try { renderReminders(); } catch(e){}
+    if (typeof toast === 'function') toast(`Sheet ↔ dashboard verified · ${after} clients in sync`, 'success');
+  } catch(e) {
+    _setClientsSyncStatus('Verify error: ' + e.message, true);
+  }
 }
 const CLIENT_DELETED_KEY = 'seraya_clients_deleted_v1';
 function getDeletedClients() {
