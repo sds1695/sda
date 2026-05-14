@@ -2083,13 +2083,46 @@ function computeAccountValue(acct, invoices, vouchers) {
   // Snapshots (hardcoded value) are only used for BS-only accounts with no GL mapping
   // (e.g. bank balance, retained earnings). This way the IS/BS always reflects the
   // actual Google Sheet data — no manual snapshot maintenance required.
+  //
+  // Revenue split support (added 2026-05): an invoice can be split across multiple
+  // revenue categories via ALLOCATIONS rows. When 2+ allocation rows exist for the
+  // same invoice, revenue is summed from allocation.gross_fee per allocation.job_type
+  // (instead of invoice.amount × invoice.job_type). The Disbursements line always
+  // sums invoice.disb_amount (which represents the disbursement portion baked into
+  // invoice.amount). For single-allocation invoices, fee revenue = amount - disb_amount
+  // so disbursements aren't double-counted.
   if (acct.mapsFrom && acct.mapsFrom.length) {
     const set = new Set(acct.mapsFrom.map(s => (s||'').toLowerCase()));
     let sum = 0;
     if (acct.section === 'revenue' || acct.section === 'other_income') {
-      if (set.has('disbursements_field')) sum += invoices.reduce((s,i) => s + parseFloat(i.disb_amount||0), 0);
-      sum += invoices.filter(i => set.has(getInvJobType(i).toLowerCase()))
-                     .reduce((s,i) => s + parseFloat(i.amount||0), 0);
+      // Build allocations index: inv_no -> [rows]
+      const allocs = (typeof ALLOCATIONS !== 'undefined' && Array.isArray(ALLOCATIONS)) ? ALLOCATIONS : [];
+      const allocByInv = {};
+      allocs.forEach(a => {
+        const k = (a.inv_no||'').toString().trim();
+        if (!k) return;
+        (allocByInv[k] = allocByInv[k] || []).push(a);
+      });
+      const isDisb = set.has('disbursements_field');
+      invoices.forEach(inv => {
+        const k    = (inv.inv_no||'').toString().trim();
+        const amt  = parseFloat(inv.amount||0);
+        const disb = parseFloat(inv.disb_amount||0);
+        const rows = allocByInv[k] || [];
+        // Disbursements line always pulls from invoice.disb_amount
+        if (isDisb) sum += disb;
+        if (rows.length > 1) {
+          // Multi-row split: sum allocation.gross_fee for allocations whose job_type matches
+          rows.forEach(a => {
+            const jt = (a.job_type||'').toString().toLowerCase();
+            if (set.has(jt)) sum += parseFloat(a.gross_fee||0);
+          });
+        } else {
+          // Single allocation (legacy): use invoice.amount minus disbursement portion
+          const jt = getInvJobType(inv).toLowerCase();
+          if (set.has(jt)) sum += (amt - disb);
+        }
+      });
     } else {
       sum += vouchers.filter(v => set.has((v.category||'').toLowerCase()))
                      .reduce((s,v) => s + parseFloat(v.amount||0), 0);
@@ -2213,8 +2246,18 @@ async function openAccountDrill(code) {
   // 2) Live transactions based on COA mapping & special account roles
   const matchTokens = new Set(((acct.mapsFrom)||[]).map(s => (s||'').toLowerCase()));
 
-  // Revenue: matching invoices
+  // Revenue: matching invoices.
+  // Supports split allocations: when an invoice has 2+ allocation rows, revenue is
+  // pulled from each allocation's gross_fee (per its job_type); single-allocation
+  // invoices use invoice.amount minus invoice.disb_amount (to avoid double-counting
+  // the disb portion which is also surfaced on the Disbursements line).
   if (sec.side === 'income') {
+    const allocByInv = {};
+    (ALLOCATIONS||[]).forEach(a => {
+      const k = (a.inv_no||'').toString().trim();
+      if (!k) return;
+      (allocByInv[k] = allocByInv[k] || []).push(a);
+    });
     if (matchTokens.has('disbursements_field')) {
       invoices.filter(i => parseFloat(i.disb_amount||0) > 0.005).forEach(i => {
         txns.push({
@@ -2224,13 +2267,32 @@ async function openAccountDrill(code) {
         });
       });
     }
-    invoices.filter(i => matchTokens.has(getInvJobType(i).toLowerCase())).forEach(i => {
-      const ejt = getInvJobType(i);
-      txns.push({
-        date: i.inv_date || i.date, ref: i.inv_no, type: 'INV',
-        description: (i.client_name||'') + (ejt ? ' — ' + ejt : ''),
-        amount: parseFloat(i.amount||0)
-      });
+    invoices.forEach(i => {
+      const k = (i.inv_no||'').toString().trim();
+      const rows = allocByInv[k] || [];
+      const amt  = parseFloat(i.amount||0);
+      const disb = parseFloat(i.disb_amount||0);
+      if (rows.length > 1) {
+        rows.forEach(a => {
+          const jt = (a.job_type||'').toString().toLowerCase();
+          if (matchTokens.has(jt)) {
+            txns.push({
+              date: i.inv_date || i.date, ref: i.inv_no, type: 'INV',
+              description: (i.client_name||'') + ' — ' + (a.job_type || jt) + ' (split)',
+              amount: parseFloat(a.gross_fee||0)
+            });
+          }
+        });
+      } else {
+        const ejt = getInvJobType(i);
+        if (matchTokens.has(ejt.toLowerCase())) {
+          txns.push({
+            date: i.inv_date || i.date, ref: i.inv_no, type: 'INV',
+            description: (i.client_name||'') + (ejt ? ' — ' + ejt : ''),
+            amount: amt - disb
+          });
+        }
+      }
     });
   }
 
@@ -6061,6 +6123,13 @@ function renderReconciliation(yr) {
       if (a.mapsFrom && a.mapsFrom.length) {
         const set = new Set(a.mapsFrom.map(s => (s||'').toLowerCase()));
         if (sec.side === 'income') {
+          // Allocation-aware income aggregation (same logic as computeAccountValue)
+          const allocByInv = {};
+          (ALLOCATIONS||[]).forEach(al => {
+            const k = (al.inv_no||'').toString().trim();
+            if (!k) return;
+            (allocByInv[k] = allocByInv[k] || []).push(al);
+          });
           if (set.has('disbursements_field')) {
             invoices.filter(i => parseFloat(i.disb_amount||0) > 0.005).forEach(i => {
               const amt = parseFloat(i.disb_amount||0);
@@ -6068,10 +6137,28 @@ function renderReconciliation(yr) {
               contributors.push({ ref: i.inv_no, desc: (i.client_name||'') + ' — disbursement', amt, type: 'INV' });
             });
           }
-          invoices.filter(i => set.has(getInvJobType(i).toLowerCase())).forEach(i => {
-            const amt = parseFloat(i.amount||0);
-            live += amt;
-            contributors.push({ ref: i.inv_no, desc: (i.client_name||'') + (getInvJobType(i) ? ' — ' + getInvJobType(i) : ''), amt, type: 'INV' });
+          invoices.forEach(i => {
+            const k    = (i.inv_no||'').toString().trim();
+            const rows = allocByInv[k] || [];
+            const amt  = parseFloat(i.amount||0);
+            const disb = parseFloat(i.disb_amount||0);
+            if (rows.length > 1) {
+              rows.forEach(al => {
+                const jt = (al.job_type||'').toString().toLowerCase();
+                if (set.has(jt)) {
+                  const gf = parseFloat(al.gross_fee||0);
+                  live += gf;
+                  contributors.push({ ref: i.inv_no, desc: (i.client_name||'') + ' — ' + (al.job_type||jt) + ' (split)', amt: gf, type: 'INV' });
+                }
+              });
+            } else {
+              const ejt = getInvJobType(i);
+              if (set.has(ejt.toLowerCase())) {
+                const feeAmt = amt - disb;
+                live += feeAmt;
+                contributors.push({ ref: i.inv_no, desc: (i.client_name||'') + (ejt ? ' — ' + ejt : ''), amt: feeAmt, type: 'INV' });
+              }
+            }
           });
         } else if (sec.side === 'expense') {
           vouchers.filter(v => set.has((v.category||'').toLowerCase())).forEach(v => {
@@ -6219,8 +6306,24 @@ async function autoReclassVariances() {
       const set = new Set(a.mapsFrom.map(s => (s||'').toLowerCase()));
       const sec = COA_SECTIONS[a.section] || {};
       if (sec.side === 'income') {
+        // Allocation-aware (matches computeAccountValue)
+        const allocByInv = {};
+        (ALLOCATIONS||[]).forEach(al => {
+          const k = (al.inv_no||'').toString().trim();
+          if (!k) return;
+          (allocByInv[k] = allocByInv[k] || []).push(al);
+        });
         if (set.has('disbursements_field')) live += invoices.reduce((s,i) => s + parseFloat(i.disb_amount||0), 0);
-        live += invoices.filter(i => set.has(getInvJobType(i).toLowerCase())).reduce((s,i) => s + parseFloat(i.amount||0), 0);
+        invoices.forEach(i => {
+          const k = (i.inv_no||'').toString().trim();
+          const rows = allocByInv[k] || [];
+          const amt = parseFloat(i.amount||0), disb = parseFloat(i.disb_amount||0);
+          if (rows.length > 1) {
+            rows.forEach(al => { if (set.has((al.job_type||'').toString().toLowerCase())) live += parseFloat(al.gross_fee||0); });
+          } else {
+            if (set.has(getInvJobType(i).toLowerCase())) live += (amt - disb);
+          }
+        });
       } else if (sec.side === 'expense') {
         live += vouchers.filter(v => set.has((v.category||'').toLowerCase())).reduce((s,v) => s + parseFloat(v.amount||0), 0);
       }
