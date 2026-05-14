@@ -391,6 +391,9 @@
   <!-- MAIN CONTENT -->
   <div class="main">
 
+    <!-- ── Per-tab sync bar ── auto-shows last sync time for the currently visible page -->
+    <div id="page-sync-bar" style="display:flex;align-items:center;padding:6px 14px;background:var(--surface2);border-bottom:1px solid var(--border);font-size:11px;gap:6px"></div>
+
     <!-- ══ DASHBOARD ══ -->
     <div class="page active" id="page-dashboard">
       <div class="page-header">
@@ -1541,6 +1544,7 @@ async function prefetchGlobals() {
 
 // Retention Recon page
 async function loadRetention() {
+  try { markPageSynced('retention'); } catch(e){}
   const fmt  = n => 'RM ' + parseFloat(Math.abs(n)||0).toLocaleString('en-MY',{minimumFractionDigits:2});
   const fmtS = (n, neg) => neg
     ? `<span style="color:var(--red)">− ${fmt(n)}</span>`
@@ -1646,6 +1650,61 @@ async function doLogout() {
 // ══════════════════════════════════════════════════
 // NAVIGATION
 // ══════════════════════════════════════════════════
+// ─── Per-tab sync timestamp tracker ──────────────────────────────────────
+// Every page that pulls data from the sheet calls markPageSynced(pageId)
+// after a successful fetch. The header bar shows when this page was last
+// synced and lets the user force a re-pull.
+window.__pageSyncedAt = window.__pageSyncedAt || {};   // pageId → Date
+function markPageSynced(pageId, source) {
+  window.__pageSyncedAt[pageId] = { at: new Date(), source: source || 'Google Sheet' };
+  _renderPageSyncBar(pageId);
+}
+function _renderPageSyncBar(pageId) {
+  const bar = document.getElementById('page-sync-bar');
+  if (!bar) return;
+  const rec = window.__pageSyncedAt[pageId];
+  if (!rec) {
+    bar.innerHTML = '<span style="color:var(--text3);font-size:11px">Not yet synced</span>';
+    return;
+  }
+  const t = rec.at;
+  const fmt = t.toLocaleTimeString('en-MY', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  const ago = Math.max(0, Math.floor((Date.now() - t.getTime())/1000));
+  const agoStr = ago < 60 ? `${ago}s ago` : (ago < 3600 ? `${Math.floor(ago/60)}m ago` : `${Math.floor(ago/3600)}h ago`);
+  bar.innerHTML =
+    `<span style="color:var(--green);font-size:11px;font-weight:500">● Synced</span>` +
+    `<span style="color:var(--text3);font-size:11px;margin-left:8px">${rec.source} · ${fmt} (${agoStr})</span>` +
+    `<button onclick="refreshCurrentPage()" class="btn btn-ghost" style="font-size:11px;padding:2px 8px;margin-left:auto" title="Force re-fetch this page from the sheet">↻ Refresh</button>`;
+}
+function refreshCurrentPage() {
+  const id = window.__currentPageId;
+  if (!id) return;
+  _showPageLoader(id);
+}
+function _showPageLoader(id) {
+  // Trigger the same loader the tab-switch does
+  if (id === 'payout')              loadPayout();
+  else if (id === 'receipts')       loadReceipts();
+  else if (id === 'vouchers')       loadVouchers();
+  else if (id === 'gl')             loadGL();
+  else if (id === 'income-statement') loadIncomeStatement();
+  else if (id === 'balance-sheet')  loadBalanceSheet();
+  else if (id === 'sales-analysis') loadSalesAnalysis();
+  else if (id === 'aging')          loadAging();
+  else if (id === 'retention')      loadRetention();
+  else if (id === 'coa')            loadCOA();
+  else if (id === 'reminders')      renderReminders();
+  else if (id === 'invoice-allocations') loadInvoiceBreakdown();
+  else if (id === 'team-members')   renderTeamMembers();
+  else if (id === 'clients')        loadClients();
+  else if (id === 'invoices')       loadInvoices && loadInvoices();
+  else if (id === 'dashboard')      loadDashboard();
+}
+// Tick the "ago" display every 15s without a full re-render
+setInterval(() => {
+  if (window.__currentPageId) _renderPageSyncBar(window.__currentPageId);
+}, 15000);
+
 function showPage(id) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -1653,6 +1712,8 @@ function showPage(id) {
   document.querySelectorAll('.nav-item').forEach(n => {
     if (n.getAttribute('onclick') && n.getAttribute('onclick').includes("'" + id + "'")) n.classList.add('active');
   });
+  window.__currentPageId = id;
+  _renderPageSyncBar(id);
   if (id === 'payout')            loadPayout();
   if (id === 'receipts')          loadReceipts();
   if (id === 'vouchers')          loadVouchers();
@@ -2284,6 +2345,7 @@ async function openAccountDrill(code) {
 // DASHBOARD
 // ══════════════════════════════════════════════════
 async function loadDashboard() {
+  try { markPageSynced('dashboard'); } catch(e){}
   // Sequential fetches — avoid concurrent JSONP timeouts
   const summaryRes = await api({ action: 'dashboard_summary' });
   if (!summaryRes.ok) return;
@@ -2438,6 +2500,7 @@ function setDashOutSort(col) {
 // CLIENTS
 // ══════════════════════════════════════════════════
 async function loadClients() {
+  try { markPageSynced('clients'); } catch(e){}
   _setClientsSyncStatus && _setClientsSyncStatus('Loading from Google Sheet…');
   const res = await api({ action: 'get_clients' });
   if (res.ok) {
@@ -2675,6 +2738,7 @@ async function deleteClientById(id) {
 // INVOICES
 // ══════════════════════════════════════════════════
 async function loadInvoices() {
+  try { markPageSynced('invoices'); } catch(e){}
   const res = await api({ action: 'get_invoices' });
   if (res.ok) {
     INVOICES = res.data.filter(i => !isDeleted('invoices', (i.inv_id||i.id||'').toString()));
@@ -3916,6 +3980,7 @@ function renderPayoutView() {
 }
 
 async function loadPayout() {
+  try { markPageSynced('payout'); } catch(e){}
   // Ensure vouchers are loaded for recon
   if (!VOUCHERS.length) {
     const vRes = await api({ action: 'get_vouchers' });
@@ -4323,6 +4388,7 @@ function renderReceiptRows(rows) {
 }
 
 async function loadReceipts() {
+  try { markPageSynced('receipts'); } catch(e){}
   const res = await api({ action: 'get_receipts' });
   if (!res.ok) return;
   // Filter: exclude local-deleted and any backend-voided
@@ -4581,6 +4647,7 @@ function renderVoucherRows(rows) {
 }
 
 async function loadVouchers() {
+  try { markPageSynced('vouchers'); } catch(e){}
   const res = await api({ action: 'get_vouchers' });
   if (!res.ok) return;
   // Filter: exclude local-deleted and any backend-voided
@@ -5005,6 +5072,7 @@ function buildGLFromCache() {
 }
 
 async function loadGL() {
+  try { markPageSynced('gl'); } catch(e){}
   const month  = document.getElementById('gl-filter-month').value;
   const source = document.getElementById('gl-filter-source').value;
   document.getElementById('gl-tbody').innerHTML = '<tr class="loading-row"><td colspan="8">Loading GL…</td></tr>';
@@ -5222,6 +5290,7 @@ function selectBillingParty(idx) {
 // INVOICE BREAKDOWN PAGE
 // ══════════════════════════════════════════════════
 async function loadInvoiceBreakdown() {
+  try { markPageSynced('invoice-allocations'); } catch(e){}
   // Make sure data is loaded
   if (!INVOICES.length) await loadInvoices();
   if (!ALLOCATIONS.length) {
@@ -5626,6 +5695,7 @@ const TEAM_DEFAULTS = [
 function getTeamMembers(){ try { const s = JSON.parse(localStorage.getItem(TEAM_KEY) || 'null'); if (Array.isArray(s) && s.length) return s; } catch(e){} return TEAM_DEFAULTS; }
 function setTeamMembers(arr){ localStorage.setItem(TEAM_KEY, JSON.stringify(arr||[])); }
 function renderTeamMembers(){
+  try { markPageSynced('team-members'); } catch(e){}
   const tbody = document.getElementById('team-members-tbody');
   if (!tbody) return;
   const m = getTeamMembers();
@@ -5672,6 +5742,7 @@ function deleteTeamMember(){
 // ── Recovered functions from backup ──
 
 async function loadAging() {
+  try { markPageSynced('aging'); } catch(e){}
   const tbody = document.getElementById('ag-tbody');
   tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text3)">Loading…</td></tr>';
 
@@ -5748,6 +5819,7 @@ async function loadAging() {
 // CHART OF ACCOUNTS — UI
 // ══════════════════════════════════════════════════
 function loadCOA() {
+  try { markPageSynced('coa'); } catch(e){}
   const coa = getCOA();
   const fmt = n => parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
 
@@ -6228,6 +6300,7 @@ const COA_EXCEL_SNAPSHOT = {
 };
 
 async function loadSalesAnalysis() {
+  try { markPageSynced('sales-analysis'); } catch(e){}
   const year   = document.getElementById('sa-filter-year').value;
   const biller = document.getElementById('sa-filter-biller').value;
   // Use cached INVOICES — avoids extra API call
@@ -6423,6 +6496,7 @@ async function loadSalesAnalysis() {
 }
 
 async function loadBalanceSheet() {
+  try { markPageSynced('balance-sheet'); } catch(e){}
   document.getElementById('bs-assets').innerHTML = '<div style="padding:20px;color:var(--text3)">Loading…</div>';
   try {
 
@@ -6572,6 +6646,7 @@ async function loadBalanceSheet() {
 }
 
 async function loadIncomeStatement() {
+  try { markPageSynced('income-statement'); } catch(e){}
   document.getElementById('is-table').innerHTML = '<div style="padding:20px;color:var(--text3)">Loading…</div>';
   try {
   const year = document.getElementById('is-filter-year').value;
@@ -7173,6 +7248,7 @@ function _remPopulateTaskFilter(rows) {
 }
 
 function renderReminders() {
+  try { markPageSynced('reminders'); } catch(e){}
   const tbody  = document.getElementById('rem-tbody');
   const stats  = document.getElementById('rem-stats');
   const today  = new Date(); today.setHours(0,0,0,0);
