@@ -5184,10 +5184,29 @@ function rcBuildChecklist(invoicePool, preCheckId) {
 
 function rcFilterChecklist(q) {
   const term = (q||'').toLowerCase().trim();
-  document.querySelectorAll('#rc-inv-list label').forEach(label => {
+  const labels = document.querySelectorAll('#rc-inv-list label');
+  let visibleCount = 0;
+  labels.forEach(label => {
     const text = label.textContent.toLowerCase();
-    label.style.display = (!term || text.includes(term)) ? '' : 'none';
+    const show = !term || text.includes(term);
+    label.style.display = show ? '' : 'none';
+    if (show) visibleCount++;
   });
+  // Show/hide a "no results" message
+  let noResult = document.getElementById('rc-no-results');
+  if (!noResult) {
+    noResult = document.createElement('div');
+    noResult.id = 'rc-no-results';
+    noResult.style.cssText = 'padding:10px 14px;font-size:12px;color:var(--text3);font-style:italic';
+    const list = document.getElementById('rc-inv-list');
+    if (list) list.appendChild(noResult);
+  }
+  if (term && visibleCount === 0) {
+    noResult.textContent = `No invoice matches "${q}" — the invoice may be under a company name. Clear the search to see all invoices.`;
+    noResult.style.display = '';
+  } else {
+    noResult.style.display = 'none';
+  }
 }
 
 function rcUpdateTotal() {
@@ -5232,7 +5251,11 @@ function openReceiptForInvoice(inv_id) {
 function openReceiptEdit(r) {
   rcAmountEdited = true; // keep existing amount, don't overwrite
   document.getElementById('rc-modal-title').textContent = 'Edit Receipt';
-  document.getElementById('rc-id').value      = r.receipt_id || '';
+  // CRITICAL: use receipt_id (numeric GAS key) for edit mode. r.id is the "rc_NNN" frontend alias.
+  // If receipt_id is absent, strip the "rc_" prefix from r.id to get the numeric key.
+  // An empty rc-id triggers NEW receipt mode — causing duplicates. Never leave it blank on edit.
+  const _rcEditId = r.receipt_id || (r.id ? String(r.id).replace(/^rc_/i,'') : '') || '';
+  document.getElementById('rc-id').value      = _rcEditId;
   document.getElementById('rc-date').value    = _toIsoDate(r.date);
   document.getElementById('rc-amount').value  = r.amount || '';
   document.getElementById('rc-notes').value   = r.notes || '';
@@ -5276,11 +5299,16 @@ function openReceiptEdit(r) {
         style="width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;margin-bottom:6px"
         oninput="rcFilterChecklist(this.value)" />`;
 
-    // Auto-search using receipt client_name words to pre-filter the list
+    // Auto-search using receipt client_name words — but only if it actually produces results.
+    // If nothing matches (e.g. receipt says "Prithishan partial" but invoice is under a company name),
+    // leave the search blank so the user sees ALL invoices straight away.
     const hint = (r.client_name||'').split(/\s+/).filter(w=>w.length>=4)[0] || '';
     if (hint) {
+      const labels = document.querySelectorAll('#rc-inv-list label');
+      const hasMatch = Array.from(labels).some(l => l.textContent.toLowerCase().includes(hint.toLowerCase()));
       const inp = document.getElementById('rc-inv-search');
-      if (inp) { inp.value = hint; rcFilterChecklist(hint); }
+      if (hasMatch && inp) { inp.value = hint; rcFilterChecklist(hint); }
+      // else: leave blank — all invoices remain visible
     }
   }
 
@@ -5319,6 +5347,28 @@ async function saveReceipt() {
       return;
     }
     if (!totalAmt) { toast('Please enter an amount.', 'error'); return; }
+
+    // Safety check: warn if the selected invoice is already fully paid by OTHER receipts
+    // (i.e. linking this receipt would over-pay the invoice and may mark it paid incorrectly)
+    if (checked.length) {
+      const selInvId = checked[0].dataset.invId;
+      const selInv   = INVOICES.find(i => String(i.inv_id) === String(selInvId));
+      if (selInv) {
+        const alreadyPaid = (RECEIPTS||[]).filter(r2 =>
+          (r2.inv_no === selInv.inv_no) &&
+          (r2.receipt_id||r2.id||'').toString() !== existingId.toString()
+        ).reduce((s,r2) => s + parseFloat(r2.amount||0), 0);
+        const invAmt = parseFloat(selInv.amount||0);
+        if (alreadyPaid >= invAmt * 0.995) {
+          const ok = confirm(
+            `⚠ WARNING: ${selInv.inv_no} (${selInv.client_name}) is already fully covered by other receipts (RM ${alreadyPaid.toFixed(2)} paid vs RM ${invAmt.toFixed(2)} invoice).\n\n` +
+            `Linking this receipt will OVER-PAY the invoice and may cause incorrect "paid" status.\n\n` +
+            `Are you sure this is the correct invoice? Press Cancel to go back and choose a different one.`
+          );
+          if (!ok) return;
+        }
+      }
+    }
 
     const inv = checked.length >= 1
       ? INVOICES.find(i => String(i.inv_id) === String(checked[0].dataset.invId))
