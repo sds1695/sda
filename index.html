@@ -5605,6 +5605,24 @@ function buildGLFromCache() {
     other:        'Other Expenses',
   };
 
+  // Normalise any date value (ISO "2026-03-11", JS Date.toString "Wed Mar 11 2026...", etc.)
+  // to a compact ISO YYYY-MM-DD string so date-column display is clean and sort works correctly.
+  const toISO = d => {
+    if (!d) return '';
+    const s = String(d).trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10); // already ISO
+    try {
+      const dt = new Date(s);
+      if (!isNaN(dt)) {
+        const y = dt.getFullYear();
+        const m = String(dt.getMonth() + 1).padStart(2, '0');
+        const dy = String(dt.getDate()).padStart(2, '0');
+        return `${y}-${m}-${dy}`;
+      }
+    } catch(e) {}
+    return s.slice(0, 10);
+  };
+
   const rows = [];
 
   // Build job_type → COA revenue account name lookup (so each invoice posts to its specific revenue line)
@@ -5632,7 +5650,7 @@ function buildGLFromCache() {
     const revAcct = __jtToRevAcct[jt] || (jt ? `Revenue — ${effJt}` : 'Revenue (Unmapped)');
     if (baseAmt > 0.005) {
       rows.push({
-        date: i.date || i.inv_date || '',
+        date: toISO(i.date || i.inv_date),
         ref: i.inv_no || '',
         description: `${i.client_name||''}${effJt ? ' — ' + effJt : ''}`,
         dr_account: 'Trade Debtors',
@@ -5644,7 +5662,7 @@ function buildGLFromCache() {
     }
     if (disbAmt > 0.005) {
       rows.push({
-        date: i.date || i.inv_date || '',
+        date: toISO(i.date || i.inv_date),
         ref: i.inv_no || '',
         description: `${i.client_name||''} — disbursement`,
         dr_account: 'Trade Debtors',
@@ -5662,7 +5680,7 @@ function buildGLFromCache() {
     if (!amt) return;
     const isDrawings = rc.payment_account === 'drawings';
     rows.push({
-      date: rc.date || '',
+      date: toISO(rc.date),
       ref: rc.inv_no || '',
       description: `Receipt — ${rc.client_name||rc.inv_no||''}`,
       dr_account: isDrawings ? 'Drawings Account' : 'CIMB Bank 8606183963',
@@ -5694,7 +5712,7 @@ function buildGLFromCache() {
     const cat = (v.category||'').toLowerCase();
     const drAcct = __catToExpAcct[cat] || CAT_DR[cat] || (cat ? `Expense — ${v.category}` : 'Expense (Unmapped)');
     rows.push({
-      date: v.date || '',
+      date: toISO(v.date),
       ref: v.voucher_no || '',
       description: v.description || `Payment to ${v.payee||''}`,
       dr_account: drAcct,
@@ -5736,9 +5754,11 @@ async function loadGL() {
 
   // Build GL from cache + merge manual journals
   let rows = buildGLFromCache();
+  // toISO normaliser also available in this scope via buildGLFromCache; re-declare inline for journals
+  const _toISO = d => { if (!d) return ''; const s = String(d).trim(); if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10); try { const dt=new Date(s); if(!isNaN(dt)){const y=dt.getFullYear(),m=String(dt.getMonth()+1).padStart(2,'0'),dy=String(dt.getDate()).padStart(2,'0');return `${y}-${m}-${dy}`;}}catch(e){} return s.slice(0,10); };
   manualJournals.forEach(j => {
     rows.push({
-      date: j.date || '',
+      date: _toISO(j.date),
       ref: j.ref || j.gl_id || '',
       description: j.description || '',
       dr_code: j.dr_code || '',
@@ -5792,14 +5812,24 @@ function renderGLRows(rows) {
     const m = { invoice: 'badge-green', receipt: 'badge-blue', voucher: 'badge-amber', journal: 'badge-purple' };
     return `<span class="badge ${m[t] || 'badge-gray'}">${t || '—'}</span>`;
   };
+  // Normalise any date string (ISO "2026-03-11", JS Date.toString "Wed Mar 11 2026 ...", etc.)
+  // to a compact "11 Mar 2026" display string.
+  const fmtDate = d => {
+    if (!d) return '—';
+    try {
+      const dt = new Date(d);
+      if (isNaN(dt)) return String(d).slice(0, 10) || '—';
+      return dt.toLocaleDateString('en-MY', { day: '2-digit', month: 'short', year: 'numeric' });
+    } catch(e) { return String(d).slice(0, 10) || '—'; }
+  };
   tbody.innerHTML = rows.map(g => `<tr>
-    <td style="font-size:12px;color:var(--text2)">${g.date || '—'}</td>
-    <td style="font-family:'DM Mono',monospace;font-size:12px">${g.ref || '—'}</td>
-    <td>${g.description || '—'}</td>
-    <td style="font-size:12px">${g.dr_account || '—'}</td>
-    <td style="font-size:12px">${g.cr_account || '—'}</td>
-    <td style="text-align:right;font-family:'DM Mono',monospace">RM ${fmt(g.amount)}</td>
-    <td>${srcBadge(g.source_type)}</td>
+    <td style="font-size:12px;color:var(--text2);white-space:nowrap">${fmtDate(g.date)}</td>
+    <td style="font-family:'DM Mono',monospace;font-size:12px;white-space:nowrap">${g.ref || '—'}</td>
+    <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(g.description||'').replace(/"/g,'&quot;')}">${g.description || '—'}</td>
+    <td style="font-size:12px;white-space:nowrap">${g.dr_account || '—'}</td>
+    <td style="font-size:12px;white-space:nowrap">${g.cr_account || '—'}</td>
+    <td style="text-align:right;font-family:'DM Mono',monospace;white-space:nowrap">RM ${fmt(g.amount)}</td>
+    <td style="white-space:nowrap">${srcBadge(g.source_type)}</td>
   </tr>`).join('');
 }
 
