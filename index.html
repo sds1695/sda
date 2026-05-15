@@ -5717,7 +5717,16 @@ async function deleteVoucher(id, label) {
   toast('Voucher deleted.', 'success');
 }
 
-function openReceiptEditById(id) {
+async function openReceiptEditById(id) {
+  // Ensure INVOICES and RECEIPTS are loaded before opening the modal.
+  // If either is empty (e.g. first click before full load), fetch now.
+  if (!INVOICES.length) {
+    toast('Loading invoices…', 'info');
+    await loadInvoices();
+  }
+  if (!RECEIPTS.length) {
+    await loadReceipts();
+  }
   const r = RECEIPTS.find(x => (x.receipt_id||x.id||'').toString() === id.toString());
   if (!r) { toast('Receipt not found — please reload the page.', 'error'); return; }
   openReceiptEdit(r);
