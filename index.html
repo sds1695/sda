@@ -1658,8 +1658,8 @@ async function prefetchGlobals() {
     window.VOUCHERS_RAW = (vRes.data||[]).slice();
     VOUCHERS = (vRes.data||[]).filter(v =>
       !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) &&
-      !(v.description||'').startsWith('__VOID__') &&
-      !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString())
+      !isVoided('vouchers',(v.voucher_id||v.id||'').toString()) &&
+      !(v.description||'').startsWith('__VOID__')
     );
     augmentInvoicesWithJobType();
   }
@@ -2538,8 +2538,8 @@ async function openAccountDrill(code) {
   const receipts = (RECEIPTS||[]);
   const vouchers = (VOUCHERS||[])
     .filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString())
-      && !(v.description||'').startsWith('__VOID__')
-      && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString()))
+      && !isVoided('vouchers',(v.voucher_id||v.id||'').toString())
+      && !(v.description||'').startsWith('__VOID__'))
     .filter(v => !_shouldFilterByFY || _inFY(v.date||''));
 
   const txns = [];
@@ -3001,7 +3001,7 @@ async function loadDashboard() {
   const fmt = n => 'RM ' + parseFloat(n || 0).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   // ── Build paid-amount map from receipts (inv_no → total received), excluding voided ──
-  const receipts = (rcRes.ok ? rcRes.data : []).filter(r => (!isDeleted('receipts',(r.receipt_id||r.id||'').toString()) && !(r.notes||'').startsWith('__VOID__')));
+  const receipts = (rcRes.ok ? rcRes.data : []).filter(r => (!isDeleted('receipts',(r.receipt_id||r.id||'').toString()) && !isVoided('receipts',(r.receipt_id||r.id||'').toString()) && !(r.notes||'').startsWith('__VOID__')));
   // Keep global RECEIPTS in sync with this fresh fetch so the Balance Sheet page
   // (which reads RECEIPTS directly) always uses the same dataset as the health panel.
   if (rcRes.ok) RECEIPTS = receipts;
@@ -3018,7 +3018,7 @@ async function loadDashboard() {
       vouchers.forEach(v => VOUCHERS.push(v));
     }
   }
-  vouchers = vouchers.filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
+  vouchers = vouchers.filter(v => !isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !isVoided('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__'));
   const paidMap = {};  // inv_no → total paid
   receipts.forEach(r => {
     if (r.inv_no) paidMap[r.inv_no] = r2((paidMap[r.inv_no] || 0) + parseFloat(r.amount || 0));
@@ -4491,7 +4491,7 @@ async function loadAllocations() {
     window.ALLOCATIONS_RAW = (res.data || []).slice();
     ALLOCATIONS = (res.data || []).filter(a =>
       !(a.inv_no || '').startsWith('_DUP_') &&
-      !(window.ALLOC_VOID_IDS || []).includes((a.alloc_id || '').toString())
+      !isVoided('allocations', (a.alloc_id || '').toString())
     );
     invalidateJtCache(); renderAllocations();
     try { runDataIntegrityChecks(); } catch(e) { console.warn('integrity check failed', e); }
@@ -4569,10 +4569,12 @@ function openAllocEdit(a) {
 }
 
 async function saveAllocEdit() {
-  const inv_no = document.getElementById('ae-inv-no').value;
-  const inv    = INVOICES.find(i => i.inv_no === inv_no) || {};
+  const inv_no   = document.getElementById('ae-inv-no').value;
+  const inv      = INVOICES.find(i => i.inv_no === inv_no) || {};
+  const oldAllocId = document.getElementById('ae-alloc-id').value;
   const data = {
-    alloc_id:       document.getElementById('ae-alloc-id').value,
+    // alloc_id intentionally omitted — GAS always appends new rows (cannot update).
+    // VOID + RECREATE: void the old alloc_id, create a fresh row below.
     inv_no,
     inv_id:         inv.inv_id || '',
     job_type:       inv.job_type || '',
@@ -4587,6 +4589,11 @@ async function saveAllocEdit() {
     reviewer_top20: parseFloat(document.getElementById('ae-top20').value||0),
     kc_commission:  parseFloat(document.getElementById('ae-kc-comm').value||0),
   };
+  // Void the old allocation before saving the replacement
+  if (oldAllocId) {
+    addVoidId('allocations', oldAllocId);
+    ALLOCATIONS = ALLOCATIONS.filter(a => (a.alloc_id||'').toString() !== oldAllocId.toString());
+  }
   const res = await api({ action: 'save_allocation', data });
   if (res.ok) {
     toast('Allocation updated ✓', 'success');
@@ -4596,12 +4603,25 @@ async function saveAllocEdit() {
       window.ALLOCATIONS_RAW = (allocRes.data || []).slice();
       ALLOCATIONS = (allocRes.data || []).filter(a =>
         !(a.inv_no || '').startsWith('_DUP_') &&
-        !(window.ALLOC_VOID_IDS || []).includes((a.alloc_id || '').toString())
+        !isVoided('allocations', (a.alloc_id || '').toString())
       );
       renderAllocations();
       try { runDataIntegrityChecks(); } catch(e) { console.warn('integrity check failed', e); }
     }
   } else {
+    // Save failed — undo the void so original allocation stays visible
+    if (oldAllocId) {
+      const voids = JSON.parse(localStorage.getItem('seraya_voided_allocations') || '[]');
+      const idx = voids.indexOf(oldAllocId.toString());
+      if (idx > -1) { voids.splice(idx, 1); localStorage.setItem('seraya_voided_allocations', JSON.stringify(voids)); }
+      const allocRes = await api({ action: 'get_allocations' });
+      if (allocRes.ok) {
+        window.ALLOCATIONS_RAW = (allocRes.data || []).slice();
+        ALLOCATIONS = (allocRes.data || []).filter(a =>
+          !(a.inv_no || '').startsWith('_DUP_') && !isVoided('allocations', (a.alloc_id||'').toString()));
+        renderAllocations();
+      }
+    }
     toast('Save failed: ' + (res.error || 'unknown error'), 'error');
   }
 }
@@ -4685,7 +4705,7 @@ async function loadPayout() {
   // Ensure vouchers are loaded for recon
   if (!VOUCHERS.length) {
     const vRes = await api({ action: 'get_vouchers' });
-    if (vRes.ok) VOUCHERS = (vRes.data || []).filter(v => (!isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__') && !(window.VOUCHER_VOID_IDS||[]).includes((v.voucher_id||v.id||'').toString())));
+    if (vRes.ok) VOUCHERS = (vRes.data || []).filter(v => (!isDeleted('vouchers',(v.voucher_id||v.id||'').toString()) && !isVoided('vouchers',(v.voucher_id||v.id||'').toString()) && !(v.description||'').startsWith('__VOID__')));
   }
   // Populate month filter options from ALLOCATIONS invoice dates
   const monthSel = document.getElementById('payout-filter-month');
@@ -5092,10 +5112,10 @@ async function loadReceipts() {
   try { markPageSynced('receipts'); } catch(e){}
   const res = await api({ action: 'get_receipts' });
   if (!res.ok) return;
-  // Filter: exclude local-deleted and any backend-voided
+  // Filter: exclude local-deleted, locally-voided (edit replacements), and backend-voided
   RECEIPTS = (res.data || []).filter(r => {
     const id = (r.receipt_id||r.id||'').toString();
-    return !isDeleted('receipts', id) && !(r.notes||'').startsWith('__VOID__');
+    return !isDeleted('receipts', id) && !isVoided('receipts', id) && !(r.notes||'').startsWith('__VOID__');
   });
   rebuildRVCache();
   renderReceiptRows(RECEIPTS);
@@ -5277,7 +5297,12 @@ function openReceiptEdit(r) {
   document.getElementById('rc-date').value    = _toIsoDate(r.date);
   document.getElementById('rc-amount').value  = r.amount || '';
   document.getElementById('rc-notes').value   = r.notes || '';
-  document.getElementById('rc-account').value = r.payment_account || 'bank';
+  // Derive payment_account from bank_account if not explicitly stored.
+  // GSheets only persists bank_account ("Drawings" or "CIMB 8606183963"), not payment_account.
+  // So for receipts loaded from GSheets, payment_account is always undefined — derive it from bank_account.
+  const _payAcct = r.payment_account ||
+    ((r.bank_account || '').toLowerCase().includes('draw') ? 'drawings' : 'bank');
+  document.getElementById('rc-account').value = _payAcct;
 
   // Store original inv_no so save() can preserve it if user clears selection
   document.getElementById('rc-id').dataset.origInvNo     = r.inv_no     || '';
@@ -5394,8 +5419,10 @@ async function saveReceipt() {
 
     // If user cleared the selection but receipt was already linked, preserve original link.
     // If user made a new selection, use that.
+    // VOID + RECREATE: GAS save_receipt always appends new rows — it cannot update existing.
+    // Void the old receipt ID so it's hidden everywhere, then create a fresh row without receipt_id.
     const data = {
-      receipt_id:      existingId,
+      // receipt_id intentionally omitted → GAS appends a brand-new row
       date, notes,
       amount:          totalAmt,
       payment_account: account,
@@ -5404,6 +5431,9 @@ async function saveReceipt() {
       inv_no:          inv?.inv_no      || checked[0]?.dataset?.invNo || origInvNo,
       client_name:     inv?.client_name || checked[0]?.dataset?.client || origClient,
     };
+    // Mark old row as voided (persisted in localStorage) and strip from in-memory cache immediately
+    addVoidId('receipts', existingId);
+    RECEIPTS = RECEIPTS.filter(x => (x.receipt_id||x.id||'').toString() !== existingId.toString());
     const res = await api({ action: 'save_receipt', data });
     if (res.ok) {
       toast('Receipt updated ✓ — dashboard refreshing…', 'success');
@@ -5413,7 +5443,14 @@ async function saveReceipt() {
       if (b) b.remove();
       await Promise.all([loadInvoices(), loadReceipts()]);
       loadDashboard(); // refresh health panel + outstanding table
-    } else toast(res.error || 'Save failed', 'error');
+    } else {
+      // Save failed — undo the void so the original receipt stays visible
+      const voids = JSON.parse(localStorage.getItem('seraya_voided_receipts') || '[]');
+      const idx = voids.indexOf(existingId.toString());
+      if (idx > -1) { voids.splice(idx, 1); localStorage.setItem('seraya_voided_receipts', JSON.stringify(voids)); }
+      toast(res.error || 'Save failed', 'error');
+      await loadReceipts(); // restore original
+    }
     return;
   }
 
@@ -5502,10 +5539,10 @@ async function loadVouchers() {
   const res = await api({ action: 'get_vouchers' });
   if (!res.ok) return;
   window.VOUCHERS_RAW = (res.data || []).slice();  // unfiltered, for integrity checks
-  // Filter: exclude local-deleted and any backend-voided
+  // Filter: exclude local-deleted, locally-voided (edit replacements), and backend-voided
   VOUCHERS = (res.data || []).filter(v => {
     const id = (v.voucher_id||v.id||'').toString();
-    return !isDeleted('vouchers', id) && !(v.description||'').startsWith('__VOID__');
+    return !isDeleted('vouchers', id) && !isVoided('vouchers', id) && !(v.description||'').startsWith('__VOID__');
   });
   renderVoucherRows(VOUCHERS);
   try { runDataIntegrityChecks(); } catch(e) { console.warn('integrity check failed', e); }
@@ -5706,6 +5743,29 @@ function isDeleted(type, id) {
   return getDeletedIds(type).includes(id.toString());
 }
 
+// ── Voided-ID lists (localStorage, persists across reloads) ──────────────────
+// GAS backend CANNOT update existing rows for receipts/vouchers/allocations —
+// it always appends. So "edit" = void the old row ID + create a fresh row.
+// The old row is hidden via isVoided(); the new row is the canonical record.
+function addVoidId(type, id) {
+  const key = 'seraya_voided_' + type;
+  try {
+    const ids = JSON.parse(localStorage.getItem(key) || '[]');
+    const s = id.toString();
+    if (!ids.includes(s)) { ids.push(s); localStorage.setItem(key, JSON.stringify(ids)); }
+  } catch(e) {}
+}
+function getVoidIds(type) {
+  try { return JSON.parse(localStorage.getItem('seraya_voided_' + type) || '[]'); } catch(e) { return []; }
+}
+function isVoided(type, id) {
+  const s = id.toString();
+  // Also honour the legacy hardcoded lists (VOUCHER_VOID_IDS / ALLOC_VOID_IDS)
+  if (type === 'vouchers'    && (window.VOUCHER_VOID_IDS||[]).includes(s)) return true;
+  if (type === 'allocations' && (window.ALLOC_VOID_IDS||[]).includes(s))   return true;
+  return getVoidIds(type).includes(s);
+}
+
 async function deleteVoucher(id, label) {
   const ok = window.confirm(`Delete voucher ${label||id}? This cannot be undone.`);
   if (!ok) return;
@@ -5788,8 +5848,15 @@ async function saveVoucher() {
     ref_inv_nos:     refInvNos.join(', '),
     payment_account: account,
     bank_account:    account === 'drawings' ? 'Drawings' : 'CIMB 8606183963',
+    // voucher_id intentionally NOT set — GAS always appends new rows (cannot update).
+    // VOID + RECREATE: void the old ID, then GAS creates a fresh row below.
   };
-  if (existingId) data.voucher_id = existingId;
+
+  // If editing: void the old voucher ID before creating the replacement
+  if (existingId) {
+    addVoidId('vouchers', existingId);
+    VOUCHERS = VOUCHERS.filter(x => (x.voucher_id||x.id||'').toString() !== existingId.toString());
+  }
 
   const res = await api({ action: 'save_voucher', data });
   if (res.ok) {
@@ -5800,12 +5867,21 @@ async function saveVoucher() {
         if (aid) markWagePaid(aid, date);
       });
     }
-    const label = existingId ? 'Voucher updated.' : 'Payment voucher ' + (res.voucher_no||'') + ' saved · ' + checkedBoxes.length + ' invoice(s) marked paid';
+    const label = existingId ? 'Voucher updated ✓' : 'Payment voucher ' + (res.voucher_no||'') + ' saved · ' + checkedBoxes.length + ' invoice(s) marked paid';
     toast(label, 'success');
     closeModal('modal-voucher');
     VOUCHERS = []; // clear cache so payout recon reloads fresh
     loadVouchers();
-  } else toast(res.error, 'error');
+  } else {
+    // Save failed — undo the void so original stays visible
+    if (existingId) {
+      const voids = JSON.parse(localStorage.getItem('seraya_voided_vouchers') || '[]');
+      const idx = voids.indexOf(existingId.toString());
+      if (idx > -1) { voids.splice(idx, 1); localStorage.setItem('seraya_voided_vouchers', JSON.stringify(voids)); }
+      await loadVouchers(); // restore original
+    }
+    toast(res.error || 'Save failed', 'error');
+  }
 }
 
 // ══════════════════════════════════════════════════
@@ -6288,7 +6364,7 @@ async function loadInvoiceBreakdown() {
       window.ALLOCATIONS_RAW = (r.data || []).slice();
       ALLOCATIONS = (r.data || []).filter(a =>
         !(a.inv_no || '').startsWith('_DUP_') &&
-        !(window.ALLOC_VOID_IDS || []).includes((a.alloc_id || '').toString())
+        !isVoided('allocations', (a.alloc_id || '').toString())
       );
     }
   }
