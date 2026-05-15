@@ -2867,7 +2867,12 @@ function runAccountingHealth(receipts, vouchers) {
     const liveTD = r2(obTD + newInv - bankRc - tdDrawRc);
 
     // ── Trade Debtor (status-based) for drift check ──
-    const statusTD = r2(allInvs.filter(i=>i.status==='outstanding'||i.status==='partial').reduce((s,i)=>s+parseFloat(i.amount_outstanding||i.amount||0),0));
+    // IMPORTANT: use ?? not || for amount_outstanding — 0 is a valid value (fully matched) not missing data
+    const statusTD = r2(allInvs.filter(i=>i.status==='outstanding'||i.status==='partial').reduce((s,i)=>{
+      const ao = i.amount_outstanding;
+      const val = (ao !== undefined && ao !== null && ao !== '') ? parseFloat(ao) : parseFloat(i.amount||0);
+      return s + val;
+    }, 0));
     const tdDrift  = r2(statusTD - liveTD); // +ve = invoices not yet marked paid; -ve = receipts without invoices
 
     // ── Identify WHICH invoices are causing positive drift (paid in transactions but status stale) ──
@@ -2942,9 +2947,16 @@ function runAccountingHealth(receipts, vouchers) {
     const tdDetail   = tdOk
       ? `${allInvs.filter(i=>i.status==='outstanding'||i.status==='partial').length} invoices outstanding — statuses current`
       : tdDrift > 0.02 && driftInvs.length
-        ? `${fmtRM(tdDrift)} drift — GSheet status stale for:<br>` +
-          driftInvs.map(i => `${i.inv_no||'?'} · ${i.client_name||'?'} · ${fmtRM(parseFloat(i.amount||0))}`).join('<br>') +
-          '<br><span style="opacity:.75;font-style:italic">Fix: mark these invoices as "paid" in GSheets Invoices tab</span>'
+        ? `${fmtRM(tdDrift)} drift — receipts recorded but GSheet status not updated for:<br>` +
+          driftInvs.map(i => {
+            const ao = i.amount_outstanding;
+            const hasZeroAO = (ao !== undefined && ao !== null && ao !== '' && parseFloat(ao) === 0);
+            const note = hasZeroAO
+              ? `<span style="color:var(--red)"> ← wrong receipt linked — fix via Invoices tab ↺ Revert</span>`
+              : '';
+            return `${i.inv_no||'?'} · ${i.client_name||'?'} · ${fmtRM(parseFloat(i.amount||0))}${note}`;
+          }).join('<br>') +
+          '<br><span style="opacity:.75;font-style:italic">If invoice IS fully paid: use ↺ Revert → Outstanding, then mark paid in GSheets.<br>If NOT paid: a wrong receipt is linked — find and fix it in the Receipts tab.</span>'
         : `${fmtRM(Math.abs(tdDrift))} drift — ${tdDrift>0?'invoices outstanding in GSheet but receipts already recorded':'receipts recorded without matching invoice'}`;
     const drawDetail = drawOk
       ? 'All drawings receipts matched to invoice clients'
@@ -3411,8 +3423,8 @@ function renderInvoices(data) {
         <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openInvoiceModal('${i.inv_id}')">Edit</button>
         <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();previewInvoiceById('${i.inv_id}')">PDF</button>
         ${i.status !== 'paid' ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openReceiptForInvoice('${i.inv_id}')">Receipt</button>` : ''}
-        ${i.status === 'paid'
-          ? `<button class="btn btn-ghost btn-sm" style="color:var(--amber);border-color:var(--amber)" title="Revert this invoice back to Outstanding (if it was incorrectly marked paid)" onclick="event.stopPropagation();patchInvoiceStatus('${i.inv_id}','outstanding')">↺ Revert</button>`
+        ${(i.status === 'paid' || (i.status === 'partial' && parseFloat(i.amount_outstanding||'1') === 0))
+          ? `<button class="btn btn-ghost btn-sm" style="color:var(--amber);border-color:var(--amber)" title="${i.status==='partial'?'Partial with RM 0 outstanding — wrong receipt linked. Revert to outstanding so it appears in Outstanding Debtors.':'Revert this invoice back to Outstanding if it was incorrectly marked paid.'}" onclick="event.stopPropagation();patchInvoiceStatus('${i.inv_id}','outstanding')">↺ Revert</button>`
           : ''}
         <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="event.stopPropagation();deleteInvoice('${i.inv_id}','${i.inv_no}')">Delete</button>
       </td>
