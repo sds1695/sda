@@ -800,7 +800,7 @@
         </select>
       </div>
       <div class="card" style="overflow-x:auto;padding:0">
-        <table style="min-width:820px">
+        <table style="min-width:1050px">
           <thead><tr><th>Date</th><th>Ref</th><th>Description</th><th>DR Account</th><th>CR Account</th><th style="text-align:right">Amount (RM)</th><th></th></tr></thead>
           <tbody id="gl-tbody"><tr class="loading-row"><td colspan="7">Loading GL…</td></tr></tbody>
         </table>
@@ -5150,11 +5150,43 @@ function openReceiptEdit(r) {
   document.getElementById('rc-amount').value  = r.amount || '';
   document.getElementById('rc-notes').value   = r.notes || '';
   document.getElementById('rc-account').value = r.payment_account || 'bank';
-  // For edit: show ALL invoices (in case status already changed) and pre-check the one on the receipt
-  const pool = INVOICES.slice().sort((a,b) => (a.inv_no||'').localeCompare(b.inv_no||''));
-  rcBuildChecklist(pool, r.inv_id || null);
-  document.getElementById('rc-sel-count').textContent = r.inv_no
-    ? `— editing: ${r.inv_no}` : '— none selected';
+
+  // Store original inv_no so save() can preserve it if user clears selection
+  document.getElementById('rc-id').dataset.origInvNo     = r.inv_no     || '';
+  document.getElementById('rc-id').dataset.origInvId     = r.inv_id     || '';
+  document.getElementById('rc-id').dataset.origClient    = r.client_name || '';
+
+  if (r.inv_id) {
+    // Already linked — show ALL invoices so the user can switch to a different one
+    const pool = INVOICES.slice().sort((a,b) => (a.inv_no||'').localeCompare(b.inv_no||''));
+    rcBuildChecklist(pool, r.inv_id);
+    document.getElementById('rc-sel-count').textContent = `— editing: ${r.inv_no}`;
+    // Remove any previous fix-banner
+    const old = document.getElementById('rc-fix-banner');
+    if (old) old.remove();
+  } else {
+    // UNLINKED receipt — show only outstanding/partial invoices (shorter, relevant list)
+    // and display a prominent banner so the user knows what to do.
+    const pool = INVOICES
+      .filter(i => i.status === 'outstanding' || i.status === 'partial')
+      .sort((a,b) => (a.inv_no||'').localeCompare(b.inv_no||''));
+    rcBuildChecklist(pool, null);
+    document.getElementById('rc-sel-count').textContent = '— none selected';
+
+    // Insert instruction banner above the checklist if not already there
+    const listEl = document.getElementById('rc-inv-list');
+    let banner = document.getElementById('rc-fix-banner');
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'rc-fix-banner';
+      listEl.parentNode.insertBefore(banner, listEl);
+    }
+    const cl = r.client_name ? `"${r.client_name}"` : 'this payment';
+    banner.innerHTML = `<div style="background:var(--amber-bg);border:1px solid var(--amber);border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:var(--amber)">
+      ⚠ <strong>Action required:</strong> ${cl} (RM ${parseFloat(r.amount||0).toFixed(2)}) is not linked to any invoice.<br>
+      Select the invoice it belongs to below, then click <strong>Save</strong>.</div>`;
+  }
+
   openModal('modal-receipt');
 }
 
@@ -5177,26 +5209,43 @@ async function saveReceipt() {
 
   // ── EDIT MODE: single receipt update ──────────────────
   if (existingId) {
-    const boxes   = document.querySelectorAll('#rc-inv-list .rc-chk:checked');
-    const checked = Array.from(boxes);
-    const inv = checked.length === 1
+    const boxes      = document.querySelectorAll('#rc-inv-list .rc-chk:checked');
+    const checked    = Array.from(boxes);
+    const rcIdEl     = document.getElementById('rc-id');
+    const origInvId  = rcIdEl.dataset.origInvId  || '';
+    const origInvNo  = rcIdEl.dataset.origInvNo  || '';
+    const origClient = rcIdEl.dataset.origClient || '';
+
+    // Validation: if this receipt was previously unlinked, the user MUST select an invoice
+    if (!origInvId && !checked.length) {
+      toast('Please select the invoice this receipt belongs to before saving.', 'error');
+      return;
+    }
+    if (!totalAmt) { toast('Please enter an amount.', 'error'); return; }
+
+    const inv = checked.length >= 1
       ? INVOICES.find(i => String(i.inv_id) === String(checked[0].dataset.invId))
       : null;
-    if (!totalAmt) { toast('Please enter an amount.', 'error'); return; }
+
+    // If user cleared the selection but receipt was already linked, preserve original link.
+    // If user made a new selection, use that.
     const data = {
       receipt_id:      existingId,
       date, notes,
       amount:          totalAmt,
       payment_account: account,
       bank_account:    bankAcct,
-      inv_id:          inv?.inv_id   || checked[0]?.dataset?.invId || '',
-      inv_no:          inv?.inv_no   || checked[0]?.dataset?.invNo || '',
-      client_name:     inv?.client_name || checked[0]?.dataset?.client || '',
+      inv_id:          inv?.inv_id      || checked[0]?.dataset?.invId || origInvId,
+      inv_no:          inv?.inv_no      || checked[0]?.dataset?.invNo || origInvNo,
+      client_name:     inv?.client_name || checked[0]?.dataset?.client || origClient,
     };
     const res = await api({ action: 'save_receipt', data });
     if (res.ok) {
-      toast('Receipt updated.', 'success');
+      toast('Receipt updated ✓ — dashboard refreshing…', 'success');
       closeModal('modal-receipt');
+      // Remove the fix banner so it doesn't linger on next open
+      const b = document.getElementById('rc-fix-banner');
+      if (b) b.remove();
       await Promise.all([loadInvoices(), loadReceipts()]);
       loadDashboard(); // refresh health panel + outstanding table
     } else toast(res.error || 'Save failed', 'error');
