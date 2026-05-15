@@ -799,8 +799,8 @@
           <option value="amount-desc">Amount ↓</option>
         </select>
       </div>
-      <div class="card">
-        <table>
+      <div class="card" style="overflow-x:auto;padding:0">
+        <table style="min-width:820px">
           <thead><tr><th>Date</th><th>Ref</th><th>Description</th><th>DR Account</th><th>CR Account</th><th style="text-align:right">Amount (RM)</th><th></th></tr></thead>
           <tbody id="gl-tbody"><tr class="loading-row"><td colspan="7">Loading GL…</td></tr></tbody>
         </table>
@@ -2935,7 +2935,8 @@ function runAccountingHealth(receipts, vouchers) {
       : unmatchedDraw.map(r => {
           const rid = (r.receipt_id||r.id||'').toString().replace(/'/g,'');
           const amt = fmtRM(parseFloat(r.amount||0));
-          const dt  = r.date        ? ` · ${r.date}`        : '';
+          const _fmtD = d => { if (!d) return ''; try { const dt=new Date(d); return isNaN(dt)?String(d).slice(0,10):dt.toLocaleDateString('en-MY',{day:'2-digit',month:'short',year:'numeric'}); } catch(e){return String(d).slice(0,10);} };
+          const dt  = r.date        ? ` · ${_fmtD(r.date)}`  : '';
           const cl  = r.client_name ? ` · ${r.client_name}` : '';
           const inv = r.inv_no      ? ` · ref: ${r.inv_no}` : '';
           return `<span style="font-weight:500">${amt}${dt}${cl}${inv}</span>` +
@@ -5196,7 +5197,8 @@ async function saveReceipt() {
     if (res.ok) {
       toast('Receipt updated.', 'success');
       closeModal('modal-receipt');
-      loadInvoices(); loadReceipts();
+      await Promise.all([loadInvoices(), loadReceipts()]);
+      loadDashboard(); // refresh health panel + outstanding table
     } else toast(res.error || 'Save failed', 'error');
     return;
   }
@@ -5822,7 +5824,16 @@ function renderGLRows(rows) {
       return dt.toLocaleDateString('en-MY', { day: '2-digit', month: 'short', year: 'numeric' });
     } catch(e) { return String(d).slice(0, 10) || '—'; }
   };
-  tbody.innerHTML = rows.map(g => `<tr>
+  // Build row click handler: invoices open invoice modal, receipts open receipt edit, vouchers open voucher edit
+  const rowClick = g => {
+    if (g.source_type === 'invoice'  && g.ref)                    return `onclick="openInvoiceByNo('${g.ref.replace(/'/g,"\\'")}')"`;
+    if (g.source_type === 'receipt'  && g.id)                     return `onclick="openReceiptEditById('${g.id.replace('rc_','').replace(/'/g,'')}')"`;
+    if (g.source_type === 'voucher'  && g.id)                     return `onclick="openVoucherEditById('${g.id.replace('pv_','').replace(/'/g,'')}')"`;
+    return '';
+  };
+  tbody.innerHTML = rows.map(g => {
+    const click = rowClick(g);
+    return `<tr ${click ? click + ' style="cursor:pointer" title="Click to open"' : ''}>
     <td style="font-size:12px;color:var(--text2);white-space:nowrap">${fmtDate(g.date)}</td>
     <td style="font-family:'DM Mono',monospace;font-size:12px;white-space:nowrap">${g.ref || '—'}</td>
     <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(g.description||'').replace(/"/g,'&quot;')}">${g.description || '—'}</td>
@@ -5830,7 +5841,8 @@ function renderGLRows(rows) {
     <td style="font-size:12px;white-space:nowrap">${g.cr_account || '—'}</td>
     <td style="text-align:right;font-family:'DM Mono',monospace;white-space:nowrap">RM ${fmt(g.amount)}</td>
     <td style="white-space:nowrap">${srcBadge(g.source_type)}</td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
 }
 
 function populateGLAccountFilter() {
