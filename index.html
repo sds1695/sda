@@ -114,6 +114,7 @@
 
   /* ── CARDS / TABLES ── */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+  .card.card-scroll { overflow: visible; } /* allow inner scroll wrapper to show scrollbar */
   .card-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
   .card-title { font-size: 14px; font-weight: 600; }
   .card-body { padding: 20px; }
@@ -572,11 +573,13 @@
           <option value="Cosec_Other">Cosec Other (Type C)</option>
         </select>
       </div>
-      <div class="card" style="overflow-x:auto">
+      <div class="card card-scroll" style="padding:0">
+        <div style="overflow-x:auto;border-radius:var(--radius)">
         <table style="min-width:900px">
           <thead><tr><th>Invoice</th><th>Client</th><th>Type</th><th>Gross</th><th>Disb/Abot</th><th>Retain</th><th>Preparer</th><th>Prep Amt</th><th>Reviewer</th><th>Rev Amt</th><th>KC Comm</th><th>Status</th><th style="width:60px"></th></tr></thead>
           <tbody id="alloc-tbody"><tr class="loading-row"><td colspan="13">Loading allocations…</td></tr></tbody>
         </table>
+        </div>
       </div>
     </div>
 
@@ -637,7 +640,8 @@
           <button class="btn btn-primary" onclick="openTeamMemberModal()">+ Add Member</button>
         </div>
       </div>
-      <div class="card" style="overflow-x:auto;padding:0">
+      <div class="card card-scroll" style="padding:0">
+        <div style="overflow-x:auto;border-radius:var(--radius)">
         <table style="width:100%;font-size:12px">
           <thead><tr style="background:var(--surface2)">
             <th style="text-align:left;width:90px">Code</th>
@@ -651,6 +655,7 @@
           </tr></thead>
           <tbody id="team-members-tbody"></tbody>
         </table>
+        </div>
       </div>
       <div style="margin-top:14px;padding:10px 12px;background:var(--surface2);border-radius:6px;font-size:11px;color:var(--text2)">
         <strong>Note:</strong> Adding a member here registers their profile. To make them available in the Preparer/Reviewer/Voucher Payee dropdowns, the person\'s code must also be added to the dashboard\'s hardcoded options (this is a future enhancement). For now, this page tracks bank/IC/notes for the existing team. Member data is saved to your browser\'s localStorage.
@@ -799,11 +804,13 @@
           <option value="amount-desc">Amount ↓</option>
         </select>
       </div>
-      <div class="card" style="overflow-x:auto;padding:0">
-        <table style="min-width:1050px">
-          <thead><tr><th>Date</th><th>Ref</th><th>Description</th><th>DR Account</th><th>CR Account</th><th style="text-align:right">Amount (RM)</th><th></th></tr></thead>
-          <tbody id="gl-tbody"><tr class="loading-row"><td colspan="7">Loading GL…</td></tr></tbody>
-        </table>
+      <div class="card card-scroll" style="padding:0">
+        <div style="overflow-x:auto;border-radius:var(--radius)">
+          <table style="min-width:1050px;width:100%">
+            <thead><tr><th>Date</th><th>Ref</th><th>Description</th><th>DR Account</th><th>CR Account</th><th style="text-align:right">Amount (RM)</th><th style="min-width:80px"></th></tr></thead>
+            <tbody id="gl-tbody"><tr class="loading-row"><td colspan="7">Loading GL…</td></tr></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -5103,6 +5110,14 @@ function rcBuildChecklist(invoicePool, preCheckId) {
   rcUpdateTotal();
 }
 
+function rcFilterChecklist(q) {
+  const term = (q||'').toLowerCase().trim();
+  document.querySelectorAll('#rc-inv-list label').forEach(label => {
+    const text = label.textContent.toLowerCase();
+    label.style.display = (!term || text.includes(term)) ? '' : 'none';
+  });
+}
+
 function rcUpdateTotal() {
   const boxes = document.querySelectorAll('#rc-inv-list .rc-chk:checked');
   const total  = Array.from(boxes).reduce((s, b) => s + parseFloat(b.dataset.amount||0), 0);
@@ -5165,15 +5180,13 @@ function openReceiptEdit(r) {
     const old = document.getElementById('rc-fix-banner');
     if (old) old.remove();
   } else {
-    // UNLINKED receipt — show only outstanding/partial invoices (shorter, relevant list)
-    // and display a prominent banner so the user knows what to do.
-    const pool = INVOICES
-      .filter(i => i.status === 'outstanding' || i.status === 'partial')
-      .sort((a,b) => (a.inv_no||'').localeCompare(b.inv_no||''));
+    // UNLINKED receipt — show ALL invoices (including paid) so the user can always find
+    // the right invoice even if its status was changed by a previous bad save.
+    const pool = INVOICES.slice().sort((a,b) => (a.inv_no||'').localeCompare(b.inv_no||''));
     rcBuildChecklist(pool, null);
     document.getElementById('rc-sel-count').textContent = '— none selected';
 
-    // Insert instruction banner above the checklist if not already there
+    // Insert instruction banner + search box above the checklist
     const listEl = document.getElementById('rc-inv-list');
     let banner = document.getElementById('rc-fix-banner');
     if (!banner) {
@@ -5182,9 +5195,20 @@ function openReceiptEdit(r) {
       listEl.parentNode.insertBefore(banner, listEl);
     }
     const cl = r.client_name ? `"${r.client_name}"` : 'this payment';
-    banner.innerHTML = `<div style="background:var(--amber-bg);border:1px solid var(--amber);border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:var(--amber)">
-      ⚠ <strong>Action required:</strong> ${cl} (RM ${parseFloat(r.amount||0).toFixed(2)}) is not linked to any invoice.<br>
-      Select the invoice it belongs to below, then click <strong>Save</strong>.</div>`;
+    banner.innerHTML = `
+      <div style="background:var(--amber-bg);border:1px solid var(--amber);border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:var(--amber)">
+        ⚠ <strong>Action required:</strong> ${cl} (RM ${parseFloat(r.amount||0).toFixed(2)}) has no invoice link.<br>
+        Search below and tick the correct invoice, then click <strong>Save</strong>.</div>
+      <input type="text" id="rc-inv-search" placeholder="Search by client name or invoice no…"
+        style="width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;margin-bottom:6px"
+        oninput="rcFilterChecklist(this.value)" />`;
+
+    // Auto-search using receipt client_name words to pre-filter the list
+    const hint = (r.client_name||'').split(/\s+/).filter(w=>w.length>=4)[0] || '';
+    if (hint) {
+      const inp = document.getElementById('rc-inv-search');
+      if (inp) { inp.value = hint; rcFilterChecklist(hint); }
+    }
   }
 
   openModal('modal-receipt');
@@ -6269,7 +6293,7 @@ function renderInvoiceBreakdown() {
   const groupCounts = headerCols.reduce((acc, c) => { acc[c.group] = (acc[c.group]||0) + 1; return acc; }, {});
 
   // Build HTML
-  let html = '<div class="card" style="overflow-x:auto;padding:0">';
+  let html = '<div class="card card-scroll" style="padding:0"><div style="overflow-x:auto;border-radius:var(--radius)">';
   html += '<table style="width:100%;font-size:11px;table-layout:fixed">';
   html += '<colgroup>' + headerCols.map(c => `<col style="width:${c.w}">`).join('') + '</colgroup>';
 
@@ -6373,7 +6397,7 @@ function renderInvoiceBreakdown() {
   html += `<td style="text-align:right;font-family:'DM Mono',monospace;padding:8px 6px;border-left:1px solid rgba(255,255,255,0.3)">${Math.abs(totDiff) < 0.01 ? '✓' : (totDiff>0?'+':'') + totDiff.toFixed(2)}</td>`;
   html += '<td></td></tr>';
 
-  html += '</tbody></table></div>';
+  html += '</tbody></table></div></div>';
   html += `<div style="margin-top:10px;padding:10px 12px;background:var(--surface2);border-radius:6px;font-size:11px;color:var(--text2)">
     <strong>Legend:</strong>
     <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin:0 4px 0 8px"></span>Paid
