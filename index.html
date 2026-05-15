@@ -5161,20 +5161,38 @@ function rcBuildChecklist(invoicePool, preCheckId) {
     if (sa !== sb) return sa - sb;
     return (a.inv_no||'').localeCompare(b.inv_no||'');
   });
+  // Build receipt-based paid map for accurate remaining calculation
+  const _rcPaidMap = {};
+  (RECEIPTS||[]).forEach(r => {
+    const k = (r.inv_no||'').toLowerCase().trim();
+    if (k) _rcPaidMap[k] = (_rcPaidMap[k]||0) + parseFloat(r.amount||0);
+  });
+
   list.innerHTML = sorted.map(inv => {
     const isPaid = inv.status === 'paid';
-    // For paid invoices, amount_outstanding is 0 (falsy) — fall back to full amount so user can see the number
-    const outstanding = isPaid
-      ? parseFloat(inv.amount || 0)
-      : parseFloat(inv.amount_outstanding || inv.amount || 0);
+    const invAmt = parseFloat(inv.amount || 0);
+    // Compute client-side remaining: invoice amount minus all receipts already linked to it
+    const alreadyPaid = _rcPaidMap[(inv.inv_no||'').toLowerCase().trim()] || 0;
+    const clientSideRemaining = Math.max(0, invAmt - alreadyPaid);
+    // Amount to use for selection total (client-side is most accurate)
+    const outstanding = clientSideRemaining;
     const checked = String(inv.inv_id) === String(preCheckId) ? 'checked' : '';
     const badgeCls = isPaid ? 'badge-green' : (inv.status==='partial' ? 'badge-amber' : 'badge-red');
     const rowStyle = isPaid ? 'opacity:.6' : '';
-    return `<label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;${rowStyle}">
+    // Extra note: show "RM X / RM Y" if partially paid, or "← matches!" if remaining = receipt amount
+    const rcAmount = parseFloat(document.getElementById('rc-amount')?.value || 0);
+    const isExactMatch = rcAmount > 0 && Math.abs(clientSideRemaining - rcAmount) < 0.01;
+    const paidNote = alreadyPaid > 0 && !isPaid
+      ? `<span style="font-size:10px;color:var(--text3);margin-left:4px">(${alreadyPaid.toFixed(0)} paid)</span>`
+      : '';
+    const matchTag = isExactMatch
+      ? `<span style="font-size:10px;font-weight:700;color:var(--green);margin-left:4px">← matches!</span>`
+      : '';
+    return `<label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;${rowStyle}${isExactMatch?';background:var(--green-bg)':''}">
       <input type="checkbox" class="rc-chk" data-inv-id="${inv.inv_id}" data-inv-no="${inv.inv_no}"
         data-client="${(inv.client_name||'').replace(/"/g,'&quot;')}" data-amount="${outstanding}"
         onchange="rcUpdateTotal()" ${checked} />
-      <span style="flex:1"><strong>${inv.inv_no}</strong> — ${inv.client_name||'—'}</span>
+      <span style="flex:1"><strong>${inv.inv_no}</strong> — ${inv.client_name||'—'}${paidNote}${matchTag}</span>
       <span style="font-family:'DM Mono',monospace;color:var(--text2)">RM ${outstanding.toFixed(2)}</span>
       <span class="badge ${badgeCls}" style="font-size:10px">${inv.status||'outstanding'}</span>
     </label>`;
