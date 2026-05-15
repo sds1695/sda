@@ -806,8 +806,17 @@
       </div>
       <div class="card card-scroll" style="padding:0">
         <div style="overflow-x:auto;border-radius:var(--radius)">
-          <table style="min-width:1050px;width:100%">
-            <thead><tr><th>Date</th><th>Ref</th><th>Description</th><th>DR Account</th><th>CR Account</th><th style="text-align:right">Amount (RM)</th><th style="min-width:80px"></th></tr></thead>
+          <table style="min-width:900px;width:100%;table-layout:fixed">
+            <colgroup>
+              <col style="width:90px">
+              <col style="width:100px">
+              <col style="width:260px">
+              <col style="width:200px">
+              <col style="width:180px">
+              <col style="width:110px">
+              <col style="width:80px">
+            </colgroup>
+            <thead><tr><th>Date</th><th>Ref</th><th>Description</th><th>DR Account</th><th>CR Account</th><th style="text-align:right">Amount (RM)</th><th></th></tr></thead>
             <tbody id="gl-tbody"><tr class="loading-row"><td colspan="7">Loading GL…</td></tr></tbody>
           </table>
         </div>
@@ -3401,10 +3410,47 @@ function renderInvoices(data) {
       <td style="white-space:nowrap">
         <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openInvoiceModal('${i.inv_id}')">Edit</button>
         <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();previewInvoiceById('${i.inv_id}')">PDF</button>
-        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openReceiptForInvoice('${i.inv_id}')">Receipt</button>
+        ${i.status !== 'paid' ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openReceiptForInvoice('${i.inv_id}')">Receipt</button>` : ''}
+        ${i.status === 'paid'
+          ? `<button class="btn btn-ghost btn-sm" style="color:var(--amber);border-color:var(--amber)" title="Revert this invoice back to Outstanding (if it was incorrectly marked paid)" onclick="event.stopPropagation();patchInvoiceStatus('${i.inv_id}','outstanding')">↺ Revert</button>`
+          : ''}
         <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="event.stopPropagation();deleteInvoice('${i.inv_id}','${i.inv_no}')">Delete</button>
       </td>
     </tr>`).join('');
+}
+
+// Patch just the status field of an existing invoice — sends all existing fields back unchanged
+// except for status. Used to revert a "paid" invoice back to "outstanding"/"partial".
+async function patchInvoiceStatus(invId, newStatus) {
+  const inv = INVOICES.find(x => String(x.inv_id) === String(invId));
+  if (!inv) { toast('Invoice not found — try reloading.', 'error'); return; }
+  const label = newStatus === 'outstanding' ? 'Outstanding' : newStatus === 'partial' ? 'Partial' : newStatus;
+  if (!confirm(`Mark ${inv.inv_no} (${inv.client_name}, RM ${parseFloat(inv.amount||0).toFixed(2)}) as "${label}"?\n\nThis updates the status in your Google Sheet immediately.`)) return;
+  const data = {
+    inv_id:        inv.inv_id,
+    inv_no:        inv.inv_no,
+    date:          inv.date          || '',
+    job_type:      inv.job_type      || '',
+    client_name:   inv.client_name   || '',
+    billing_party: inv.billing_party || '',
+    billing_addr:  inv.billing_addr  || '',
+    desc1:         inv.desc1         || '',
+    desc2:         inv.desc2         || '',
+    amount:        parseFloat(inv.amount       || 0),
+    disb_amount:   parseFloat(inv.disb_amount  || 0),
+    status:        newStatus,
+  };
+  const res = await api({ action: 'save_invoice', data });
+  if (res.ok) {
+    // Update local cache immediately so UI reflects change without waiting for next reload
+    inv.status = newStatus;
+    toast(`${inv.inv_no} → ${label} ✓  Dashboard refreshing…`, 'success');
+    renderInvoices();
+    await Promise.all([loadInvoices(), loadReceipts()]);
+    loadDashboard();
+  } else {
+    toast(res.error || 'Save failed — check Google Sheets connection.', 'error');
+  }
 }
 
 function deleteInvoice(id, inv_no) {
@@ -5092,19 +5138,33 @@ let rcAmountEdited = false;
 function rcBuildChecklist(invoicePool, preCheckId) {
   const list = document.getElementById('rc-inv-list');
   if (!invoicePool.length) {
-    list.innerHTML = '<div style="padding:12px;color:var(--text3);font-size:13px">No outstanding invoices.</div>';
+    list.innerHTML = '<div style="padding:12px;color:var(--text3);font-size:13px">No invoices found.</div>';
     return;
   }
-  list.innerHTML = invoicePool.map(inv => {
-    const outstanding = parseFloat(inv.amount_outstanding || inv.amount || 0);
+  // Sort: outstanding → partial → paid (so active ones appear first)
+  const statusOrder = { outstanding: 0, partial: 1, paid: 2 };
+  const sorted = [...invoicePool].sort((a, b) => {
+    const sa = statusOrder[a.status] ?? 3;
+    const sb = statusOrder[b.status] ?? 3;
+    if (sa !== sb) return sa - sb;
+    return (a.inv_no||'').localeCompare(b.inv_no||'');
+  });
+  list.innerHTML = sorted.map(inv => {
+    const isPaid = inv.status === 'paid';
+    // For paid invoices, amount_outstanding is 0 (falsy) — fall back to full amount so user can see the number
+    const outstanding = isPaid
+      ? parseFloat(inv.amount || 0)
+      : parseFloat(inv.amount_outstanding || inv.amount || 0);
     const checked = String(inv.inv_id) === String(preCheckId) ? 'checked' : '';
-    return `<label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px">
+    const badgeCls = isPaid ? 'badge-green' : (inv.status==='partial' ? 'badge-amber' : 'badge-red');
+    const rowStyle = isPaid ? 'opacity:.6' : '';
+    return `<label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;${rowStyle}">
       <input type="checkbox" class="rc-chk" data-inv-id="${inv.inv_id}" data-inv-no="${inv.inv_no}"
         data-client="${(inv.client_name||'').replace(/"/g,'&quot;')}" data-amount="${outstanding}"
         onchange="rcUpdateTotal()" ${checked} />
       <span style="flex:1"><strong>${inv.inv_no}</strong> — ${inv.client_name||'—'}</span>
       <span style="font-family:'DM Mono',monospace;color:var(--text2)">RM ${outstanding.toFixed(2)}</span>
-      <span class="badge ${inv.status==='partial'?'badge-amber':'badge-red'}" style="font-size:10px">${inv.status||'outstanding'}</span>
+      <span class="badge ${badgeCls}" style="font-size:10px">${inv.status||'outstanding'}</span>
     </label>`;
   }).join('');
   rcUpdateTotal();
@@ -5173,8 +5233,8 @@ function openReceiptEdit(r) {
 
   if (r.inv_id) {
     // Already linked — show ALL invoices so the user can switch to a different one
-    const pool = INVOICES.slice().sort((a,b) => (a.inv_no||'').localeCompare(b.inv_no||''));
-    rcBuildChecklist(pool, r.inv_id);
+    // rcBuildChecklist handles sorting internally (outstanding → partial → paid)
+    rcBuildChecklist(INVOICES.slice(), r.inv_id);
     document.getElementById('rc-sel-count').textContent = `— editing: ${r.inv_no}`;
     // Remove any previous fix-banner
     const old = document.getElementById('rc-fix-banner');
@@ -5182,8 +5242,7 @@ function openReceiptEdit(r) {
   } else {
     // UNLINKED receipt — show ALL invoices (including paid) so the user can always find
     // the right invoice even if its status was changed by a previous bad save.
-    const pool = INVOICES.slice().sort((a,b) => (a.inv_no||'').localeCompare(b.inv_no||''));
-    rcBuildChecklist(pool, null);
+    rcBuildChecklist(INVOICES.slice(), null);
     document.getElementById('rc-sel-count').textContent = '— none selected';
 
     // Insert instruction banner + search box above the checklist
@@ -5198,7 +5257,9 @@ function openReceiptEdit(r) {
     banner.innerHTML = `
       <div style="background:var(--amber-bg);border:1px solid var(--amber);border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:var(--amber)">
         ⚠ <strong>Action required:</strong> ${cl} (RM ${parseFloat(r.amount||0).toFixed(2)}) has no invoice link.<br>
-        Search below and tick the correct invoice, then click <strong>Save</strong>.</div>
+        Search below and tick the correct invoice, then click <strong>Save</strong>.<br>
+        <span style="opacity:.8">All invoices shown — outstanding first, then partial, then <span style="color:var(--green);font-weight:600">paid</span> (dimmed at bottom). If an invoice was accidentally marked paid, it still appears here.</span>
+      </div>
       <input type="text" id="rc-inv-search" placeholder="Search by client name or invoice no…"
         style="width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;margin-bottom:6px"
         oninput="rcFilterChecklist(this.value)" />`;
@@ -5907,11 +5968,11 @@ function renderGLRows(rows) {
   tbody.innerHTML = rows.map(g => {
     const click = rowClick(g);
     return `<tr ${click ? click + ' style="cursor:pointer" title="Click to open"' : ''}>
-    <td style="font-size:12px;color:var(--text2);white-space:nowrap">${fmtDate(g.date)}</td>
-    <td style="font-family:'DM Mono',monospace;font-size:12px;white-space:nowrap">${g.ref || '—'}</td>
-    <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(g.description||'').replace(/"/g,'&quot;')}">${g.description || '—'}</td>
-    <td style="font-size:12px;white-space:nowrap">${g.dr_account || '—'}</td>
-    <td style="font-size:12px;white-space:nowrap">${g.cr_account || '—'}</td>
+    <td style="font-size:12px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${fmtDate(g.date)}</td>
+    <td style="font-family:'DM Mono',monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${g.ref||''}">${g.ref || '—'}</td>
+    <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(g.description||'').replace(/"/g,'&quot;')}">${g.description || '—'}</td>
+    <td style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${g.dr_account||''}">${g.dr_account || '—'}</td>
+    <td style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${g.cr_account||''}">${g.cr_account || '—'}</td>
     <td style="text-align:right;font-family:'DM Mono',monospace;white-space:nowrap">RM ${fmt(g.amount)}</td>
     <td style="white-space:nowrap">${srcBadge(g.source_type)}</td>
   </tr>`;
