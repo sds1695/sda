@@ -3825,6 +3825,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function loadDashboard() {
   try { markPageSynced('dashboard'); } catch(e){}
+  // Pull synced blobs from Sheet on first load (then accept remote on subsequent loads)
+  try { await ensureSyncBootPull(); } catch(e) { console.warn('sync boot pull:', e); }
   // Re-apply privacy state after dashboard re-renders (covers manual refresh)
   try { applyDashboardPrivacy(localStorage.getItem(DASH_PRIVACY_KEY) === '1'); } catch(e){}
   // Tally alert: surface immediately on the dashboard
@@ -6460,6 +6462,7 @@ function getAllSalesOrders() {
 
 function saveAllSalesOrders(arr) {
   localStorage.setItem(SALES_ORDER_KEY, JSON.stringify(arr || []));
+  try { pushSyncedBlob('_sales_orders_blob'); } catch(e) {}
 }
 
 function getSalesOrder(so_id) {
@@ -10968,10 +10971,104 @@ function _computePersonTallyMismatches() {
 }
 
 // Render banner on a host element. Hides itself if no mismatches.
+// Returns array of {alloc_id, inv_no, client, role, amount, paidDate, person}
+// — wage-paid allocations on still-outstanding invoices for the given person.
+function _computePersonTallyDrillDown(person) {
+  const wpMap = (function(){ try { return JSON.parse(localStorage.getItem('seraya_wage_paid_v1')||'{}'); } catch(e){ return {}; } })();
+  const normP = p => p === 'Koay PH' ? 'Koay' : p;
+  const _paidDate = (aid, who) => {
+    if (!aid) return null;
+    const ck = aid + '|' + who;
+    return wpMap[ck] !== undefined ? wpMap[ck] : wpMap[aid];
+  };
+  const _isPaid = (aid, who) => {
+    if (!aid) return false;
+    const ck = aid + '|' + who;
+    if (wpMap[ck] !== undefined && wpMap[ck] !== null) return true;
+    return wpMap[aid] !== undefined && wpMap[aid] !== null;
+  };
+  const out = [];
+  (ALLOCATIONS||[]).forEach(a => {
+    const inv = (INVOICES||[]).find(i => i.inv_no === a.inv_no);
+    if (!inv) return;
+    if (inv.status === 'cancelled' || inv.status === 'paid') return;
+    const aid = a.alloc_id || '';
+    const add = (rawP, role, amt, top) => {
+      if (!rawP) return;
+      const k = normP(rawP);
+      if (k !== person) return;
+      const amount = parseFloat(amt||0) + parseFloat(top||0);
+      if (amount < 0.01) return;
+      if (!_isPaid(aid, k)) return;
+      out.push({
+        alloc_id: aid, inv_no: a.inv_no, client: inv.client_name || '?',
+        role, amount, paidDate: _paidDate(aid, k) || '', person: k
+      });
+    };
+    add(a.preparer_name, 'Preparer', a.preparer_amt);
+    add(a.reviewer_name, 'Reviewer', a.reviewer_amt, a.reviewer_top20);
+    if (parseFloat(a.kc_commission||0) > 0) add('KC', 'Commission', a.kc_commission);
+    if (parseFloat(a.koay_commission||0) > 0) add('Koay', 'Reviewer', a.koay_commission);
+    if (parseFloat(a.cecilia_fee||0) > 0 && a.preparer_name !== 'Cecilia') add('Cecilia', 'Retainer', a.cecilia_fee);
+  });
+  return out;
+}
+
+// Open a modal showing every drill-down row for a person, with Unmark buttons
+function openTallyDrillDown(person) {
+  const rows = _computePersonTallyDrillDown(person);
+  const total = rows.reduce((s,r) => s + r.amount, 0);
+  let body = '<div style="font-size:12px;color:var(--text2);margin-bottom:12px">' +
+    '<strong>' + person + '</strong> has <strong>' + rows.length + ' allocation' + (rows.length!==1?'s':'') + '</strong> totalling RM ' + total.toFixed(2) + ' that are marked <strong>✓ paid</strong> in Payout but the invoice is still outstanding.' +
+    '<br><span style="color:var(--text3);font-size:11px">If these were genuinely pre-paid, leave them as is. If they\'re stale or wrong, hit <strong>Unmark</strong> and the wage flows back to "still owing".</span>' +
+    '</div>';
+  if (!rows.length) {
+    body += '<div style="padding:24px;text-align:center;color:var(--text3)">No flagged allocations found — try refreshing.</div>';
+  } else {
+    body += '<table style="width:100%;font-size:12px;border-collapse:collapse">' +
+      '<thead><tr style="background:var(--surface2);font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text3)">' +
+        '<th style="text-align:left;padding:6px 10px;border-bottom:1px solid var(--border)">Invoice</th>' +
+        '<th style="text-align:left;padding:6px 10px;border-bottom:1px solid var(--border)">Client</th>' +
+        '<th style="text-align:left;padding:6px 10px;border-bottom:1px solid var(--border)">Role</th>' +
+        '<th style="text-align:right;padding:6px 10px;border-bottom:1px solid var(--border)">Amount</th>' +
+        '<th style="text-align:left;padding:6px 10px;border-bottom:1px solid var(--border)">Marked paid</th>' +
+        '<th style="padding:6px 10px;border-bottom:1px solid var(--border)"></th>' +
+      '</tr></thead><tbody>';
+    rows.sort((a,b) => b.amount - a.amount).forEach(r => {
+      const aidEsc = (r.alloc_id||'').replace(/'/g,"\\'");
+      body += '<tr style="border-bottom:1px solid var(--border)">' +
+        '<td style="padding:6px 10px;font-family:\'DM Mono\',monospace;font-weight:600">' + r.inv_no + '</td>' +
+        '<td style="padding:6px 10px">' + r.client + '</td>' +
+        '<td style="padding:6px 10px;color:var(--text2);font-size:11px">' + r.role + '</td>' +
+        '<td style="text-align:right;padding:6px 10px;font-family:\'DM Mono\',monospace;font-weight:600">' + r.amount.toFixed(2) + '</td>' +
+        '<td style="padding:6px 10px;font-size:11px;color:var(--text3)">' + r.paidDate + '</td>' +
+        '<td style="padding:6px 10px;text-align:right">' +
+          '<button class="btn btn-ghost btn-sm" style="padding:3px 10px;font-size:11px;border:1px solid var(--brand);color:var(--brand);border-radius:4px" onclick="if(typeof markWagePaid===\'function\'){markWagePaid(\'' + aidEsc + '\', null, \'' + r.person + '\');this.closest(\'tr\').style.opacity=\'0.4\';this.disabled=true;this.textContent=\'Unmarked\';}">Unmark</button>' +
+        '</td>' +
+      '</tr>';
+    });
+    body += '</tbody></table>';
+    body += '<div style="margin-top:14px;padding:10px 12px;background:#FEF9E7;border-left:3px solid #F9A825;border-radius:4px;font-size:11px;color:#7D5A00">After unmarking, close this dialog and reload the dashboard (or click ↻ Refresh on Payout) to see the tally alert update.</div>';
+  }
+
+  // Build modal
+  let m = document.getElementById('modal-tally-drill');
+  if (!m) {
+    m = document.createElement('div');
+    m.className = 'modal-overlay';
+    m.id = 'modal-tally-drill';
+    m.style.zIndex = '720';
+    m.innerHTML = '<div class="modal" style="max-width:780px"><div class="modal-header"><div class="modal-title" id="td-title">Tally drill-down</div><button class="modal-close" onclick="closeModal(\'modal-tally-drill\')">✕</button></div><div class="modal-body" id="td-body" style="padding:20px;max-height:70vh;overflow:auto"></div></div>';
+    document.body.appendChild(m);
+  }
+  document.getElementById('td-title').textContent = 'Tally drill-down — ' + person;
+  document.getElementById('td-body').innerHTML = body;
+  openModal('modal-tally-drill');
+}
+
 function _renderTallyBanner(hostId) {
   const host = document.getElementById(hostId);
   if (!host) return;
-  // Remove existing banner with this id
   const existing = document.getElementById('tally-banner-' + hostId);
   if (existing) existing.remove();
   const ms = _computePersonTallyMismatches();
@@ -10990,8 +11087,8 @@ function _renderTallyBanner(hostId) {
     +       '<th style="text-align:right;padding:4px 8px">Payout (Wages O/S)</th>'
     +       '<th style="text-align:right;padding:4px 8px">Δ</th>'
     +     '</tr></thead><tbody>'
-    +     ms.map(m => '<tr style="border-top:1px solid #FECACA">'
-    +       '<td style="padding:5px 8px;font-weight:600">' + m.person + '</td>'
+    +     ms.map(m => '<tr style="border-top:1px solid #FECACA;cursor:pointer" onclick="openTallyDrillDown(\'' + m.person + '\')" title="Click to see flagged allocations">'
+    +       '<td style="padding:5px 8px;font-weight:600">' + m.person + ' <span style="font-size:10px;font-weight:400;color:#991B1B;text-decoration:underline">drill down &rarr;</span></td>'
     +       '<td style="text-align:right;padding:5px 8px;font-family:\'DM Mono\',monospace">' + m.breakdown.toFixed(2) + '</td>'
     +       '<td style="text-align:right;padding:5px 8px;font-family:\'DM Mono\',monospace">' + m.payout.toFixed(2) + '</td>'
     +       '<td style="text-align:right;padding:5px 8px;font-family:\'DM Mono\',monospace;font-weight:700">' + (m.diff>0?'+':'') + m.diff.toFixed(2) + '</td>'
@@ -12871,14 +12968,17 @@ const CUSTOM_DEADLINES_KEY = 'seraya_custom_deadlines_v1';
 function getCustomDeadlines() {
   try { return JSON.parse(localStorage.getItem(CUSTOM_DEADLINES_KEY) || '[]'); } catch(e) { return []; }
 }
-function setCustomDeadlines(list) { localStorage.setItem(CUSTOM_DEADLINES_KEY, JSON.stringify(list)); }
+function setCustomDeadlines(list) {
+  localStorage.setItem(CUSTOM_DEADLINES_KEY, JSON.stringify(list));
+  try { pushSyncedBlob('_custom_deadlines_blob'); } catch(e) {}
+}
 function addCustomDeadline(payload) {
   const list = getCustomDeadlines();
   const id = 'CD_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
   const row = Object.assign({ id, created_at: new Date().toISOString() }, payload);
   list.push(row);
   setCustomDeadlines(list);
-  try { if (typeof api === 'function') api({ action: 'save_custom_deadline', data: row }).then(()=>{}).catch(()=>{}); } catch(e){}
+  // (sync now flows through save_settings via pushSyncedBlob)
   renderReminders();
 }
 function deleteCustomDeadline(id) {
@@ -12930,6 +13030,233 @@ function _getAllDeadlineStatus() {
 function getDeadlineStatus(client_id, task, year) {
   return _getAllDeadlineStatus()[_dlKey(client_id, task, year)] || null;
 }
+// ══════════════════════════════════════════════════
+// SYNCED STATE — full firm-level localStorage → Google Sheet sync
+// ══════════════════════════════════════════════════
+// Every firm-level state piece pipes through save_settings so any browser
+// (file://, github.io, teammate's machine) reads the same data. Each entry
+// is either a single key (lsKey) or a pattern matching multiple keys.
+// UI-only preferences (privacy toggle, doc layout) intentionally NOT synced.
+const SYNCED_BLOBS = [
+  // Single-key state
+  { settingsKey: '_deadline_status_blob',     lsKey: 'seraya_deadline_status_v1' },
+  { settingsKey: '_custom_deadlines_blob',    lsKey: 'seraya_custom_deadlines_v1' },
+  { settingsKey: '_deadlines_dismissed_blob', lsKey: 'seraya_deadlines_dismissed_v1' },
+  { settingsKey: '_sales_orders_blob',        lsKey: 'seraya_sales_orders_v1' },
+  { settingsKey: '_wage_paid_blob',           lsKey: 'seraya_wage_paid_v1' },
+  { settingsKey: '_recon_targets_blob',       lsKey: 'seraya_recon_targets_v1' },
+  { settingsKey: '_voided_receipts_blob',     lsKey: 'seraya_voided_receipts' },
+  { settingsKey: '_voided_vouchers_blob',     lsKey: 'seraya_voided_vouchers' },
+  { settingsKey: '_voided_allocations_blob',  lsKey: 'seraya_voided_allocations' },
+  { settingsKey: '_deleted_receipts_blob',    lsKey: 'seraya_deleted_receipts' },
+  { settingsKey: '_pvno_overrides_blob',      lsKey: 'seraya_pvno_overrides' },
+  { settingsKey: '_cecilia_retainer_blob',    lsKey: 'seraya_cecilia_retainer_v1' },
+  // (alloc_cache + client_meta intentionally NOT synced — they're local
+  // caches that auto-rebuild from Sheet data on every page load.)
+  // Pattern-matched (multiple keys bundled into one blob)
+  { settingsKey: '_stmt_desc_overrides_blob', pattern: 'seraya_stmt_desc_override_' },
+  { settingsKey: '_disb_person_blob',         pattern: 'disb_person_' },
+  { settingsKey: '_ib_linedefs_blob',         pattern: 'ib_linedefs_' },
+  { settingsKey: '_ib_ld_blob',               pattern: 'ib_ld_' },
+];
+
+// Keep references to original Storage methods — used internally so we don't
+// re-trigger sync when we're WRITING from a pulled blob.
+const _origSetItem    = Storage.prototype.setItem;
+const _origRemoveItem = Storage.prototype.removeItem;
+
+// Match a localStorage key against the synced-blob defs. Returns the def or null.
+function _findSyncDef(lsKey) {
+  if (!lsKey) return null;
+  for (const def of SYNCED_BLOBS) {
+    if (def.lsKey === lsKey) return def;
+    if (def.pattern && lsKey.startsWith(def.pattern)) return def;
+  }
+  return null;
+}
+
+// Throttle pushes — bundle multiple writes within 600ms into one save_settings call
+let _syncPushTimer = null;
+let _syncDirtyKeys = new Set();
+let _syncSuspended = false;   // suspend while pulling (so writes from pull don't loop)
+
+function pushSyncedBlob(settingsKey) {
+  if (_syncSuspended) return;
+  if (settingsKey) _syncDirtyKeys.add(settingsKey);
+  if (_syncPushTimer) return;
+  _syncPushTimer = setTimeout(() => {
+    _syncPushTimer = null;
+    if (!_syncDirtyKeys.size) return;
+    const dirty = Array.from(_syncDirtyKeys);
+    _syncDirtyKeys.clear();
+    if (typeof SETTINGS !== 'object' || SETTINGS === null) window.SETTINGS = {};
+    dirty.forEach(k => {
+      const def = SYNCED_BLOBS.find(b => b.settingsKey === k);
+      if (!def) return;
+      if (def.pattern) {
+        // Bundle every matching localStorage key into a JSON object
+        const bundle = {};
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith(def.pattern)) {
+            bundle[key] = localStorage.getItem(key);
+          }
+        }
+        SETTINGS[k] = JSON.stringify(bundle);
+      } else {
+        const raw = localStorage.getItem(def.lsKey) || '';
+        SETTINGS[k] = raw;
+      }
+    });
+    // POST the SETTINGS via fetch — bypasses the JSONP URL length limit.
+    // GAS's doPost handles the same action dispatch as doGet.
+    try {
+      const token = (SESSION && SESSION.token) || '';
+      const body = JSON.stringify({ action: 'save_settings', data: SETTINGS, token });
+      fetch(API, {
+        method: 'POST',
+        body: body,
+        mode: 'cors',
+        // Use text/plain to avoid CORS preflight (GAS accepts this)
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        redirect: 'follow',
+      })
+      .then(r => r.text())
+      .then(t => {
+        // GAS returns JSON for POST (no JSONP wrapper)
+        let res = null; try { res = JSON.parse(t); } catch(e) {}
+        if (!res || !res.ok) {
+          console.warn('[sync] push failed:', res || t.slice(0,200));
+          // Fall back to JSONP if POST fails (older GAS deployments may not have doPost)
+          api({ action: 'save_settings', data: SETTINGS })
+            .then(r2 => { if (!r2 || !r2.ok) console.warn('[sync] JSONP fallback failed:', r2); else console.log('[sync] pushed via JSONP fallback', dirty.length, 'blob(s):', dirty); })
+            .catch(e => console.warn('[sync] JSONP fallback error:', e));
+        } else {
+          console.log('[sync] pushed', dirty.length, 'blob(s):', dirty);
+        }
+      })
+      .catch(e => {
+        console.warn('[sync] POST error, falling back to JSONP:', e);
+        api({ action: 'save_settings', data: SETTINGS })
+          .then(r2 => { if (!r2 || !r2.ok) console.warn('[sync] JSONP fallback failed:', r2); else console.log('[sync] pushed via JSONP fallback', dirty.length, 'blob(s):', dirty); })
+          .catch(e2 => console.warn('[sync] JSONP fallback error:', e2));
+      });
+    } catch(e) { console.warn('[sync] push exception:', e); }
+  }, 600);
+}
+
+async function pullSyncedBlobs(opts) {
+  opts = opts || {};
+  try {
+    if (typeof api !== 'function') return false;
+    _syncSuspended = true;
+    const res = await api({ action: 'get_settings' });
+    if (!res || !res.ok || typeof res.data !== 'object') {
+      _syncSuspended = false;
+      return false;
+    }
+    SETTINGS = res.data;
+    let applied = 0;
+    SYNCED_BLOBS.forEach(def => {
+      const remoteRaw = SETTINGS[def.settingsKey];
+      if (def.pattern) {
+        // Pattern blob — unpack and reconcile
+        if (!remoteRaw) {
+          // No remote blob. If preferLocal, push our local up.
+          if (opts.preferLocal) {
+            // Check if we have local keys matching this pattern
+            let hasLocal = false;
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              if (key && key.startsWith(def.pattern)) { hasLocal = true; break; }
+            }
+            if (hasLocal) _syncDirtyKeys.add(def.settingsKey);
+          }
+          return;
+        }
+        let bundle;
+        try { bundle = JSON.parse(remoteRaw); } catch(e) { return; }
+        if (typeof bundle !== 'object' || !bundle) return;
+        // Write all keys from the bundle (bypassing the monkey-patch)
+        Object.entries(bundle).forEach(([k, v]) => {
+          if (localStorage.getItem(k) !== v) {
+            _origSetItem.call(localStorage, k, v);
+            applied++;
+          }
+        });
+        // Remove any local keys matching the pattern that aren't in the bundle.
+        // Skip this in preferLocal mode (first-time migration — keep local extras).
+        if (!opts.preferLocal) {
+          const toRemove = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith(def.pattern) && !(key in bundle)) toRemove.push(key);
+          }
+          toRemove.forEach(k => { _origRemoveItem.call(localStorage, k); applied++; });
+        }
+      } else {
+        // Single-key blob
+        const localRaw = localStorage.getItem(def.lsKey) || '';
+        if (remoteRaw === undefined || remoteRaw === null || remoteRaw === '') {
+          if (opts.preferLocal && localRaw) _syncDirtyKeys.add(def.settingsKey);
+          return;
+        }
+        if (opts.preferLocal && localRaw && localRaw !== remoteRaw) {
+          // Migration path: prefer local on first run
+          _syncDirtyKeys.add(def.settingsKey);
+          return;
+        }
+        if (remoteRaw !== localRaw) {
+          _origSetItem.call(localStorage, def.lsKey, remoteRaw);
+          applied++;
+        }
+      }
+    });
+    _syncSuspended = false;
+    if (opts.preferLocal && _syncDirtyKeys.size) pushSyncedBlob();
+    if (applied > 0) console.log('[sync] applied', applied, 'change(s) from Sheet');
+    return applied;
+  } catch(e) {
+    console.warn('[sync] pull error:', e);
+    _syncSuspended = false;
+    return false;
+  }
+}
+
+// Monkey-patch Storage.prototype.setItem / removeItem so writes to any
+// synced key automatically trigger a push. This means we don't have to add
+// pushSyncedBlob() calls at every writer site — they get picked up free.
+Storage.prototype.setItem = function(key, value) {
+  _origSetItem.call(this, key, value);
+  // Only sync for the page's own localStorage (not sessionStorage on iframes)
+  if (this !== localStorage) return;
+  if (_syncSuspended) return;
+  const def = _findSyncDef(key);
+  if (def) pushSyncedBlob(def.settingsKey);
+};
+Storage.prototype.removeItem = function(key) {
+  _origRemoveItem.call(this, key);
+  if (this !== localStorage) return;
+  if (_syncSuspended) return;
+  const def = _findSyncDef(key);
+  if (def) pushSyncedBlob(def.settingsKey);
+};
+
+// Auto-pull on dashboard boot
+let _syncBootPullDone = false;
+async function ensureSyncBootPull() {
+  if (_syncBootPullDone) return;
+  _syncBootPullDone = true;
+  // First load: preferLocal=true so existing local data wins over an empty
+  // remote Settings blob (one-time migration). Subsequent loads accept remote.
+  await pullSyncedBlobs({ preferLocal: true });
+  try { renderReminders && renderReminders(); } catch(e){}
+  try { renderSalesOrders && renderSalesOrders(); } catch(e){}
+  try { renderPayoutView && renderPayoutView(); } catch(e){}
+}
+
+// ──────────────────────────────────────────────────
+
 function setDeadlineStatus(client_id, task, year, payload, client_name) {
   const all = _getAllDeadlineStatus();
   const key = _dlKey(client_id, task, year);
@@ -12939,14 +13266,8 @@ function setDeadlineStatus(client_id, task, year, payload, client_name) {
     all[key] = Object.assign({}, all[key] || {}, payload, { updated_at: new Date().toISOString() });
   }
   localStorage.setItem(DEADLINE_STATUS_KEY, JSON.stringify(all));
-  // Async mirror to the Google Sheet. Silent fail = backend not yet patched.
-  try {
-    if (typeof api === 'function') {
-      const action = (payload === null) ? 'delete_deadline_status' : 'save_deadline_status';
-      api({ action, data: Object.assign({}, payload || {}, { client_id, task, year, client_name: client_name || '' }) })
-        .then(() => {}).catch(() => {});
-    }
-  } catch(e) { /* offline / backend not patched */ }
+  // Push to the Sheet via save_settings (works today, no GAS code change)
+  try { pushSyncedBlob('_deadline_status_blob'); } catch(e) { console.warn('sync push (status):', e); }
   renderReminders();
 }
 async function pullDeadlineStatusesFromSheet() {
