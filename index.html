@@ -11066,6 +11066,14 @@ function openTallyDrillDown(person) {
   openModal('modal-tally-drill');
 }
 
+function clearAllWagePaidMarks() {
+  if (!confirm('Clear ALL paid wage marks?\n\nThis removes every wage you have manually marked as paid in Payout Summary. The change syncs to all browsers via Google Sheet.\n\nContinue?')) return;
+  localStorage.removeItem('seraya_wage_paid_v1');
+  // The monkey-patched removeItem already triggered pushSyncedBlob for this key.
+  // Give the push 1 second to fire, then reload.
+  setTimeout(() => { location.reload(); }, 1200);
+}
+
 function _renderTallyBanner(hostId) {
   const host = document.getElementById(hostId);
   if (!host) return;
@@ -11096,6 +11104,7 @@ function _renderTallyBanner(hostId) {
     +   '</tbody></table>'
     +   '<div style="margin-top:10px;font-size:11px;color:#991B1B;line-height:1.6">'
     +     '<strong>Likely cause:</strong> a wage was manually marked ✓ paid in Payout while the invoice is still outstanding. The allocation leaves Payout O/S but stays in the Breakdown column. Open <a href="javascript:showPage(\'invoice-breakdown\')" style="color:#7F1D1D;text-decoration:underline">Invoice Breakdown</a> or <a href="javascript:showPage(\'payout\')" style="color:#7F1D1D;text-decoration:underline">Payout Summary</a> to investigate.'
+    +     '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #FECACA"><button onclick="clearAllWagePaidMarks()" style="padding:7px 16px;background:#DC2626;color:#fff;border:none;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer">✕ Clear all ✓ paid marks &amp; reload</button><span style="font-size:10px;color:#991B1B;margin-left:10px">Removes every wage-paid mark, syncs to all browsers via Sheet, reloads page.</span></div>'
     +   '</div>'
     + '</div></div>';
   host.parentNode.insertBefore(banner, host);
