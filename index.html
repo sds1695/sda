@@ -11066,12 +11066,59 @@ function openTallyDrillDown(person) {
   openModal('modal-tally-drill');
 }
 
-function clearAllWagePaidMarks() {
+async function clearAllWagePaidMarks() {
   if (!confirm('Clear ALL paid wage marks?\n\nThis removes every wage you have manually marked as paid in Payout Summary. The change syncs to all browsers via Google Sheet.\n\nContinue?')) return;
-  localStorage.removeItem('seraya_wage_paid_v1');
-  // The monkey-patched removeItem already triggered pushSyncedBlob for this key.
-  // Give the push 1 second to fire, then reload.
-  setTimeout(() => { location.reload(); }, 1200);
+
+  // Build the new SETTINGS (with wage_paid_blob cleared)
+  const newSettings = Object.assign({}, SETTINGS || {});
+  newSettings['_wage_paid_blob'] = '';
+
+  // Show a brief status overlay so the user knows we're saving
+  const banner = document.createElement('div');
+  banner.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:99999;background:#fff;border:2px solid #DC2626;border-radius:8px;padding:20px 28px;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,0.25);color:#7F1D1D';
+  banner.innerHTML = '<div style="display:flex;align-items:center;gap:12px"><div style="width:18px;height:18px;border:3px solid #DC2626;border-top-color:transparent;border-radius:50%;animation:spin 0.7s linear infinite"></div><div>Clearing wage-paid marks and saving to Google Sheet&hellip;</div></div>';
+  document.body.appendChild(banner);
+
+  try {
+    const token = (SESSION && SESSION.token) || '';
+    const body = JSON.stringify({ action: 'save_settings', data: newSettings, token: token });
+
+    // Try POST first (no URL limit)
+    let res = null;
+    try {
+      const r = await fetch(API, {
+        method: 'POST',
+        body: body,
+        mode: 'cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        redirect: 'follow',
+      });
+      const text = await r.text();
+      try { res = JSON.parse(text); } catch(e) {}
+    } catch(e) { console.warn('clear: POST error', e); }
+
+    // Fallback to JSONP if POST failed
+    if (!res || !res.ok) {
+      console.log('clear: POST result was', res, '- trying JSONP');
+      res = await api({ action: 'save_settings', data: newSettings });
+    }
+
+    if (!res || !res.ok) {
+      banner.remove();
+      alert('Could not save to Google Sheet. Aborted.\n\n' + JSON.stringify(res || 'no response'));
+      return;
+    }
+
+    // Sheet is now updated. Wipe locally too, update in-memory SETTINGS, and reload.
+    localStorage.removeItem('seraya_wage_paid_v1');
+    SETTINGS = newSettings;
+    banner.innerHTML = '<div style="color:#1D9E75"><strong>\u2713 Cleared.</strong> Reloading&hellip;</div>';
+
+    setTimeout(() => { location.reload(); }, 700);
+  } catch(e) {
+    banner.remove();
+    alert('Error: ' + e.message);
+  }
 }
 
 function _renderTallyBanner(hostId) {
