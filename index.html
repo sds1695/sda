@@ -4235,10 +4235,30 @@ async function openExcelLineSnapshotModal() {
   const _fmt = n => 'RM ' + (parseFloat(n||0)).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
   const fyYear = String(new Date().getFullYear());
   const _inFY = d => { if(!d) return false; if(/^\d{4}/.test(d)) return d.slice(0,4)===fyYear; const m=(d||'').match(/\b(\d{4})\b/); return m?m[1]===fyYear:false; };
+  // Apply the SAME filters the dashboard's BS uses — voided/deleted IDs from localStorage.
+  // Without these, we'd count vouchers the user has voided, producing drift vs the BS page.
+  const _safeIsVoided  = (kind, id) => { try { return (typeof isVoided  === 'function') ? isVoided(kind, id)  : false; } catch(_){ return false; } };
+  const _safeIsDeleted = (kind, id) => { try { return (typeof isDeleted === 'function') ? isDeleted(kind, id) : false; } catch(_){ return false; } };
+  const _safeIsSuppressed = (id) => { try { return (typeof isSuppressedReceipt === 'function') ? isSuppressedReceipt(id) : false; } catch(_){ return false; } };
+
   const invoices = _INVOICES.filter(i => i.status !== 'cancelled');
   const fyInvoices = invoices.filter(i => _inFY(i.inv_date || i.date));
-  const allVouchers = _VOUCHERS.filter(v => !((v.description||'').startsWith('__VOID__')));
+  const allVouchers = _VOUCHERS.filter(v => {
+    const id = (v.voucher_id || v.id || '').toString();
+    if (_safeIsDeleted('vouchers', id)) return false;
+    if (_safeIsVoided('vouchers', id)) return false;
+    if ((v.description||'').startsWith('__VOID__')) return false;
+    return true;
+  });
   const fyVouchers = allVouchers.filter(v => _inFY(v.date));
+  // Pre-filter receipts the same way the BS does (voided/suppressed excluded).
+  const _RECEIPTS_FILTERED = _RECEIPTS.filter(r => {
+    const id  = (r.receipt_id || r.id || '').toString();
+    const ino = (r.receipt_no || '').toString();
+    if (_safeIsVoided('receipts', id)) return false;
+    if (_safeIsSuppressed(ino)) return false;
+    return true;
+  });
 
   let html = '';
   order.forEach(([sec, label]) => {
@@ -4253,7 +4273,7 @@ async function openExcelLineSnapshotModal() {
           // Bank: OB + non-drawings receipts - non-drawings vouchers
           const obBank = parseFloat(((window.COA_OPENING_BALANCES||{})['1010']||{}).amount || 0);
           const isDraw = x => (x.bank_account||x.payment_account||'').toLowerCase().includes('draw');
-          const rc = _RECEIPTS.filter(r => !isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
+          const rc = _RECEIPTS_FILTERED.filter(r => !isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
           const pv = allVouchers.filter(v => !isDraw(v)).reduce((s,v) => s + parseFloat(v.amount||0), 0);
           live = Math.round((obBank + rc - pv) * 100) / 100;
         } else if (a.code === '1100') {
@@ -4263,15 +4283,15 @@ async function openExcelLineSnapshotModal() {
           const isPreOB = i => { const m=(i.inv_no||'').match(/^INV(\d{2})/i); if(m) return parseInt(m[1],10)<fyShort; return false; };
           const newInv = invoices.filter(i => !isPreOB(i)).reduce((s,i) => s + parseFloat(i.amount||0), 0);
           const isDraw = x => (x.bank_account||x.payment_account||'').toLowerCase().includes('draw');
-          const bankRc = _RECEIPTS.filter(r => !isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
-          const drawRc = _RECEIPTS.filter(r => isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
+          const bankRc = _RECEIPTS_FILTERED.filter(r => !isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
+          const drawRc = _RECEIPTS_FILTERED.filter(r => isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
           live = Math.round((obTD + newInv - bankRc - drawRc) * 100) / 100;
         } else if (a.code === '3300') {
           // Drawings: OB + drawings vouchers - drawings receipts
           const obDraw = parseFloat(((window.COA_OPENING_BALANCES||{})['3300']||{}).amount || 0);
           const isDraw = x => (x.bank_account||x.payment_account||'').toLowerCase().includes('draw');
           const drawPv = allVouchers.filter(v => isDraw(v)).reduce((s,v) => s + parseFloat(v.amount||0), 0);
-          const drawRc = _RECEIPTS.filter(r => isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
+          const drawRc = _RECEIPTS_FILTERED.filter(r => isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
           live = Math.round((obDraw + drawPv - drawRc) * 100) / 100;
         } else if (a.code === '3200') {
           // Profit for the year: live netProfit from P&L COA accounts
