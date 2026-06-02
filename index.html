@@ -4186,12 +4186,30 @@ async function openExcelLineSnapshotModal() {
   const tbody = document.getElementById('els-tbody');
   tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:20px">Loading dashboard values…</td></tr>';
 
-  // Load globals if not yet
+  // Aggressively load all globals — these may not be on `window` reliably
   try {
-    if (typeof prefetchGlobals === 'function' && (!window.INVOICES_RAW || !window.INVOICES_RAW.length)) {
-      await prefetchGlobals();
+    if (typeof loadInvoices    === 'function') await loadInvoices().catch(()=>{});
+    if (typeof loadReceipts    === 'function') await loadReceipts().catch(()=>{});
+    if (typeof loadVouchers    === 'function') await loadVouchers().catch(()=>{});
+    if (typeof loadAllocations === 'function') await loadAllocations().catch(()=>{});
+    if (typeof prefetchGlobals === 'function') await prefetchGlobals().catch(()=>{});
+  } catch(e) { console.warn('els prefetch failed', e); }
+
+  // Resolve data arrays from multiple possible names (window. or bare module scope)
+  const _resolve = (...names) => {
+    for (const n of names) {
+      try { if (window[n] && Array.isArray(window[n]) && window[n].length) return window[n]; } catch(_){}
     }
-  } catch(e) { console.warn('prefetch failed', e); }
+    // bare-name fallback via Function eval (in case data is module-scoped)
+    for (const n of names) {
+      try { const v = (new Function('try{return '+n+'}catch(_){return null}'))(); if (v && Array.isArray(v) && v.length) return v; } catch(_){}
+    }
+    return [];
+  };
+  const _RECEIPTS  = _resolve('RECEIPTS','RECEIPTS_RAW');
+  const _VOUCHERS  = _resolve('VOUCHERS_RAW','VOUCHERS');
+  const _INVOICES  = _resolve('INVOICES_RAW','INVOICES');
+  console.log('els data resolved:', { invoices: _INVOICES.length, vouchers: _VOUCHERS.length, receipts: _RECEIPTS.length });
 
   const snap = _getExcelLineSnapshot();
   document.getElementById('els-asof').value = snap.as_of || '31.12.26';
@@ -4217,9 +4235,9 @@ async function openExcelLineSnapshotModal() {
   const _fmt = n => 'RM ' + (parseFloat(n||0)).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
   const fyYear = String(new Date().getFullYear());
   const _inFY = d => { if(!d) return false; if(/^\d{4}/.test(d)) return d.slice(0,4)===fyYear; const m=(d||'').match(/\b(\d{4})\b/); return m?m[1]===fyYear:false; };
-  const invoices = (window.INVOICES_RAW || window.INVOICES || []).filter(i => i.status !== 'cancelled');
+  const invoices = _INVOICES.filter(i => i.status !== 'cancelled');
   const fyInvoices = invoices.filter(i => _inFY(i.inv_date || i.date));
-  const allVouchers = (window.VOUCHERS_RAW || window.VOUCHERS || []).filter(v => !((v.description||'').startsWith('__VOID__')));
+  const allVouchers = _VOUCHERS.filter(v => !((v.description||'').startsWith('__VOID__')));
   const fyVouchers = allVouchers.filter(v => _inFY(v.date));
 
   let html = '';
@@ -4231,26 +4249,50 @@ async function openExcelLineSnapshotModal() {
     accts.forEach(a => {
       let live = 0;
       try {
-        // Use computeAccountValue if it exists, otherwise fall back to hardcoded value
-        if (a.section.startsWith('non_current') || a.section.startsWith('current') || a.section === 'equity') {
-          // BS accounts — use saved value or invoke valueOf-style logic
-          if (a.code === '1010' || a.code === '1100' || a.code === '3200' || a.code === '3300') {
-            // These are live-computed. Use COA value if set (it's pinned at load time).
-            live = parseFloat(a.value || 0);
-            // If not set, try to compute simpler way
-            if (!live && typeof computeAccountValue === 'function') {
-              try { live = computeAccountValue(a, fyInvoices, fyVouchers); } catch(e){}
-            }
-          } else {
-            live = parseFloat(a.value || 0);
-          }
+        if (a.code === '1010') {
+          // Bank: OB + non-drawings receipts - non-drawings vouchers
+          const obBank = parseFloat(((window.COA_OPENING_BALANCES||{})['1010']||{}).amount || 0);
+          const isDraw = x => (x.bank_account||x.payment_account||'').toLowerCase().includes('draw');
+          const rc = _RECEIPTS.filter(r => !isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
+          const pv = allVouchers.filter(v => !isDraw(v)).reduce((s,v) => s + parseFloat(v.amount||0), 0);
+          live = Math.round((obBank + rc - pv) * 100) / 100;
+        } else if (a.code === '1100') {
+          // Trade Debtor: OB + new invoices - bank receipts - drawings receipts matched to invoice clients
+          const obTD = parseFloat(((window.COA_OPENING_BALANCES||{})['1100']||{}).amount || 0);
+          const fyShort = parseInt(fyYear.slice(2));
+          const isPreOB = i => { const m=(i.inv_no||'').match(/^INV(\d{2})/i); if(m) return parseInt(m[1],10)<fyShort; return false; };
+          const newInv = invoices.filter(i => !isPreOB(i)).reduce((s,i) => s + parseFloat(i.amount||0), 0);
+          const isDraw = x => (x.bank_account||x.payment_account||'').toLowerCase().includes('draw');
+          const bankRc = _RECEIPTS.filter(r => !isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
+          const drawRc = _RECEIPTS.filter(r => isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
+          live = Math.round((obTD + newInv - bankRc - drawRc) * 100) / 100;
+        } else if (a.code === '3300') {
+          // Drawings: OB + drawings vouchers - drawings receipts
+          const obDraw = parseFloat(((window.COA_OPENING_BALANCES||{})['3300']||{}).amount || 0);
+          const isDraw = x => (x.bank_account||x.payment_account||'').toLowerCase().includes('draw');
+          const drawPv = allVouchers.filter(v => isDraw(v)).reduce((s,v) => s + parseFloat(v.amount||0), 0);
+          const drawRc = _RECEIPTS.filter(r => isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
+          live = Math.round((obDraw + drawPv - drawRc) * 100) / 100;
+        } else if (a.code === '3200') {
+          // Profit for the year: live netProfit from P&L COA accounts
+          const COA_PL_SECS = ['revenue','other_income','direct_cost','admin_expense','taxation','depreciation'];
+          let plRev = 0, plExp = 0;
+          coa.filter(x => COA_PL_SECS.includes(x.section)).forEach(plA => {
+            const v = (typeof computeAccountValue === 'function') ? computeAccountValue(plA, fyInvoices, fyVouchers) : 0;
+            const isIncome = (plA.section === 'revenue' || plA.section === 'other_income');
+            if (isIncome) plRev += v; else plExp += v;
+          });
+          live = Math.round((plRev - plExp) * 100) / 100;
+        } else if (a.section.startsWith('non_current') || a.section.startsWith('current') || a.section === 'equity') {
+          // Other BS accounts — use the hardcoded snapshot value
+          live = parseFloat(a.value || 0);
         } else {
           // PL accounts — use mapsFrom against invoices/vouchers
           if (typeof computeAccountValue === 'function') {
             try { live = computeAccountValue(a, fyInvoices, fyVouchers); } catch(e){}
           }
         }
-      } catch(e) {}
+      } catch(e) { console.warn('els live calc failed for', a.code, e); }
       const excelVal = snap.lines[a.code];
       const hasExcel = excelVal !== undefined && excelVal !== null && excelVal !== '';
       const drift = hasExcel ? (parseFloat(live||0) - parseFloat(excelVal||0)) : null;
