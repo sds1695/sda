@@ -1080,6 +1080,7 @@
         <div class="page-sub">Profit & Loss — computed from invoices and payment vouchers</div>
         <div class="page-actions">
           <select class="filter-select" onchange="loadIncomeStatement()" id="is-filter-year"><option value="">All time</option></select>
+          <button class="btn btn-secondary" onclick="openExcelLineSnapshotModal()" title="Enter Excel BS/IS values and compare line-by-line against dashboard">📊 Excel Snapshot</button>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px">
@@ -1096,6 +1097,9 @@
       <div class="page-header">
         <div class="page-title">Balance Sheet</div>
         <div class="page-sub">Assets, Liabilities & Equity — as at today</div>
+        <div class="page-actions">
+          <button class="btn btn-secondary" onclick="openExcelLineSnapshotModal()" title="Enter Excel BS/IS values and compare line-by-line against dashboard">📊 Excel Snapshot</button>
+        </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
         <div class="card" id="bs-assets"></div>
@@ -2833,6 +2837,8 @@ const COA_DEFAULT = [
   { code: '6300', name: 'SSM Charges',                  section: 'admin_expense',     mapsFrom: ['ssm'] },
   { code: '6100', name: 'Entertainment',                section: 'admin_expense',     mapsFrom: ['entertainment'] },
   { code: '6010', name: 'Incorporation expenses',       section: 'admin_expense',     mapsFrom: ['incorporation'] },
+  // Claude subscription (added 2026-06-02 — permanent so it survives any localStorage reset)
+  { code: '5151', name: 'Claude subscription',          section: 'admin_expense',     mapsFrom: ['coa_5151','claude_subscription','claude','claude subscription'] },
   // Taxation (added 2026-06-01 to fix BS↔IS gap of RM 2,783.46 — tax payment voucher was unmapped)
   { code: '8000', name: 'Tax expense',                  section: 'taxation',          mapsFrom: ['tax payment','tax_payment','tax expense','tax_expense'] },
   // Depreciation (hardcoded; not in voucher data)
@@ -4153,6 +4159,128 @@ function matchDrawingsClient(rn, rc, iNoSet, iClArr) {
     const icWords = ic.split(/[\s\/,&()+.]+/).filter(w => w.length >= 4);
     return rcWords.some(rw => icWords.includes(rw));
   });
+}
+
+// ══════════════════════════════════════════════════
+// EXCEL LINE SNAPSHOT (added 2026-06-02 evening)
+// Per-line Excel BS/IS values. User enters via modal; persisted in
+// localStorage. Modal shows dashboard live values side-by-side with
+// drift indicators.
+// ══════════════════════════════════════════════════
+const EXCEL_LINE_SNAPSHOT_KEY = 'seraya_excel_line_snapshot_v1';
+const EXCEL_LINE_TOLERANCE = 1.00;
+
+function _getExcelLineSnapshot() {
+  try {
+    const raw = localStorage.getItem(EXCEL_LINE_SNAPSHOT_KEY);
+    if (!raw) return { as_of: '', lines: {} };
+    const parsed = JSON.parse(raw);
+    return { as_of: parsed.as_of || '', saved_at: parsed.saved_at || '', lines: parsed.lines || {} };
+  } catch (e) { return { as_of: '', lines: {} }; }
+}
+
+async function openExcelLineSnapshotModal() {
+  const modal = document.getElementById('modal-excel-snapshot');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  const tbody = document.getElementById('els-tbody');
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:20px">Loading dashboard values…</td></tr>';
+
+  // Load globals if not yet
+  try {
+    if (typeof prefetchGlobals === 'function' && (!window.INVOICES_RAW || !window.INVOICES_RAW.length)) {
+      await prefetchGlobals();
+    }
+  } catch(e) { console.warn('prefetch failed', e); }
+
+  const snap = _getExcelLineSnapshot();
+  document.getElementById('els-asof').value = snap.as_of || '31.12.26';
+  document.getElementById('els-saved-at').textContent = snap.saved_at ? ('Last saved: ' + new Date(snap.saved_at).toLocaleString()) : '(no snapshot saved yet)';
+
+  // Build rows for every COA account (BS first, then PL grouped by section)
+  const coa = (typeof getCOA === 'function' ? getCOA() : []);
+  const order = [
+    ['non_current_asset','Non-Current Assets'],
+    ['current_asset','Current Assets'],
+    ['current_liability','Current Liabilities'],
+    ['non_current_liability','Non-Current Liabilities'],
+    ['equity','Equity'],
+    ['revenue','Revenue'],
+    ['other_income','Other Income'],
+    ['direct_cost','Direct Costs'],
+    ['admin_expense','Administrative Expenses'],
+    ['taxation','Taxation'],
+    ['depreciation','Depreciation'],
+  ];
+
+  // Compute live values per account using existing engine
+  const _fmt = n => 'RM ' + (parseFloat(n||0)).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const fyYear = String(new Date().getFullYear());
+  const _inFY = d => { if(!d) return false; if(/^\d{4}/.test(d)) return d.slice(0,4)===fyYear; const m=(d||'').match(/\b(\d{4})\b/); return m?m[1]===fyYear:false; };
+  const invoices = (window.INVOICES_RAW || window.INVOICES || []).filter(i => i.status !== 'cancelled');
+  const fyInvoices = invoices.filter(i => _inFY(i.inv_date || i.date));
+  const allVouchers = (window.VOUCHERS_RAW || window.VOUCHERS || []).filter(v => !((v.description||'').startsWith('__VOID__')));
+  const fyVouchers = allVouchers.filter(v => _inFY(v.date));
+
+  let html = '';
+  order.forEach(([sec, label]) => {
+    const accts = coa.filter(a => a.section === sec);
+    if (!accts.length) return;
+    accts.sort((a,b) => (a.code||'').localeCompare(b.code||''));
+    html += '<tr style="background:var(--surface2)"><td colspan="5" style="padding:8px;font-weight:600;font-size:11px;text-transform:uppercase;color:var(--text2)">' + label + '</td></tr>';
+    accts.forEach(a => {
+      let live = 0;
+      try {
+        // Use computeAccountValue if it exists, otherwise fall back to hardcoded value
+        if (a.section.startsWith('non_current') || a.section.startsWith('current') || a.section === 'equity') {
+          // BS accounts — use saved value or invoke valueOf-style logic
+          if (a.code === '1010' || a.code === '1100' || a.code === '3200' || a.code === '3300') {
+            // These are live-computed. Use COA value if set (it's pinned at load time).
+            live = parseFloat(a.value || 0);
+            // If not set, try to compute simpler way
+            if (!live && typeof computeAccountValue === 'function') {
+              try { live = computeAccountValue(a, fyInvoices, fyVouchers); } catch(e){}
+            }
+          } else {
+            live = parseFloat(a.value || 0);
+          }
+        } else {
+          // PL accounts — use mapsFrom against invoices/vouchers
+          if (typeof computeAccountValue === 'function') {
+            try { live = computeAccountValue(a, fyInvoices, fyVouchers); } catch(e){}
+          }
+        }
+      } catch(e) {}
+      const excelVal = snap.lines[a.code];
+      const hasExcel = excelVal !== undefined && excelVal !== null && excelVal !== '';
+      const drift = hasExcel ? (parseFloat(live||0) - parseFloat(excelVal||0)) : null;
+      const driftCls = drift === null ? '' : (Math.abs(drift) > EXCEL_LINE_TOLERANCE ? 'color:var(--amber);font-weight:600' : 'color:var(--green)');
+      const driftDisplay = drift === null ? '<span style="color:var(--text3)">—</span>' : (drift >= 0 ? '+' : '') + drift.toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2});
+      html += '<tr><td style="padding:6px 8px;font-family:monospace;color:var(--text3)">' + (a.code||'') + '</td>'
+        + '<td style="padding:6px 8px">' + (a.name||'') + '</td>'
+        + '<td style="padding:6px 8px;text-align:right;font-family:monospace">' + _fmt(live) + '</td>'
+        + '<td style="padding:6px 8px;text-align:right"><input type="number" step="0.01" class="els-input" data-code="' + a.code + '" value="' + (hasExcel ? excelVal : '') + '" style="width:120px;text-align:right;padding:4px 6px;border:1px solid var(--border);border-radius:3px;font-family:monospace;font-size:12px"></td>'
+        + '<td style="padding:6px 8px;text-align:right;font-family:monospace;' + driftCls + '">' + driftDisplay + '</td></tr>';
+    });
+  });
+  if (!html) html = '<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:20px">No COA accounts found</td></tr>';
+  tbody.innerHTML = html;
+}
+
+function saveExcelLineSnapshot() {
+  const asof = document.getElementById('els-asof').value || '';
+  const lines = {};
+  document.querySelectorAll('#modal-excel-snapshot .els-input').forEach(inp => {
+    const code = inp.dataset.code;
+    const v = inp.value.trim();
+    if (v !== '' && !isNaN(parseFloat(v))) {
+      lines[code] = parseFloat(v);
+    }
+  });
+  const snap = { as_of: asof, lines: lines, saved_at: new Date().toISOString() };
+  localStorage.setItem(EXCEL_LINE_SNAPSHOT_KEY, JSON.stringify(snap));
+  if (typeof toast === 'function') toast('Excel snapshot saved (' + Object.keys(lines).length + ' lines).', 'success');
+  document.getElementById('modal-excel-snapshot').style.display = 'none';
 }
 
 // ══════════════════════════════════════════════════
@@ -19283,6 +19411,45 @@ function leAnswer(rawText) {
 
 
 </script>
+
+
+<!-- ══ EXCEL LINE SNAPSHOT MODAL ══ -->
+<div class="modal-overlay" id="modal-excel-snapshot" style="display:none">
+  <div class="modal" style="max-width:900px;max-height:90vh;overflow:auto">
+    <div class="modal-header">
+      <div class="modal-title">📊 Excel Snapshot — line-by-line drift detection</div>
+      <button class="modal-close" onclick="document.getElementById('modal-excel-snapshot').style.display='none'">&#10005;</button>
+    </div>
+    <div class="modal-body" style="padding:16px">
+      <div style="margin-bottom:14px;color:var(--text2);font-size:13px;line-height:1.5">
+        Enter values from your Excel master BS/IS. Saved per-line and persists across reloads.
+        Drift cells turn amber when dashboard differs by more than RM 1.00.
+        Re-open this modal anytime to spot-check that the dashboard still matches your Excel.
+      </div>
+      <div style="margin-bottom:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:13px;font-weight:600">As-of date:</label>
+        <input type="text" id="els-asof" placeholder="31.12.26" style="padding:6px 10px;border:1px solid var(--border);border-radius:4px;width:120px;font-size:13px">
+        <span id="els-saved-at" style="color:var(--text3);font-size:11px"></span>
+      </div>
+      <table id="els-table" style="width:100%;font-size:12px;border-collapse:collapse">
+        <thead>
+          <tr style="color:var(--text3);font-size:11px;text-transform:uppercase">
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">Code</th>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">Account</th>
+            <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Dashboard (live)</th>
+            <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Excel value (you enter)</th>
+            <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Drift</th>
+          </tr>
+        </thead>
+        <tbody id="els-tbody"></tbody>
+      </table>
+    </div>
+    <div class="modal-footer" style="padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px">
+      <button class="btn btn-secondary" onclick="document.getElementById('modal-excel-snapshot').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="saveExcelLineSnapshot()">Save snapshot</button>
+    </div>
+  </div>
+</div>
 
 </body>
 </html>
