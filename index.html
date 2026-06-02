@@ -4269,16 +4269,20 @@ async function openExcelLineSnapshotModal() {
     accts.forEach(a => {
       let live = 0;
       try {
+        // Resolve COA_OPENING_BALANCES from script scope (it's not on window)
+        const _OB = (() => {
+          try { return (new Function('try{return COA_OPENING_BALANCES}catch(_){return null}'))(); } catch(_){ return null; }
+        })() || window.COA_OPENING_BALANCES || {};
         if (a.code === '1010') {
           // Bank: OB + non-drawings receipts - non-drawings vouchers
-          const obBank = parseFloat(((window.COA_OPENING_BALANCES||{})['1010']||{}).amount || 0);
+          const obBank = parseFloat((_OB['1010']||{}).amount || 0);
           const isDraw = x => (x.bank_account||x.payment_account||'').toLowerCase().includes('draw');
           const rc = _RECEIPTS_FILTERED.filter(r => !isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
           const pv = allVouchers.filter(v => !isDraw(v)).reduce((s,v) => s + parseFloat(v.amount||0), 0);
           live = Math.round((obBank + rc - pv) * 100) / 100;
         } else if (a.code === '1100') {
           // Trade Debtor: OB + new invoices - bank receipts - drawings receipts matched to invoice clients
-          const obTD = parseFloat(((window.COA_OPENING_BALANCES||{})['1100']||{}).amount || 0);
+          const obTD = parseFloat((_OB['1100']||{}).amount || 0);
           const fyShort = parseInt(fyYear.slice(2));
           const isPreOB = i => { const m=(i.inv_no||'').match(/^INV(\d{2})/i); if(m) return parseInt(m[1],10)<fyShort; return false; };
           const newInv = invoices.filter(i => !isPreOB(i)).reduce((s,i) => s + parseFloat(i.amount||0), 0);
@@ -4288,7 +4292,7 @@ async function openExcelLineSnapshotModal() {
           live = Math.round((obTD + newInv - bankRc - drawRc) * 100) / 100;
         } else if (a.code === '3300') {
           // Drawings: OB + drawings vouchers - drawings receipts
-          const obDraw = parseFloat(((window.COA_OPENING_BALANCES||{})['3300']||{}).amount || 0);
+          const obDraw = parseFloat((_OB['3300']||{}).amount || 0);
           const isDraw = x => (x.bank_account||x.payment_account||'').toLowerCase().includes('draw');
           const drawPv = allVouchers.filter(v => isDraw(v)).reduce((s,v) => s + parseFloat(v.amount||0), 0);
           const drawRc = _RECEIPTS_FILTERED.filter(r => isDraw(r)).reduce((s,r) => s + parseFloat(r.amount||0), 0);
