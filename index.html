@@ -4156,6 +4156,89 @@ function matchDrawingsClient(rn, rc, iNoSet, iClArr) {
 }
 
 // ══════════════════════════════════════════════════
+// EXCEL PARITY HELPERS (added 2026-06-02)
+// Stores a snapshot of Excel BS values and compares against dashboard's live
+// computed values. Catches drift between the two systems (the kind of variance
+// that produced the RM 1,749.98 bank discrepancy).
+// ══════════════════════════════════════════════════
+const EXCEL_SNAPSHOT_KEY = 'seraya_excel_snapshot_v1';
+const EXCEL_PARITY_TOLERANCE = 1.00; // RM — anything within this is considered a match
+
+function _getExcelSnapshot() {
+  try {
+    const raw = localStorage.getItem(EXCEL_SNAPSHOT_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) { return null; }
+}
+
+function setExcelSnapshot() {
+  // Pre-fill prompts with the current dashboard live values (so the user can
+  // hit Enter to accept) or with existing snapshot values if one is set.
+  const cur = _getExcelSnapshot() || {};
+  const ask = (label, currentVal) => {
+    const v = prompt(label + ' (Enter to keep current):', currentVal != null ? String(currentVal) : '');
+    if (v === null) return null; // cancelled
+    const n = parseFloat(v);
+    return isNaN(n) ? currentVal : n;
+  };
+  const asOf  = prompt('Excel snapshot as-of date (e.g. 31.12.26):', cur.as_of || '31.12.26');
+  if (asOf === null) return;
+  const bank  = ask('Bank balance per Excel BS', cur.bank);
+  if (bank === null) return;
+  const td    = ask('Trade Debtor per Excel BS', cur.trade_debtor);
+  if (td === null) return;
+  const profit = ask('Net profit per Excel IS', cur.profit);
+  if (profit === null) return;
+  const draw  = ask('Drawings per Excel BS', cur.drawings);
+  if (draw === null) return;
+  const snap = {
+    as_of: asOf,
+    bank: bank,
+    trade_debtor: td,
+    profit: profit,
+    drawings: draw,
+    saved_at: new Date().toISOString()
+  };
+  localStorage.setItem(EXCEL_SNAPSHOT_KEY, JSON.stringify(snap));
+  if (typeof toast === 'function') toast('Excel snapshot saved. Reload to re-run parity check.', 'success');
+  if (typeof loadDashboard === 'function') loadDashboard();
+}
+
+function _excelParityCheck(liveBank, liveTD, netProfit, liveDrawings) {
+  const snap = _getExcelSnapshot();
+  if (!snap) {
+    return {
+      ok: true,  // treat as ok so it doesn't block green-all state by default
+      detail: 'No Excel snapshot set yet — click \"Set Excel snapshot\" to enable drift detection.',
+      hasSnapshot: false
+    };
+  }
+  const tol = EXCEL_PARITY_TOLERANCE;
+  const checks = [
+    { name: 'Bank',     excel: snap.bank,         live: liveBank      },
+    { name: 'Debtor',   excel: snap.trade_debtor, live: liveTD        },
+    { name: 'Profit',   excel: snap.profit,       live: netProfit     },
+    { name: 'Drawings', excel: snap.drawings,     live: liveDrawings  },
+  ];
+  const drifts = checks
+    .filter(c => Math.abs((c.excel||0) - (c.live||0)) > tol)
+    .map(c => `${c.name} ${(c.live - c.excel >= 0 ? '+' : '')}${(c.live - c.excel).toLocaleString('en-MY',{minimumFractionDigits:2,maximumFractionDigits:2})}`);
+  if (drifts.length === 0) {
+    return {
+      ok: true,
+      detail: `Matches Excel snapshot (as of ${snap.as_of}) within RM ${tol.toFixed(2)} tolerance.`,
+      hasSnapshot: true
+    };
+  }
+  return {
+    ok: false,
+    detail: `Drift vs Excel (${snap.as_of}): ${drifts.join(', ')}.`,
+    hasSnapshot: true
+  };
+}
+
+// ══════════════════════════════════════════════════
 // ACCOUNTING HEALTH — called at end of loadDashboard with already-fetched data
 // ══════════════════════════════════════════════════
 function runAccountingHealth(receipts, vouchers) {
@@ -4313,6 +4396,17 @@ function runAccountingHealth(receipts, vouchers) {
     const bsOk   = Math.abs(bsGap)   < 0.02;
     const tdOk   = Math.abs(tdDrift) < 0.02;
     const drawOk = unmatchedDraw.length === 0;
+
+    // Excel parity check — compare dashboard's live values against user-stored Excel snapshot
+    let _excelParityOk = true, _excelParityDetail = '';
+    try {
+      const _ep = _excelParityCheck(liveBank, liveTD, netProfit, liveDrawings);
+      _excelParityOk = _ep.ok;
+      _excelParityDetail = _ep.detail
+        + (_ep.hasSnapshot ? ' <a href=\"#\" onclick=\"event.preventDefault();setExcelSnapshot();return false\" style=\"color:var(--brand);text-decoration:underline\">Update snapshot</a>'
+                            : ' <a href=\"#\" onclick=\"event.preventDefault();setExcelSnapshot();return false\" style=\"color:var(--brand);text-decoration:underline\">Set Excel snapshot</a>');
+    } catch(_e) { console.warn('excel parity check failed', _e); }
+
 
     const bsDetail   = bsOk
       ? `Assets ${fmtRM(totalAssets)} = Equity + Liabilities`
@@ -5200,6 +5294,7 @@ function runAccountingHealth(receipts, vouchers) {
               </div>` : ''}
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
               ${chip(bsOk,         'Balance Sheet',        bsDetail)}
+              ${chip(_excelParityOk, 'Excel Parity',       _excelParityDetail)}
               ${chip(tdOk,         'Trade Debtor',         tdDetail)}
               ${chip(drawOk,       'Drawings Receipts',    drawDetail)}
               ${chip(_allocFreshOk,'Allocation Freshness', _allocFreshDetail)}
@@ -13554,6 +13649,46 @@ async function saveVoucher() {
   const desc       = document.getElementById('pv-desc').value.trim();
 
   if (!date || !amount || !payee) { toast('Please fill in date, payee and amount.', 'error'); return; }
+
+  // ─── DUPLICATE VOUCHER DETECTION (added 2026-06-02 to prevent the kind of
+  //     duplicates that produced the RM 1,749.98 bank variance: PV26068
+  //     duplicating PV26067, and PV26063/PV26065 duplicating PV021.26). ───
+  try {
+    const _dupCategory = document.getElementById('pv-category').value;
+    const _editingId   = (document.getElementById('pv-id').value || '').toString();
+    const _editingNo   = (document.getElementById('pv-no')?.value || '').toString().trim();
+    const _isSameDate  = (a, b) => {
+      const norm = d => String(d||'').slice(0,10).replace(/\//g, '-');
+      return norm(a) === norm(b);
+    };
+    const _hits = (window.VOUCHERS_RAW || window.VOUCHERS || []).filter(v => {
+      if (!v) return false;
+      const vid = (v.voucher_id || v.id || '').toString();
+      const vno = (v.voucher_no || '').toString();
+      if (_editingId && vid === _editingId) return false;
+      if (_editingNo && vno === _editingNo) return false;
+      if ((v.description||'').startsWith('__VOID__')) return false;
+      if (Math.abs(parseFloat(v.amount||0) - amount) > 0.005) return false;
+      if ((v.payee||'') !== payee) return false;
+      if ((v.category||'') !== _dupCategory) return false;
+      return _isSameDate(v.date, date);
+    });
+    if (_hits.length) {
+      const sample = _hits.slice(0, 3).map(v =>
+        `  • ${v.voucher_no || '(no PV#)'}  ${String(v.date||'').slice(0,10)}  RM ${parseFloat(v.amount||0).toFixed(2)}  — ${(v.description||'').slice(0,40)}`
+      ).join('\n');
+      const msg = 'Possible duplicate voucher detected.\n\n' +
+                  _hits.length + ' existing voucher(s) match this date + payee + amount + category:\n\n' +
+                  sample +
+                  (_hits.length > 3 ? `\n  …and ${_hits.length-3} more` : '') +
+                  '\n\nThis is the pattern that caused the RM 1,749.98 bank variance.\n\n' +
+                  'Click OK to save anyway, or Cancel to review.';
+      if (!confirm(msg)) {
+        toast('Save cancelled - review the existing voucher(s) first.', 'info');
+        return;
+      }
+    }
+  } catch (_e) { console.warn('dup check failed', _e); }
 
   // Collect checked invoices for reference
   const checkedBoxes  = Array.from(document.querySelectorAll('#pv-inv-list .pv-chk:checked'));
