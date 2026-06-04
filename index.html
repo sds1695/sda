@@ -3058,7 +3058,7 @@ const COA_LS_KEY = 'seraya_coa_v1';
 
 const SERAYA_THEME_KEY = 'seraya_theme';
 function setSerayaTheme(name) {
-  const valid = ['default','dark','slate','ocean','forest','warm'];
+  const valid = ['default','dark','slate','ocean','forest','warm','seraya','ben','aurora','sunset','tropical','coral','pastel','neon','galaxy','royal'];
   if (!valid.includes(name)) name = 'default';
   try { localStorage.setItem(SERAYA_THEME_KEY, name); } catch(_) {}
   if (name === 'default') document.documentElement.removeAttribute('data-theme');
