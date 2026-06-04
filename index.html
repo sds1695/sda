@@ -7388,6 +7388,7 @@ async function patchInvoiceStatus(invId, newStatus) {
 function deleteInvoice(id, inv_no) {
   if (!confirm('Delete invoice ' + inv_no + '?\n\nThis will hide it from all views on this device. The row remains in the spreadsheet but will no longer appear here.')) return;
   addDeletedId('invoices', id);
+  _backendHardDelete('delete_invoice', 'inv_id', id);
   INVOICES = INVOICES.filter(i => (i.inv_id||i.id||'').toString() !== id.toString());
   renderInvoices();
   loadDashboard();
@@ -13798,6 +13799,16 @@ function addDeletedId(type, id) {
 function isDeleted(type, id) {
   return getDeletedIds(type).includes(id.toString());
 }
+// Best-effort hard delete on the GAS backend (real row removal in the Sheet).
+// Safe no-op if the endpoint isn't deployed yet — the synced blacklist still hides the row.
+function _backendHardDelete(action, idField, id) {
+  try {
+    const payload = { action: action }; payload[idField] = id;
+    Promise.resolve(api(payload))
+      .then(r => { if (r && r.ok) console.log('[delete] ' + action + ' removed', r.deleted, 'row(s) from Sheet:', id); })
+      .catch(e => console.warn('[delete] ' + action + ' backend call failed; blacklist still applies:', e));
+  } catch(e) { console.warn('[delete] ' + action + ' exception:', e); }
+}
 
 // ── Voided-ID lists (localStorage, persists across reloads) ──────────────────
 // GAS backend CANNOT update existing rows for receipts/vouchers/allocations —
@@ -13999,8 +14010,9 @@ async function deleteVoucher(id, label) {
     if (_vno && _ovr[_vno]) { delete _ovr[_vno]; localStorage.setItem('seraya_pvno_overrides', JSON.stringify(_ovr)); }
   } catch(e) {}
 
-  // Add to local blacklist — no backend delete endpoint
+  // Add to synced blacklist (hides on every device) + best-effort real row delete
   addDeletedId('vouchers', id);
+  _backendHardDelete('delete_voucher', 'voucher_id', id);
   VOUCHERS = VOUCHERS.filter(x => (x.voucher_id||x.id||'').toString() !== id.toString());
   renderVoucherRows(VOUCHERS);
   toast('Voucher deleted — linked invoices reverted to unpaid.', 'success');
@@ -14024,8 +14036,9 @@ async function openReceiptEditById(id) {
 async function deleteReceipt(id, inv_no) {
   const ok = window.confirm(`Delete receipt for ${inv_no||id}? This cannot be undone.`);
   if (!ok) return;
-  // Add to local blacklist immediately — no backend delete endpoint exists
+  // Add to synced blacklist immediately + best-effort real row delete
   addDeletedId('receipts', id);
+  _backendHardDelete('delete_receipt', 'receipt_id', id);
   // Remove from in-memory cache and re-render
   RECEIPTS = RECEIPTS.filter(x => (x.receipt_id||x.id||'').toString() !== id.toString());
   if (typeof rebuildRVCache === 'function') rebuildRVCache();
