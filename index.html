@@ -2431,10 +2431,8 @@ window.RECEIPT_SUPPRESS_IDS = new Set([
 // correct (higher) figure that includes disbursements billed to the client.
 // Remove each entry once the GSheets invoice row has been updated to match.
 // 2026-05-15 recon (source: GL 2026 col N, S 25.4.2026.xlsx):
-window.INVOICE_AMOUNT_OVERRIDES = {
-  'INV260407': 1040,  // Grand Hill Mining FS & MBRS — raw 1000, GL 1040 (+40 disbursements)
-  'INV260506': 1995,  // Twofire FS & MBRS 2025 — raw 1900, GL 1995 (+95 attestation/print/travel)
-};
+// 2026-06-04: GSheets re-synced via runReconSync — amount overrides cleared (GSheets now holds the GL amounts).
+window.INVOICE_AMOUNT_OVERRIDES = {};
 
 // Disbursement-amount overrides: GSheets disb_amount is 0 (not entered separately) but
 // the true disb is baked into the INVOICE_AMOUNT_OVERRIDES above.
@@ -2452,11 +2450,10 @@ window.INVOICE_DISB_OVERRIDES = {
 // via runReconSync but `amount_outstanding` was left at the old raw value.
 // Remove both entries once GSheets is re-synced via the banner below.
 window.INV_STATUS_OVERRIDES = {
-  'INV260407': { amount_outstanding: 1040 }, // Grand Hill — was 1000 after patch
-  'INV260506': { amount_outstanding: 1995 }, // Twofire    — was 1900 after patch
+  // 2026-06-04: INV260407 & INV260506 ao corrections pushed to GSheets via runReconSync — entries removed
+  // so the recon banner no longer re-appears on fresh devices (e.g. teammate logins).
   // INV251212 Jtwins MBRS 2018: was "paid" in GSheets, reverted to "outstanding" 2026-05-15.
-  // GSheets ao is stale; pin to 70 (325 invoice − 255 paid via RV260407 drawings).
-  // Remove once GSheets amount_outstanding is corrected to 70.
+  // GSheets ao is stale; pin to 70 (325 invoice − 255 paid via RV260407 drawings). PERMANENT — keep until GSheets ao = 70.
   'INV251212': { amount_outstanding: 70 },
 };
 
