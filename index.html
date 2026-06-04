@@ -13789,7 +13789,11 @@ function getDeletedIds(type) {
 function addDeletedId(type, id) {
   const ids = getDeletedIds(type);
   const key = id.toString();
-  if (!ids.includes(key)) { ids.push(key); localStorage.setItem('seraya_deleted_' + type, JSON.stringify(ids)); }
+  if (!ids.includes(key)) {
+    ids.push(key); localStorage.setItem('seraya_deleted_' + type, JSON.stringify(ids));
+    // Belt-and-braces: push the deletion blacklist to the Sheet so it syncs to every device
+    try { const d = _findSyncDef('seraya_deleted_' + type); if (d) pushSyncedBlob(d.settingsKey); } catch(e) {}
+  }
 }
 function isDeleted(type, id) {
   return getDeletedIds(type).includes(id.toString());
@@ -18383,6 +18387,8 @@ const SYNCED_BLOBS = [
   { settingsKey: '_voided_vouchers_blob',     lsKey: 'seraya_voided_vouchers' },
   { settingsKey: '_voided_allocations_blob',  lsKey: 'seraya_voided_allocations' },
   { settingsKey: '_deleted_receipts_blob',    lsKey: 'seraya_deleted_receipts' },
+  { settingsKey: '_deleted_vouchers_blob',    lsKey: 'seraya_deleted_vouchers' },
+  { settingsKey: '_deleted_invoices_blob',    lsKey: 'seraya_deleted_invoices' },
   { settingsKey: '_pvno_overrides_blob',      lsKey: 'seraya_pvno_overrides' },
   { settingsKey: '_cecilia_retainer_blob',    lsKey: 'seraya_cecilia_retainer_v1' },
   // (alloc_cache + client_meta intentionally NOT synced — they're local
@@ -18560,7 +18566,7 @@ async function pullSyncedBlobs(opts) {
 // Monkey-patch Storage.prototype.setItem / removeItem so writes to any
 // synced key automatically trigger a push. This means we don't have to add
 // pushSyncedBlob() calls at every writer site — they get picked up free.
-Storage.prototype.setItem = function(key, value) { return _origSetItem.call(this, key, value); }; (function(){ return; }); function _DISABLED_OLD_SETITEM(key, value) {
+Storage.prototype.setItem = function(key, value) {
   _origSetItem.call(this, key, value);
   // Only sync for the page's own localStorage (not sessionStorage on iframes)
   if (this !== localStorage) return;
@@ -18568,7 +18574,7 @@ Storage.prototype.setItem = function(key, value) { return _origSetItem.call(this
   const def = _findSyncDef(key);
   if (def) pushSyncedBlob(def.settingsKey);
 };
-Storage.prototype.removeItem = function(key) { return _origRemoveItem.call(this, key); }; (function(){ return; }); function _DISABLED_OLD_REMOVEITEM(key) {
+Storage.prototype.removeItem = function(key) {
   _origRemoveItem.call(this, key);
   if (this !== localStorage) return;
   if (_syncSuspended) return;
