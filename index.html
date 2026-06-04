@@ -17935,6 +17935,18 @@ function _remBuildRows() {
 }
 
 
+// ─── Deadline status presets (recovered 2026-06-04 — definition was lost in an earlier file truncation) ───
+const DEADLINE_STATUS_PRESETS = [
+  { value: '',              label: '— Set status —',           color: null },
+  { value: 'done',          label: '✓ Done — link invoice…',    color: 'var(--green)' },
+  { value: 'chased',        label: '📌 Chased — awaiting docs', color: 'var(--amber)' },
+  { value: 'quoted',        label: '💰 Quoted — awaiting approval', color: 'var(--amber)' },
+  { value: 'client_self',   label: '👤 Client to do themselves', color: 'var(--text2)' },
+  { value: 'not_required',  label: '🚫 Not required',             color: 'var(--text3)' },
+  { value: 'other',         label: '📝 Other (type your own)…',  color: 'var(--brand)' },
+  { value: '__unset__',     label: '↺ Unset',                     color: 'var(--text3)' }
+];
+
 function renderReminders() {
   try { markPageSynced('reminders'); } catch(e){}
   const tbody  = document.getElementById('rem-tbody');
