@@ -48,6 +48,43 @@
     --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
   }
 
+  /* THEMES (added 2026-06-03) */
+  [data-theme="dark"] {
+    --bg: #0F1419; --surface: #1A1F2E; --surface2: #232938; --border: #2A3142;
+    --text: #E8EAED; --text2: #B8BCC4; --text3: #888A92; --accent: #050505;
+    --brand: #34D4B5; --brand-dark: #2EBFA5; --green: #34D4B5; --green-bg: #1A3D33;
+    --amber: #D4A03C; --amber-bg: #3D2F18; --red: #E15B5B; --red-bg: #3D1A1A;
+    --blue: #4A9EE0; --blue-bg: #1A2C3D; --purple: #8B82E0; --purple-bg: #2C2B3D;
+  }
+  [data-theme="slate"] {
+    --bg: #F5F7FA; --surface: #FFFFFF; --surface2: #EBEEF3; --border: #D8DDE4;
+    --text: #1A2332; --text2: #5A6677; --text3: #8B95A4; --accent: #2C3441;
+    --brand: #4A6FA5; --brand-dark: #355684; --green: #2D8C5C; --green-bg: #E0F0E7;
+    --amber: #B8801D; --amber-bg: #FAEEDA; --red: #B53737; --red-bg: #FCEBEB;
+    --blue: #4A6FA5; --blue-bg: #E6EDF6; --purple: #6B5FA5; --purple-bg: #EFEDF6;
+  }
+  [data-theme="ocean"] {
+    --bg: #F4F8FB; --surface: #FFFFFF; --surface2: #E7F0F8; --border: #C9DCEB;
+    --text: #11293E; --text2: #4A6275; --text3: #7B8FA1; --accent: #0E2A47;
+    --brand: #2E8FBF; --brand-dark: #1D6E9E; --green: #2A9D7D; --green-bg: #DDF1EA;
+    --amber: #C9941E; --amber-bg: #FAEEDA; --red: #B53737; --red-bg: #FCEBEB;
+    --blue: #2E8FBF; --blue-bg: #E0EFF7; --purple: #6B5FA5; --purple-bg: #EFEDF6;
+  }
+  [data-theme="forest"] {
+    --bg: #F6F4ED; --surface: #FFFFFF; --surface2: #ECEAE0; --border: #DFD9C5;
+    --text: #1A2818; --text2: #4F5A4A; --text3: #7C857B; --accent: #1A3D2E;
+    --brand: #3A7D44; --brand-dark: #2A5E33; --green: #3A7D44; --green-bg: #DCEDD9;
+    --amber: #A87018; --amber-bg: #FAEEDA; --red: #A32D2D; --red-bg: #FCEBEB;
+    --blue: #4A6FA5; --blue-bg: #E6EDF6; --purple: #6B5FA5; --purple-bg: #EFEDF6;
+  }
+  [data-theme="warm"] {
+    --bg: #F4EFE6; --surface: #FFFFFF; --surface2: #EBE5D8; --border: #D9CFB8;
+    --text: #1A1A1A; --text2: #4F4F4F; --text3: #888888; --accent: #232323;
+    --brand: #2D8F5A; --brand-dark: #226E45; --green: #2D8F5A; --green-bg: #DCEEDF;
+    --amber: #C95437; --amber-bg: #F8DDD2; --red: #B83838; --red-bg: #FCEBEB;
+    --blue: #4A6FA5; --blue-bg: #E6EDF6; --purple: #6B5FA5; --purple-bg: #EFEDF6;
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.6; }
   button { font-family: inherit; cursor: pointer; border: none; outline: none; }
@@ -585,6 +622,14 @@
         <div class="page-title">Dashboard</div>
         <div class="page-sub" id="dash-date"></div>
         <div class="page-actions">
+          <select id="dash-theme-select" onchange="setSerayaTheme(this.value)" title="Choose color theme" style="padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:12px;font-family:inherit;cursor:pointer;margin-right:6px">
+            <option value="default">Default (Cream)</option>
+            <option value="dark">Dark</option>
+            <option value="slate">Slate</option>
+            <option value="ocean">Ocean</option>
+            <option value="forest">Forest</option>
+            <option value="warm">Warm</option>
+          </select>
           <button class="btn btn-secondary btn-sm" id="dash-privacy-btn" onclick="toggleDashboardPrivacy()" title="Hide/show all monetary figures on the dashboard (useful when sharing screen)">
             <span id="dash-privacy-icon">👁️</span> <span id="dash-privacy-label">Hide figures</span>
           </button>
@@ -2849,6 +2894,25 @@ const COA_DEFAULT = [
 
 const COA_LS_KEY = 'seraya_coa_v1';
 
+const SERAYA_THEME_KEY = 'seraya_theme';
+function setSerayaTheme(name) {
+  const valid = ['default','dark','slate','ocean','forest','warm'];
+  if (!valid.includes(name)) name = 'default';
+  try { localStorage.setItem(SERAYA_THEME_KEY, name); } catch(_) {}
+  if (name === 'default') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', name);
+  const sel = document.getElementById('dash-theme-select');
+  if (sel) sel.value = name;
+}
+function initSerayaTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem(SERAYA_THEME_KEY); } catch(_) {}
+  setSerayaTheme(saved || 'default');
+}
+initSerayaTheme();
+document.addEventListener('DOMContentLoaded', initSerayaTheme);
+
+
 function getCOA() {
   try {
     const raw = localStorage.getItem(COA_LS_KEY);
@@ -4601,6 +4665,87 @@ function runAccountingHealth(receipts, vouchers) {
                             : ' <a href=\"#\" onclick=\"event.preventDefault();setExcelSnapshot();return false\" style=\"color:var(--brand);text-decoration:underline\">Set Excel snapshot</a>');
     } catch(_e) { console.warn('excel parity check failed', _e); }
 
+    // ── Receipt-Invoice Link Integrity (added 2026-06-03) ──
+    // For each receipt, verify its inv_id or inv_no points to a real invoice.
+    // Catches the situation where a receipt references a phantom invoice ID.
+    let _rliOk = true, _rliDetail = '';
+    try {
+      const _allInvNos  = new Set((allInvs||[]).map(i => (i.inv_no||'').toLowerCase().trim()).filter(Boolean));
+      const _allInvIds  = new Set((allInvs||[]).map(i => (i.inv_id||'').toString()).filter(Boolean));
+      const _orphanRcpts = (receipts||[]).filter(r => {
+        const ino = (r.inv_no||'').toLowerCase().trim();
+        const iid = (r.inv_id||'').toString();
+        // Receipt is orphan if BOTH inv_no and inv_id are non-empty but neither matches
+        if (!ino && !iid) return false; // unlinked receipt — separate concern
+        const noMatch  = ino && !_allInvNos.has(ino);
+        const idMatch  = iid && _allInvIds.has(iid);
+        // If inv_no doesn't match AND inv_id doesn't match — orphan
+        return noMatch && !idMatch;
+      });
+      if (_orphanRcpts.length === 0) {
+        _rliOk = true;
+        _rliDetail = 'Every receipt links to a real invoice';
+      } else {
+        _rliOk = false;
+        const sample = _orphanRcpts.slice(0,3).map(r => (r.receipt_no || r.receipt_id || '?') + ' (RM ' + (r.amount||0) + ')').join(', ');
+        _rliDetail = _orphanRcpts.length + ' receipt(s) reference phantom invoice IDs: ' + sample + (_orphanRcpts.length > 3 ? `, +${_orphanRcpts.length-3} more` : '');
+      }
+    } catch(_e) { console.warn('receipt-invoice integrity check failed', _e); }
+
+    // ── In-Data Duplicate Scan (added 2026-06-03) ──
+    // Detects EXISTING duplicate vouchers and receipts (same date+amount+ref).
+    let _dupScanOk = true, _dupScanDetail = '';
+    try {
+      const _normDate = d => String(d||'').slice(0,10);
+      // Voucher duplicates: same date + payee + amount + category
+      const _vGroups = {};
+      (vouchers||[]).forEach(v => {
+        if ((v.description||'').startsWith('__VOID__')) return;
+        const k = _normDate(v.date) + '|' + (v.payee||'') + '|' + parseFloat(v.amount||0).toFixed(2) + '|' + (v.category||'');
+        (_vGroups[k] = _vGroups[k] || []).push(v);
+      });
+      const _vDups = Object.values(_vGroups).filter(g => g.length > 1);
+      // Receipt duplicates: same date + client_name + amount + inv_no
+      const _rGroups = {};
+      (receipts||[]).forEach(r => {
+        const k = _normDate(r.date) + '|' + (r.client_name||'') + '|' + parseFloat(r.amount||0).toFixed(2) + '|' + (r.inv_no||'');
+        (_rGroups[k] = _rGroups[k] || []).push(r);
+      });
+      const _rDups = Object.values(_rGroups).filter(g => g.length > 1);
+      const _totalDupGroups = _vDups.length + _rDups.length;
+      if (_totalDupGroups === 0) {
+        _dupScanOk = true;
+        _dupScanDetail = 'No duplicate vouchers or receipts detected';
+      } else {
+        _dupScanOk = false;
+        const parts = [];
+        if (_vDups.length) parts.push(_vDups.length + ' voucher group(s)');
+        if (_rDups.length) parts.push(_rDups.length + ' receipt group(s)');
+        _dupScanDetail = parts.join(' and ') + ' with same date+amount+payee. Run GAS cleanup script to remove duplicates from GSheets.';
+      }
+    } catch(_e) { console.warn('duplicate scan check failed', _e); }
+
+    // ── Local Void List Size (added 2026-06-03) ──
+    // Warns when localStorage voided list is non-trivial — those should be physically
+    // deleted from GSheets to avoid the multi-browser drift issue we hit today.
+    let _voidSizeOk = true, _voidSizeDetail = '';
+    try {
+      const _vv = (() => { try { return JSON.parse(localStorage.getItem('seraya_voided_vouchers')||'[]'); } catch(_){ return []; } })();
+      const _vr = (() => { try { return JSON.parse(localStorage.getItem('seraya_voided_receipts')||'[]'); } catch(_){ return []; } })();
+      const _totalVoids = (Array.isArray(_vv) ? _vv.length : 0) + (Array.isArray(_vr) ? _vr.length : 0);
+      const VOID_WARN_THRESHOLD = 5;
+      if (_totalVoids === 0) {
+        _voidSizeOk = true;
+        _voidSizeDetail = 'No local-only voids — clean state';
+      } else if (_totalVoids <= VOID_WARN_THRESHOLD) {
+        _voidSizeOk = true;
+        _voidSizeDetail = _totalVoids + ' local void(s) — consider running GAS cleanup at month-end';
+      } else {
+        _voidSizeOk = false;
+        _voidSizeDetail = _totalVoids + ' local voids (vouchers: ' + (_vv.length||0) + ', receipts: ' + (_vr.length||0) + ') — should be physically deleted from GSheets via GAS cleanup script';
+      }
+    } catch(_e) { console.warn('void list size check failed', _e); }
+
 
     const bsDetail   = bsOk
       ? `Assets ${fmtRM(totalAssets)} = Equity + Liabilities`
@@ -5504,6 +5649,9 @@ function runAccountingHealth(receipts, vouchers) {
               ${chip(_cancAllocOk, 'Cancelled-Active Allocs', _cancAllocDetail)}
               ${chip(_lineSumOk,   'Line-Sum Integrity',   _lineSumDetail)}
               ${chip(_schedOk,     'Schedule Backlog',     _schedDetail)}
+              ${chip(_rliOk,       'Receipt-Invoice Link', _rliDetail)}
+              ${chip(_dupScanOk,   'Duplicate Scan',       _dupScanDetail)}
+              ${chip(_voidSizeOk,  'Local Void List',      _voidSizeDetail)}
             </div>
             <div style="font-size:11px;color:var(--text3);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Per-line tally (${_isbsChecks.length} items)</div>
           <table style="width:100%;margin-top:10px;font-size:11px;border-collapse:collapse">
@@ -18831,15 +18979,15 @@ function renderHorizontalAlloc() {
         <option value="30" ${r.koayPct==='30'?'selected':''}>30%</option>
         <option value="custom" ${r.koayPct==='custom'?'selected':''}>Custom</option>
       </select>`;
-    const cellEdit = (val, field, w='52px') => `<input type="number" step="0.01" value="${val}" data-cell-id="${i}:${field}" oninput="_haUpdate(${i},'${field}',this.value);renderHorizontalAlloc()" style="width:${w};text-align:right;border:1px solid var(--border);border-radius:3px;padding:1px 3px;font-family:inherit;font-size:10.5px" />`;
+    const cellEdit = (val, field, w='52px') => `<input type="text" inputmode="decimal" value="${val}" data-cell-id="${i}:${field}" oninput="_haUpdate(${i},'${field}',this.value);renderHorizontalAlloc()" style="width:${w};text-align:right;border:1px solid var(--border);border-radius:3px;padding:1px 3px;font-family:inherit;font-size:10.5px" />`;
     // Override cells — show current computed value as placeholder, editable
     const cellOverride = (computed, field, w='52px') => {
       const cur = (r[field] != null && r[field] !== '') ? r[field] : '';
-      return `<input type="number" step="0.01" value="${cur}" data-cell-id="${i}:${field}" placeholder="${computed.toFixed(2)}" oninput="_haUpdate(${i},'${field}',this.value);renderHorizontalAlloc()" title="Default: ${computed.toFixed(2)} — clear cell to restore formula" style="width:${w};text-align:right;border:1px dashed var(--border);border-radius:3px;padding:1px 3px;font-family:inherit;font-size:10.5px;background:#F1EFE8" />`;
+      return `<input type="text" inputmode="decimal" value="${cur}" data-cell-id="${i}:${field}" placeholder="${computed.toFixed(2)}" oninput="_haUpdate(${i},'${field}',this.value);renderHorizontalAlloc()" title="Default: ${computed.toFixed(2)} — clear cell to restore formula" style="width:${w};text-align:right;border:1px dashed var(--border);border-radius:3px;padding:1px 3px;font-family:inherit;font-size:10.5px;background:#F1EFE8" />`;
     };
     const prepPctCell = (() => {
       const cur = (r.prepPct != null && r.prepPct !== '') ? r.prepPct : 70;
-      return `<input type="number" step="1" min="0" max="100" value="${cur}" data-cell-id="${i}:prepPct" oninput="_haUpdate(${i},'prepPct',this.value);renderHorizontalAlloc()" title="Preparer % (default 70). Reviewer = 100 - this." style="width:32px;text-align:right;border:1px solid var(--border);border-radius:3px;padding:1px 3px;font-family:inherit;font-size:10.5px" />`;
+      return `<input type="text" inputmode="decimal" value="${cur}" data-cell-id="${i}:prepPct" oninput="_haUpdate(${i},'prepPct',this.value);renderHorizontalAlloc()" title="Preparer % (default 70). Reviewer = 100 - this." style="width:32px;text-align:right;border:1px solid var(--border);border-radius:3px;padding:1px 3px;font-family:inherit;font-size:10.5px" />`;
     })();
     return `
       <tr style="border-bottom:1px solid var(--border)">
@@ -18850,7 +18998,7 @@ function renderHorizontalAlloc() {
         ${showDisb ? `<td style="padding:3px 4px;text-align:right">${cellEdit(r.disb, 'disb')}</td>` : ''}
         <td style="padding:3px 4px;text-align:right">${cellEdit(r.abot, 'abot')}<div style="font-size:9.5px;color:var(--text3);margin-top:2px">${((+r.abot||0) >= 20 || (r.topUp||0) > 0) ? `<button type="button" onclick="haTopUp20(${i})" title="Redirect RM20 from Abot bucket to Reviewer payout (Retain/Claude/KC/Net stay unchanged)" style="font-size:9.5px;padding:1px 5px;border:1px solid var(--border);border-radius:3px;background:${(r.topUp||0)>0?'#EAF3DE':'var(--surface)'};cursor:pointer">${(r.topUp||0) > 0 ? '−RM20 ✓' : '+RM20→Rev'}</button>${(r.topUp||0) > 0 ? `<div style="font-size:9px;color:#0F6E56;margin-top:1px">firm: ${_haFmt((+r.abot||0) - (+r.topUp||0))}</div>` : ''}` : ''}</div></td>
         ${showCecilia ? `<td style="padding:3px 4px;text-align:right">${cellEdit(r.cecilia, 'cecilia')}</td>` : ''}
-        <td style="padding:3px 4px;text-align:right;background:#F1EFE8;font-weight:500">${_haFmt(c.afterL1)}</td>
+        <td style="padding:3px 4px;text-align:right;background:#F1EFE8;font-weight:500">${_haFmt(c.afterL1)}<div style="margin-top:2px"><button type="button" onclick="haRetainAll(${i})" title="Toggle: route entire AfterL1 amount to Retain (firm keeps all). Click again to restore formula split." style="font-size:9px;padding:1px 5px;border:1px solid var(--border);border-radius:3px;background:${((r.retainOvr!==null && r.retainOvr!==undefined) && r.claudeOvr===0 && r.kcOvr===0 && (+r.koayAmt||0)===0 && (+r.commission||0)===0) ? '#EAF3DE' : 'var(--surface)'};cursor:pointer;color:var(--brand-dark)">${((r.retainOvr!==null && r.retainOvr!==undefined) && r.claudeOvr===0 && r.kcOvr===0 && (+r.koayAmt||0)===0 && (+r.commission||0)===0) ? '✓ All-Retain' : '→ Retain'}</button></div></td>
         <td style="padding:3px 4px;text-align:right;background:#F1EFE8">${cellOverride(c.retain, 'retainOvr')}</td>
         <td style="padding:3px 4px;text-align:right;background:#F1EFE8">${cellOverride(c.claude, 'claudeOvr')}</td>
         <td style="padding:3px 4px;text-align:right;background:#FAEEDA;color:#854F0B">
@@ -18959,6 +19107,37 @@ function haTopUp20(idx) {
   // numerically but is REDIRECTED to the reviewer at payout, leaving
   // Retain/Claude/KC/Net unchanged.
   r.topUp = (r.topUp || 0) >= 20 ? 0 : 20;
+  renderHorizontalAlloc();
+}
+
+// Quick-flip: route the entire AfterL1 amount to Retain (firm).
+// Useful for disbursement lines like Travelling expenses where you want
+// the whole amount kept by the firm instead of split among people.
+// Toggle: clicking again restores formula defaults (clears overrides).
+function haRetainAll(idx) {
+  if (!window._haLines || !window._haLines[idx]) return;
+  const r = window._haLines[idx];
+  const inRetainAll = (r.retainOvr !== null && r.retainOvr !== undefined)
+    && (r.claudeOvr === 0)
+    && (r.kcOvr === 0)
+    && ((+r.koayAmt || 0) === 0)
+    && ((+r.commission || 0) === 0);
+  if (inRetainAll) {
+    r.retainOvr = null;
+    r.claudeOvr = null;
+    r.kcOvr = null;
+    r.prepPct = null;
+  } else {
+    const afterL1 = (+r.bill || 0) - (+r.disb || 0) - (+r.abot || 0) - (+r.cecilia || 0);
+    r.retainOvr = +afterL1.toFixed(2);
+    r.claudeOvr = 0;
+    r.kcOvr = 0;
+    r.koayAmt = 0;
+    r.koayPct = 0;
+    r.commission = 0;
+    r.prepPct = 0;
+    r.topUp = 0;
+  }
   renderHorizontalAlloc();
 }
 
