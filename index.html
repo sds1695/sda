@@ -85,6 +85,21 @@
     --blue: #4A6FA5; --blue-bg: #E6EDF6; --purple: #6B5FA5; --purple-bg: #EFEDF6;
   }
 
+  /* ── Dark schemes ported from Partner's Desk ── */
+  [data-theme="operator"] {
+    --bg: #0A0F0D; --surface: #121A16; --surface2: #1A241E; --border: #28332C;
+    --text: #E8F0EA; --text2: #A8B5AC; --text3: #6E7B72; --accent: #06100B;
+    --brand: #34D058; --brand-dark: #28A745; --green: #34D058; --green-bg: #10371E;
+    --amber: #E0A52E; --amber-bg: #3A2F14; --red: #FF5C5C; --red-bg: #3D1A1A;
+    --blue: #4AA3E0; --blue-bg: #14283A; --purple: #9B8BE0; --purple-bg: #262338;
+  }
+  [data-theme="navy"] {
+    --bg: #0B1422; --surface: #111D30; --surface2: #182740; --border: #243650;
+    --text: #E6EEF8; --text2: #A3B4C9; --text3: #6B7C92; --accent: #0A1220;
+    --brand: #5DA9E9; --brand-dark: #3E86C4; --green: #34D399; --green-bg: #103730;
+    --amber: #E0A52E; --amber-bg: #3A2F14; --red: #FF6B6B; --red-bg: #3D1A1A;
+    --blue: #5DA9E9; --blue-bg: #14283D; --purple: #9B8BE0; --purple-bg: #262338;
+  }
   /* ── Theme swatch picker ── */
   .theme-card{border:1px solid var(--border);border-radius:9px;padding:7px;cursor:pointer;transition:all .12s;background:var(--surface)}
   .theme-card:hover{border-color:var(--brand);transform:translateY(-1px)}
@@ -2905,6 +2920,8 @@ const COA_LS_KEY = 'seraya_coa_v1';
 const THEME_SWATCHES = [
   { id:'default', name:'Default (Cream)', bg:'#FAF8F2', surface:'#FFFFFF', brand:'#2EBFA5' },
   { id:'dark',    name:'Dark',            bg:'#0F1419', surface:'#1A1F2E', brand:'#34D4B5' },
+  { id:'operator',name:'Operator (Dark·Green)', bg:'#0A0F0D', surface:'#121A16', brand:'#34D058' },
+  { id:'navy',    name:'Navy (Dark·Blue)',     bg:'#0B1422', surface:'#111D30', brand:'#5DA9E9' },
   { id:'slate',   name:'Slate',           bg:'#F5F7FA', surface:'#FFFFFF', brand:'#4A6FA5' },
   { id:'ocean',   name:'Ocean',           bg:'#F4F8FB', surface:'#FFFFFF', brand:'#2E8FBF' },
   { id:'forest',  name:'Forest',          bg:'#F6F4ED', surface:'#FFFFFF', brand:'#3A7D44' },
@@ -2948,7 +2965,7 @@ document.addEventListener('click', function(e){
 });
 const SERAYA_THEME_KEY = 'seraya_theme';
 function setSerayaTheme(name) {
-  const valid = ['default','dark','slate','ocean','forest','warm'];
+  const valid = ['default','dark','operator','navy','slate','ocean','forest','warm'];
   if (!valid.includes(name)) name = 'default';
   try { localStorage.setItem(SERAYA_THEME_KEY, name); } catch(_) {}
   if (name === 'default') document.documentElement.removeAttribute('data-theme');
