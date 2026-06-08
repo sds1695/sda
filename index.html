@@ -736,7 +736,7 @@
         </div>
       </div>
 
-      <div id="so-table-wrap" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden"></div>
+      <div id="so-table-wrap" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow-x:auto"></div>
     </div>
 
     <!-- ══ INVOICES ══ -->
@@ -1983,6 +1983,15 @@
         </div>
         <div id="cl-ledger-summary" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px"></div>
         <div id="cl-ledger-wrap" style="margin-top:10px;max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:6px"></div>
+      </div>
+
+      <!-- ── FS / TAX DELIVERY TRACKING (per financial year, from Sales Orders) ── -->
+      <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border)">
+        <div style="margin-bottom:6px">
+          <div style="font-size:14px;font-weight:600">FS / Tax Delivery Tracking</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">Per-financial-year history of draft &amp; final / submission dates, pages, sets and original/photocopy. Updates automatically from the Sales Orders table.</div>
+        </div>
+        <div id="cl-fstax-tracking" style="margin-top:10px"></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -6379,8 +6388,66 @@ function openClientModal(id) {
   // Populate Quotations editor + Account Ledger
   try { renderQuotationsEditor(id); } catch(e) { console.warn('renderQuotationsEditor failed', e); }
   try { renderClientLedger(id); } catch(e) { console.warn('renderClientLedger failed', e); }
+  try { renderClientFSTaxTracking(id); } catch(e) { console.warn('renderClientFSTaxTracking failed', e); }
 
   openModal('modal-client');
+}
+
+// ── Per-financial-year FS / Tax delivery history for the Client modal ──────
+// Aggregated live from this client's Sales Orders, so it always reflects the
+// latest draft/final/submission dates keyed in on the Sales Orders table.
+function renderClientFSTaxTracking(client_id) {
+  const wrap = document.getElementById('cl-fstax-tracking');
+  if (!wrap) return;
+  const emptyBox = (msg) => `<div style="font-size:12px;color:var(--text3);padding:12px;text-align:center;background:var(--surface2);border-radius:6px">${msg}</div>`;
+  if (!client_id) { wrap.innerHTML = emptyBox('Save this client first — FS &amp; Tax jobs will then appear here automatically.'); return; }
+  const sos = (typeof getAllSalesOrders === 'function' ? getAllSalesOrders() : [])
+    .filter(s => String(s.client_id) === String(client_id));
+  const fmt = d => d ? (typeof formatDate === 'function' ? formatDate(d) : d) : '<span style="color:var(--amber)">— pending</span>';
+  const byPeriodDesc = (a,b) => String(b.period_covered||'').localeCompare(String(a.period_covered||''));
+  const fsRows  = sos.filter(s => SO_FS_TYPES.includes((s.job_type||'').toLowerCase())).sort(byPeriodDesc);
+  const taxRows = sos.filter(s => SO_TAX_TYPES.includes((s.job_type||'').toLowerCase())).sort(byPeriodDesc);
+  if (!fsRows.length && !taxRows.length) {
+    wrap.innerHTML = emptyBox('No FS or Tax jobs recorded for this client yet. They appear here automatically once a Sales Order exists.');
+    return;
+  }
+  const num = v => (v != null && v !== '') ? v : '—';
+  let html = '';
+  if (fsRows.length) {
+    html += `<div style="font-size:12px;font-weight:600;margin:2px 0 6px">FS / Audit — per financial year</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:16px">
+        <thead><tr style="background:var(--surface2);text-align:left;color:var(--text2)">
+          <th style="padding:6px 8px">FY / Period</th><th style="padding:6px 8px">SO No</th>
+          <th style="padding:6px 8px">Draft Sent</th><th style="padding:6px 8px">Final Sent</th>
+          <th style="padding:6px 8px;text-align:right">Pages</th><th style="padding:6px 8px;text-align:right">Sets</th>
+          <th style="padding:6px 8px">Orig/PC</th>
+        </tr></thead><tbody>` +
+      fsRows.map(s => `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:6px 8px"><strong>${s.period_covered||'—'}</strong></td>
+        <td style="padding:6px 8px;font-family:'DM Mono',monospace;color:var(--text3)">${s.so_no||''}</td>
+        <td style="padding:6px 8px">${fmt(s.fs_draft_sent)}</td>
+        <td style="padding:6px 8px">${fmt(s.fs_final_sent)}</td>
+        <td style="padding:6px 8px;text-align:right">${num(s.fs_pages)}</td>
+        <td style="padding:6px 8px;text-align:right">${num(s.fs_sets)}</td>
+        <td style="padding:6px 8px">${s.fs_copy||'—'}</td>
+      </tr>`).join('') + `</tbody></table>`;
+  }
+  if (taxRows.length) {
+    html += `<div style="font-size:12px;font-weight:600;margin:2px 0 6px">Tax — per financial year</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead><tr style="background:var(--surface2);text-align:left;color:var(--text2)">
+          <th style="padding:6px 8px">FY / Period</th><th style="padding:6px 8px">SO No</th><th style="padding:6px 8px">Job</th>
+          <th style="padding:6px 8px">Draft Sent</th><th style="padding:6px 8px">Tax Submitted</th>
+        </tr></thead><tbody>` +
+      taxRows.map(s => `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:6px 8px"><strong>${s.period_covered||'—'}</strong></td>
+        <td style="padding:6px 8px;font-family:'DM Mono',monospace;color:var(--text3)">${s.so_no||''}</td>
+        <td style="padding:6px 8px">${(s.job_type||'').toUpperCase()}</td>
+        <td style="padding:6px 8px">${fmt(s.tax_draft_sent)}</td>
+        <td style="padding:6px 8px">${fmt(s.tax_submitted)}</td>
+      </tr>`).join('') + `</tbody></table>`;
+  }
+  wrap.innerHTML = html;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -10271,6 +10338,7 @@ function renderSalesOrders() {
       <td style="padding:10px 12px;font-size:12px;color:var(--text2);white-space:nowrap">${s.due_date ? (typeof formatDate==='function'?formatDate(s.due_date):s.due_date) : '—'}${dueBadge?' '+dueBadge:''}</td>
       <td style="padding:10px 12px;font-family:'DM Mono',monospace;font-size:12px;text-align:right">RM ${parseFloat(s.amount||0).toLocaleString('en-MY',{minimumFractionDigits:2})}</td>
       <td style="padding:10px 12px">${sourcePill}</td>
+      ${_soTrackingCells(s)}
       <td style="padding:10px 12px;white-space:nowrap;text-align:right">${actions.join(' ')}</td>
     </tr>`;
   }).join('');
@@ -10294,10 +10362,61 @@ function renderSalesOrders() {
             return `<th onclick="soSortBy('${key}')" style="padding:10px 12px;text-align:${align};cursor:pointer;user-select:none;${isActive?'color:var(--brand-dark);font-weight:700':''}" title="Click to sort by ${label}">${label}${arrow}</th>`;
           }).join('');
         })()}
+        ${_soTrackingHeaders()}
         <th style="padding:10px 12px;text-align:right">Actions</th>
       </tr></thead>
       <tbody>${rowHTML}</tbody>
     </table>`;
+}
+
+// ── FS / Tax delivery tracking (Sales Orders inline columns) ──────────────
+// FS jobs (FS Audit Exemption + Audit) track: draft sent, final sent, pages,
+// sets, original/photocopy. Tax jobs (Form C / CP204 / CP204a / Form E) track:
+// draft sent, tax submitted. The tracking fields live directly on the SO object
+// and sync via _sales_orders_blob, and surface per-financial-year in the Client
+// modal (renderClientFSTaxTracking).
+const SO_FS_TYPES  = ['fs','audit'];
+const SO_TAX_TYPES = ['tax','cp204','cp204a','form_e'];
+function _soJobClass(s) {
+  const jt = (s.job_type||'').toLowerCase();
+  if (SO_FS_TYPES.includes(jt))  return 'fs';
+  if (SO_TAX_TYPES.includes(jt)) return 'tax';
+  return '';
+}
+function _soTrackingHeaders() {
+  return ['Draft Sent','Final Sent','Tax Submitted','Pages','Sets','O/PC']
+    .map(h => `<th style="padding:10px 8px;text-align:left;white-space:nowrap">${h}</th>`).join('');
+}
+function _soTrackingCells(s) {
+  const cls  = _soJobClass(s);
+  const stop = 'event.stopPropagation()';
+  const dash = `<td style="padding:6px 8px;text-align:center;color:var(--text3)">—</td>`;
+  const inputBase = `font-size:11px;padding:3px 4px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text)`;
+  const dateCell = (field) => `<td style="padding:4px 6px"><input type="date" value="${s[field]||''}" onclick="${stop}" onchange="${stop};soUpdateTracking('${s.so_id}','${field}',this.value)" style="${inputBase}" /></td>`;
+  const numCell  = (field) => `<td style="padding:4px 6px"><input type="number" min="0" value="${s[field]!=null?s[field]:''}" onclick="${stop}" onchange="${stop};soUpdateTracking('${s.so_id}','${field}',this.value)" style="${inputBase};width:46px;text-align:right" /></td>`;
+  const copyCell = (field) => {
+    const v = s[field]||'';
+    return `<td style="padding:4px 6px"><select onclick="${stop}" onchange="${stop};soUpdateTracking('${s.so_id}','${field}',this.value)" style="${inputBase}">
+      <option value=""${v===''?' selected':''}>—</option>
+      <option value="Original"${v==='Original'?' selected':''}>Original</option>
+      <option value="Photocopy"${v==='Photocopy'?' selected':''}>Photocopy</option>
+    </select></td>`;
+  };
+  if (cls === 'fs')  return dateCell('fs_draft_sent') + dateCell('fs_final_sent') + dash + numCell('fs_pages') + numCell('fs_sets') + copyCell('fs_copy');
+  if (cls === 'tax') return dateCell('tax_draft_sent') + dash + dateCell('tax_submitted') + dash + dash + dash;
+  return dash + dash + dash + dash + dash + dash;
+}
+function soUpdateTracking(so_id, field, value) {
+  updateSalesOrder(so_id, { [field]: value });
+  // If the Client modal is open on this SO's client, refresh its per-year history.
+  try {
+    const so = getSalesOrder(so_id);
+    if (so && typeof editingClientId !== 'undefined' && editingClientId &&
+        String(editingClientId) === String(so.client_id)) {
+      renderClientFSTaxTracking(editingClientId);
+    }
+  } catch(e) {}
+  try { toast('Tracking saved ✓', 'success'); } catch(e) {}
 }
 
 // Quick actions (no modal)
