@@ -574,6 +574,9 @@
         <span class="icon">◈</span><span>Dashboard</span>
       </div>
       <div class="nav-section">Billing</div>
+      <div class="nav-item" onclick="showPage('jobs')">
+        <span class="icon">▦</span><span>Jobs Board</span><span style="margin-left:auto;background:var(--brand);color:#fff;font-size:9px;font-weight:600;padding:1px 6px;border-radius:10px;font-family:'DM Mono',monospace">NEW</span>
+      </div>
       <div class="nav-item" onclick="showPage('sales-orders')">
         <span class="icon">◷</span><span>Sales Orders</span><span id="nav-so-badge" style="display:none;margin-left:auto;background:var(--brand);color:#fff;font-size:10px;font-weight:600;padding:1px 7px;border-radius:10px;font-family:'DM Mono',monospace"></span>
       </div>
@@ -738,6 +741,28 @@
 
       <div id="so-scroll-top" style="overflow-x:auto;overflow-y:hidden;height:16px;display:none"><div id="so-scroll-top-inner" style="height:1px"></div></div>
       <div id="so-table-wrap" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow-x:auto"></div>
+    </div>
+
+    <!-- ══ JOBS BOARD (prototype) ══ -->
+    <div class="page" id="page-jobs">
+      <div class="page-header">
+        <div class="page-title">Jobs Board <span style="font-size:10px;font-weight:600;color:#fff;background:var(--brand);padding:2px 8px;border-radius:10px;vertical-align:middle;letter-spacing:.5px">PROTOTYPE</span></div>
+        <div class="page-sub">Every job in one pipeline — upcoming deadline → in progress → delivered → invoiced. Cosec retainers included. Runs alongside Sales Orders &amp; Client Deadlines; nothing is removed yet.</div>
+        <div class="page-actions">
+          <button class="btn btn-secondary" onclick="try{runSalesOrderAutoScansManual()}catch(e){};renderJobsBoard()" title="Re-scan retainers and deadlines, then refresh the board">⟳ Re-scan</button>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:16px;flex-wrap:wrap">
+        <div class="jobs-tab" id="jobs-tabbtn-upcoming" onclick="switchJobsTab('upcoming')" style="padding:10px 16px;cursor:pointer;font-size:13px;font-weight:500;border-bottom:2px solid transparent;color:var(--text2)">Upcoming <span id="jobs-count-upcoming" style="margin-left:6px;color:var(--text3);font-family:'DM Mono',monospace;font-size:11px">(0)</span></div>
+        <div class="jobs-tab" id="jobs-tabbtn-inprogress" onclick="switchJobsTab('inprogress')" style="padding:10px 16px;cursor:pointer;font-size:13px;font-weight:500;border-bottom:2px solid var(--brand);color:var(--text)">In Progress <span id="jobs-count-inprogress" style="margin-left:6px;color:var(--text3);font-family:'DM Mono',monospace;font-size:11px">(0)</span></div>
+        <div class="jobs-tab" id="jobs-tabbtn-delivered" onclick="switchJobsTab('delivered')" style="padding:10px 16px;cursor:pointer;font-size:13px;font-weight:500;border-bottom:2px solid transparent;color:var(--text2)">Delivered <span id="jobs-count-delivered" style="margin-left:6px;color:var(--text3);font-family:'DM Mono',monospace;font-size:11px">(0)</span></div>
+        <div class="jobs-tab" id="jobs-tabbtn-invoiced" onclick="switchJobsTab('invoiced')" style="padding:10px 16px;cursor:pointer;font-size:13px;font-weight:500;border-bottom:2px solid transparent;color:var(--text2)">Invoiced <span id="jobs-count-invoiced" style="margin-left:6px;color:var(--text3);font-family:'DM Mono',monospace;font-size:11px">(0)</span></div>
+        <div class="jobs-tab" id="jobs-tabbtn-all" onclick="switchJobsTab('all')" style="padding:10px 16px;cursor:pointer;font-size:13px;font-weight:500;border-bottom:2px solid transparent;color:var(--text2)">All <span id="jobs-count-all" style="margin-left:6px;color:var(--text3);font-family:'DM Mono',monospace;font-size:11px">(0)</span></div>
+      </div>
+
+      <div id="jobs-scroll-top" style="overflow-x:auto;overflow-y:hidden;height:16px;display:none"><div id="jobs-scroll-top-inner" style="height:1px"></div></div>
+      <div id="jobs-table-wrap" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow-x:auto"></div>
     </div>
 
     <!-- ══ INVOICES ══ -->
@@ -2830,6 +2855,7 @@ function showPage(id) {
   if (id === 'invoice-allocations') loadInvoiceBreakdown();
   if (id === 'team-members')        renderTeamMembers();
   if (id === 'sales-orders')        renderSalesOrders();
+  if (id === 'jobs')                { (async () => { try { await loadClients(); } catch(e){} try { renderJobsBoard(); } catch(e){ console.warn('renderJobsBoard', e); } })(); }
 }
 
 // ══════════════════════════════════════════════════
@@ -10442,6 +10468,253 @@ function soUpdateTracking(so_id, field, value) {
     }
   } catch(e) {}
   try { toast('Tracking saved ✓', 'success'); } catch(e) {}
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// JOBS BOARD (prototype) — unifies Client Deadlines + Sales Orders into one
+// job lifecycle:  Upcoming → In Progress → Delivered → Invoiced.
+// Non-destructive: reads the existing deadline engine (_remBuildRows) AND the
+// existing Sales Orders. A job's durable record is the Sales Order; when the
+// user first acts on an upcoming deadline, an SO is created on demand using the
+// SAME source_signature the auto-scan uses ('deadline:cid:task:year'), so the
+// auto-scan will never duplicate it.
+// ════════════════════════════════════════════════════════════════════════
+let _jobsTab = 'inprogress';
+const JOB_STAGE_LABELS = { upcoming:'Upcoming', inprogress:'In Progress', delivered:'Delivered', invoiced:'Invoiced', all:'All' };
+const JOB_TYPE_LABELS = {
+  cosec_retainer:'Cosec Retainer', cosec_other:'Cosec Other', cosec:'Cosec',
+  audit:'Audit/FS', fs:'FS (Audit Exemption)', tax:'Tax (Form C)',
+  cp204:'CP204', cp204a:'CP204a', mbrs:'MBRS', form_e:'Form E',
+  bookkeeping:'Bookkeeping', other:'Other'
+};
+function _jobTypeLabel(jt){ return JOB_TYPE_LABELS[jt] || jt || 'Job'; }
+function _jobInvIdByNo(no){
+  if (!no) return '';
+  const inv = (typeof INVOICES !== 'undefined' ? INVOICES : []).find(x => String(x.inv_no) === String(no));
+  return inv ? (inv.inv_id || inv.id || '') : '';
+}
+function switchJobsTab(tab){ _jobsTab = tab; renderJobsBoard(); }
+
+// Map a deadline task → the SO job_type (mirrors jobTypeMap in scanDeadlinesDue)
+function _jobTaskToJobType(task){
+  const m = { tax:'tax', cp204:'cp204', cp204a_1:'cp204a', cp204a_2:'cp204a', cp204a_3:'cp204a',
+    audit:'audit', mbrs:'mbrs', ar:'cosec', bo:'cosec', res_approve_fs:'cosec', form_e:'form_e' };
+  return m[task] || task;
+}
+function _jobClassOf(j){
+  const jt = (j.job_type||'').toLowerCase();
+  if (SO_FS_TYPES.includes(jt))  return 'fs';
+  if (SO_TAX_TYPES.includes(jt)) return 'tax';
+  return '';
+}
+function _jobStage(j){
+  const so = j.so;
+  if (j.invRef || (so && so.status === 'converted')) return 'invoiced';
+  if (so && so.status === 'rejected') return 'na';
+  if (so && (so.status === 'shortlisted' || so.fs_final_sent || so.tax_submitted)) return 'delivered';
+  if (so) return 'inprogress';
+  return 'upcoming';
+}
+function _dateStr(d){
+  if (!d) return '';
+  const dt = (d instanceof Date) ? d : new Date(d);
+  if (isNaN(dt)) return '';
+  return dt.getFullYear() + '-' + String(dt.getMonth()+1).padStart(2,'0') + '-' + String(dt.getDate()).padStart(2,'0');
+}
+
+// Build the unified job list from deadlines + sales orders (joined by signature).
+function buildJobsModel(){
+  const jobs = [];
+  const sos = (typeof getAllSalesOrders === 'function' ? getAllSalesOrders() : []);
+  const soBySig = {};
+  sos.forEach(s => { if (s.source_signature) soBySig[s.source_signature] = s; });
+  const usedSO = new Set();
+
+  // 1) Deadline-derived jobs (statutory obligations)
+  let dl = [];
+  try { dl = (typeof _remBuildRows === 'function') ? _remBuildRows() : []; } catch(e) { dl = []; }
+  (dl||[]).forEach(r => {
+    const sig = 'deadline:' + r.client_id + ':' + r.task + ':' + r.year;
+    const so = soBySig[sig] || null;
+    if (so) usedSO.add(so.so_id);
+    jobs.push({
+      key: sig, client_id: r.client_id, client_name: r.client_name,
+      task: r.task, job_type: _jobTaskToJobType(r.task),
+      label: r.label || _jobTypeLabel(_jobTaskToJobType(r.task)),
+      period: r.fyLabel || '', due: r.deadline || null,
+      invRef: (so && so.converted_inv_no) || r.invoiceRef || '',
+      invId:  (so && so.converted_inv_id) || _jobInvIdByNo(r.invoiceRef) || '',
+      so: so, fromDeadline: true
+    });
+  });
+
+  // 2) Sales Orders not tied to a deadline — manual jobs + cosec retainers
+  sos.forEach(s => {
+    if (usedSO.has(s.so_id)) return;
+    jobs.push({
+      key: 'so:' + s.so_id, client_id: s.client_id, client_name: s.client_name,
+      task: s.job_type || 'other', job_type: s.job_type || 'other',
+      label: (s.line_items && s.line_items[0] && s.line_items[0].desc) || _jobTypeLabel(s.job_type),
+      period: s.period_covered || '', due: s.due_date ? new Date(s.due_date) : null,
+      invRef: s.converted_inv_no || '', invId: s.converted_inv_id || '',
+      so: s, fromDeadline: false
+    });
+  });
+
+  jobs.forEach(j => j.stage = _jobStage(j));
+  return jobs;
+}
+
+function _jobWorkLabel(j, cls){
+  const so = j.so;
+  const pill = (txt,bg,fg) => `<span style="background:${bg};color:${fg};padding:2px 7px;border-radius:3px;font-size:10px;font-weight:600">${txt}</span>`;
+  if (j.stage === 'invoiced') return pill('Done','var(--green-bg)','var(--green)');
+  if (!so) return `<span style="color:var(--text3);font-size:11px">Not started</span>`;
+  const finalDone = (cls==='fs' && so.fs_final_sent) || (cls==='tax' && so.tax_submitted) || so.status==='shortlisted';
+  if (finalDone) return pill('Delivered','var(--blue-bg)','var(--blue)');
+  const draftDone = (cls==='fs' && so.fs_draft_sent) || (cls==='tax' && so.tax_draft_sent);
+  if (draftDone) return pill('Draft sent','var(--amber-bg)','var(--amber)');
+  return `<span style="color:var(--text3);font-size:11px">In progress</span>`;
+}
+
+function _jobRowHTML(j, today){
+  const stop = 'event.stopPropagation()';
+  const cls  = _jobClassOf(j);
+  const so   = j.so;
+  // Due cell
+  let dueCell = '—';
+  if (j.due && !isNaN(j.due)) {
+    const d = _daysBetween(today, j.due);
+    let badge;
+    if (d < 0)       badge = `<span style="background:var(--red-bg);color:var(--red);padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">${-d}d late</span>`;
+    else if (d <= 30) badge = `<span style="background:var(--amber-bg);color:var(--amber);padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">${d}d</span>`;
+    else if (d <= 90) badge = `<span style="background:var(--blue-bg);color:var(--blue);padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">${d}d</span>`;
+    else              badge = `<span style="color:var(--text3);font-size:10px">${d}d</span>`;
+    dueCell = `${typeof formatDate==='function'?formatDate(_dateStr(j.due)):_dateStr(j.due)} ${badge}`;
+  }
+  // Tracking inputs — write to the SO, creating it on demand
+  const inB = `font-size:11px;padding:3px 4px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text)`;
+  const dateCell = (f) => `<td style="padding:4px 6px"><input type="date" value="${so&&so[f]?so[f]:''}" onclick="${stop}" onchange="${stop};jobUpdateTracking('${j.key}','${f}',this.value)" style="${inB}" /></td>`;
+  const numCell  = (f) => `<td style="padding:4px 6px"><input type="number" min="0" value="${so&&so[f]!=null&&so[f]!==''?so[f]:''}" onclick="${stop}" onchange="${stop};jobUpdateTracking('${j.key}','${f}',this.value)" style="${inB};width:46px;text-align:right" /></td>`;
+  const copyCell = (f) => { const v = so&&so[f]?so[f]:''; return `<td style="padding:4px 6px"><select onclick="${stop}" onchange="${stop};jobUpdateTracking('${j.key}','${f}',this.value)" style="${inB}"><option value=""${v===''?' selected':''}>—</option><option value="Original"${v==='Original'?' selected':''}>Original</option><option value="Photocopy"${v==='Photocopy'?' selected':''}>Photocopy</option></select></td>`; };
+  const dash = `<td style="padding:6px 8px;text-align:center;color:var(--text3)">—</td>`;
+  let draftC, finalC, pagesC, setsC, copyC;
+  if (cls === 'fs')      { draftC=dateCell('fs_draft_sent');  finalC=dateCell('fs_final_sent'); pagesC=numCell('fs_pages'); setsC=numCell('fs_sets'); copyC=copyCell('fs_copy'); }
+  else if (cls === 'tax'){ draftC=dateCell('tax_draft_sent'); finalC=dateCell('tax_submitted'); pagesC=dash; setsC=dash; copyC=dash; }
+  else                   { draftC=dash; finalC=dash; pagesC=dash; setsC=dash; copyC=dash; }
+  // Billing cell
+  let billing = '<span style="color:var(--text3)">—</span>';
+  if (j.invId)       billing = `<a onclick="${stop};previewInvoiceById('${j.invId}')" style="color:var(--blue);cursor:pointer;font-family:'DM Mono',monospace;font-size:11px">${j.invRef||'Invoice'}</a>`;
+  else if (j.invRef) billing = `<span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text2)">${j.invRef}</span>`;
+  else if (so)       billing = `<span style="color:var(--text3);font-size:11px">${(typeof SO_STATUS_LABELS!=='undefined'&&SO_STATUS_LABELS[so.status])||so.status||''}</span>`;
+  // Action cell
+  let action;
+  if (j.stage === 'upcoming')      action = `<button class="btn btn-ghost btn-sm" onclick="${stop};jobStart('${j.key}')" style="color:var(--brand);font-size:11px;font-weight:600">Start</button>`;
+  else if (j.stage === 'invoiced') action = j.invId ? `<button class="btn btn-ghost btn-sm" onclick="${stop};previewInvoiceById('${j.invId}')" style="color:var(--blue);font-size:11px">View Invoice</button>` : `<span style="color:var(--text3);font-size:11px">Invoiced</span>`;
+  else                             action = `<button class="btn btn-ghost btn-sm" onclick="${stop};jobIssueInvoice('${j.key}')" style="color:var(--brand);font-size:11px;font-weight:600">Issue Invoice</button>`;
+  const openA = so ? ` <button class="btn btn-ghost btn-sm" onclick="${stop};openSalesOrderModal('${so.so_id}')" style="font-size:11px">Open</button>` : '';
+  const rowAttr = so ? `onclick="openSalesOrderModal('${so.so_id}')" style="cursor:pointer;border-top:1px solid var(--border)"` : `style="border-top:1px solid var(--border)"`;
+  return `<tr ${rowAttr}>
+    <td style="padding:10px 12px;font-size:13px"><strong>${j.client_name||''}</strong></td>
+    <td style="padding:10px 12px;font-size:12px;color:var(--text2)">${j.label||''}</td>
+    <td style="padding:10px 12px;font-size:12px;color:var(--text2)">${j.period||'—'}</td>
+    <td style="padding:10px 12px;font-size:12px;color:var(--text2);white-space:nowrap">${dueCell}</td>
+    <td style="padding:10px 8px">${_jobWorkLabel(j, cls)}</td>
+    ${draftC}${finalC}${pagesC}${setsC}${copyC}
+    <td style="padding:10px 12px">${billing}</td>
+    <td style="padding:10px 12px;white-space:nowrap;text-align:right">${action}${openA}</td>
+  </tr>`;
+}
+
+function renderJobsBoard(){
+  const all = buildJobsModel();
+  const counts = { upcoming:0, inprogress:0, delivered:0, invoiced:0, all:0 };
+  all.forEach(j => { if (counts[j.stage] != null) counts[j.stage]++; if (j.stage !== 'na') counts.all++; });
+  ['upcoming','inprogress','delivered','invoiced','all'].forEach(s => {
+    const el = document.getElementById('jobs-count-'+s); if (el) el.textContent = '('+counts[s]+')';
+    const btn = document.getElementById('jobs-tabbtn-'+s);
+    if (btn) { const active = (_jobsTab === s); btn.style.borderBottom = '2px solid ' + (active?'var(--brand)':'transparent'); btn.style.color = active?'var(--text)':'var(--text2)'; }
+  });
+  const tab = _jobsTab;
+  let rows = (tab === 'all') ? all.filter(j => j.stage !== 'na') : all.filter(j => j.stage === tab);
+  rows.sort((a,b) => { const ad = a.due ? a.due.getTime() : 8e15, bd = b.due ? b.due.getTime() : 8e15; return ad - bd; });
+  const wrap = document.getElementById('jobs-table-wrap');
+  if (!wrap) return;
+  if (!rows.length) {
+    wrap.innerHTML = `<div style="padding:40px;text-align:center;color:var(--text3);font-size:13px">No jobs in “${JOB_STAGE_LABELS[tab]||'All'}”.</div>`;
+    _jobsSyncTopScroll();
+    return;
+  }
+  const today = new Date(); today.setHours(0,0,0,0);
+  wrap.innerHTML = `<table style="width:100%;border-collapse:collapse">
+    <thead><tr style="background:var(--surface2);font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--text2)">
+      <th style="padding:10px 12px;text-align:left">Client</th>
+      <th style="padding:10px 12px;text-align:left">Job</th>
+      <th style="padding:10px 12px;text-align:left">FY / Period</th>
+      <th style="padding:10px 12px;text-align:left">Due</th>
+      <th style="padding:10px 8px;text-align:left">Work</th>
+      <th style="padding:10px 8px;text-align:left;white-space:nowrap">Draft Sent</th>
+      <th style="padding:10px 8px;text-align:left;white-space:nowrap">Final / Submitted</th>
+      <th style="padding:10px 8px;text-align:left">Pages</th>
+      <th style="padding:10px 8px;text-align:left">Sets</th>
+      <th style="padding:10px 8px;text-align:left">O/PC</th>
+      <th style="padding:10px 12px;text-align:left">Billing</th>
+      <th style="padding:10px 12px;text-align:right">Action</th>
+    </tr></thead>
+    <tbody>${rows.map(j => _jobRowHTML(j, today)).join('')}</tbody>
+  </table>`;
+  _jobsSyncTopScroll();
+}
+
+function _jobsSyncTopScroll(){
+  const wrap  = document.getElementById('jobs-table-wrap');
+  const top   = document.getElementById('jobs-scroll-top');
+  const inner = document.getElementById('jobs-scroll-top-inner');
+  if (!wrap || !top || !inner) return;
+  const tbl = wrap.querySelector('table');
+  const fullW = tbl ? tbl.scrollWidth : 0;
+  inner.style.width = fullW + 'px';
+  top.style.display = (tbl && fullW > wrap.clientWidth + 1) ? '' : 'none';
+  if (!top._scrollSynced) {
+    top._scrollSynced = true;
+    let lock = false;
+    top.addEventListener('scroll', () => { if (lock) return; lock = true; wrap.scrollLeft = top.scrollLeft; lock = false; });
+    wrap.addEventListener('scroll', () => { if (lock) return; lock = true; top.scrollLeft = wrap.scrollLeft; lock = false; });
+    window.addEventListener('resize', () => { try { _jobsSyncTopScroll(); } catch(e){} });
+  }
+}
+
+// Find / create the Sales Order behind a job.
+function _jobFindSO(key){
+  if (key.indexOf('so:') === 0) return getSalesOrder(key.slice(3)) || null;
+  return (getAllSalesOrders()||[]).find(s => s.source_signature === key) || null;
+}
+function _jobByKey(key){ return buildJobsModel().find(j => j.key === key) || null; }
+function _jobEnsureSO(key){
+  const found = _jobFindSO(key);
+  if (found) return found;
+  const j = _jobByKey(key);
+  if (!j) return null;
+  return addSalesOrder({
+    client_id: j.client_id, client_name: j.client_name, job_type: j.job_type,
+    period_covered: j.period, due_date: _dateStr(j.due),
+    line_items: [], amount: 0, source: 'deadline',
+    source_signature: (key.indexOf('deadline:') === 0) ? key : '', status: 'pending'
+  });
+}
+function jobUpdateTracking(key, field, value){
+  const so = _jobEnsureSO(key);
+  if (!so) { try { toast('Could not save — job not found.', 'error'); } catch(e){} return; }
+  updateSalesOrder(so.so_id, { [field]: value });
+  renderJobsBoard();
+}
+function jobStart(key){
+  const so = _jobEnsureSO(key);
+  if (so) { renderJobsBoard(); try { toast('Job started — now In Progress.', 'success'); } catch(e){} }
+}
+function jobIssueInvoice(key){
+  const so = _jobEnsureSO(key);
+  if (so) { openSalesOrderModal(so.so_id); try { toast('Review the line items, then click Generate Invoice.', 'info'); } catch(e){} }
 }
 
 // Quick actions (no modal)
