@@ -736,6 +736,7 @@
         </div>
       </div>
 
+      <div id="so-scroll-top" style="overflow-x:auto;overflow-y:hidden;height:16px;display:none"><div id="so-scroll-top-inner" style="height:1px"></div></div>
       <div id="so-table-wrap" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow-x:auto"></div>
     </div>
 
@@ -10299,6 +10300,7 @@ function renderSalesOrders() {
       rejected: 'No rejected sales orders.'
     }[tab] || '';
     wrap.innerHTML = `<div style="padding:40px;text-align:center;color:var(--text3);font-size:13px">${emptyMsg}</div>`;
+    _soSyncTopScroll();
     return;
   }
 
@@ -10367,6 +10369,29 @@ function renderSalesOrders() {
       </tr></thead>
       <tbody>${rowHTML}</tbody>
     </table>`;
+  _soSyncTopScroll();
+}
+
+// Mirror the table's horizontal scrollbar to a thin bar ABOVE the table, so the
+// user can scroll right to the tracking columns without first scrolling down to
+// reach the bottom scrollbar. The two scroll positions stay in sync both ways.
+function _soSyncTopScroll() {
+  const wrap  = document.getElementById('so-table-wrap');
+  const top   = document.getElementById('so-scroll-top');
+  const inner = document.getElementById('so-scroll-top-inner');
+  if (!wrap || !top || !inner) return;
+  const tbl = wrap.querySelector('table');
+  const fullW = tbl ? tbl.scrollWidth : 0;
+  inner.style.width = fullW + 'px';
+  // Only show the top bar when the table is actually wider than its container.
+  top.style.display = (tbl && fullW > wrap.clientWidth + 1) ? '' : 'none';
+  if (!top._scrollSynced) {
+    top._scrollSynced = true;
+    let lock = false;
+    top.addEventListener('scroll', () => { if (lock) return; lock = true; wrap.scrollLeft = top.scrollLeft; lock = false; });
+    wrap.addEventListener('scroll', () => { if (lock) return; lock = true; top.scrollLeft = wrap.scrollLeft; lock = false; });
+    window.addEventListener('resize', () => { try { _soSyncTopScroll(); } catch(e){} });
+  }
 }
 
 // ── FS / Tax delivery tracking (Sales Orders inline columns) ──────────────
