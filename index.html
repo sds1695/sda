@@ -6446,8 +6446,8 @@ function renderClientFSTaxTracking(client_id) {
         <thead><tr style="background:var(--surface2);text-align:left;color:var(--text2)">
           <th style="padding:6px 8px">FY / Period</th><th style="padding:6px 8px">SO No</th>
           <th style="padding:6px 8px">Draft Sent</th><th style="padding:6px 8px">Final Sent</th>
-          <th style="padding:6px 8px;text-align:right">Pages</th><th style="padding:6px 8px;text-align:right">Sets</th>
-          <th style="padding:6px 8px">Orig/PC</th>
+          <th style="padding:6px 8px;text-align:right">Pages</th>
+          <th style="padding:6px 8px;text-align:right">Sets · Ori</th><th style="padding:6px 8px;text-align:right">Sets · P/C</th>
         </tr></thead><tbody>` +
       fsRows.map(s => `<tr style="border-top:1px solid var(--border)">
         <td style="padding:6px 8px"><strong>${s.period_covered||'—'}</strong></td>
@@ -6455,8 +6455,8 @@ function renderClientFSTaxTracking(client_id) {
         <td style="padding:6px 8px">${fmt(s.fs_draft_sent)}</td>
         <td style="padding:6px 8px">${fmt(s.fs_final_sent)}</td>
         <td style="padding:6px 8px;text-align:right">${num(s.fs_pages)}</td>
-        <td style="padding:6px 8px;text-align:right">${num(s.fs_sets)}</td>
-        <td style="padding:6px 8px">${s.fs_copy||'—'}</td>
+        <td style="padding:6px 8px;text-align:right">${num(s.fs_sets_orig != null && s.fs_sets_orig !== '' ? s.fs_sets_orig : (s.fs_copy==='Original'?s.fs_sets:''))}</td>
+        <td style="padding:6px 8px;text-align:right">${num(s.fs_sets_copy != null && s.fs_sets_copy !== '' ? s.fs_sets_copy : (s.fs_copy==='Photocopy'?s.fs_sets:''))}</td>
       </tr>`).join('') + `</tbody></table>`;
   }
   if (taxRows.length) {
@@ -7642,7 +7642,23 @@ function resumeInvoiceDraft(draftId) {
   if (!d) { toast('Draft not found.', 'error'); return; }
   openInvoiceModal(null);
   // openInvoiceModal is async; defer apply slightly so DOM is ready
-  setTimeout(() => _applyDraftStateToModal(d.state), 80);
+  setTimeout(async () => {
+    _applyDraftStateToModal(d.state);
+    // A draft is "prepared now, issued later" — so the invoice number must run
+    // by the live sequence at the moment you pick it up to issue, NOT the number
+    // that happened to be next when the draft was first saved. Refresh it here.
+    // (The field stays editable, so a deliberate custom/backdated number can be
+    // re-typed if needed.)
+    try {
+      const now = new Date();
+      const nr = await api({ action: 'next_invoice_no', year: now.getFullYear(), month: now.getMonth()+1 });
+      if (nr && nr.ok) {
+        const el = document.getElementById('inv-no');
+        if (el) el.value = nr.inv_no;
+        try { toast('Invoice number set to next in sequence: ' + nr.inv_no, 'info'); } catch(e){}
+      }
+    } catch(e) { console.warn('resume draft renumber', e); }
+  }, 80);
 }
 
 function deleteInvoiceDraft(draftId) {
@@ -7704,6 +7720,7 @@ function _renderInvoiceDraftsBanner() {
 
 async function openInvoiceModal(id) {
   editingInvId = id || null;
+  try { _jobIssuingKey = null; } catch(e){}  // reset job-link context; jobIssueInvoice re-sets it after this returns
   _populateAllocDropdowns();
   // Hide draft banner by default — it only shows on fresh New Invoice opens
   try { const _db = document.getElementById('inv-modal-drafts-banner'); if (_db) { _db.style.display = 'none'; _db.innerHTML = ''; } } catch(e) {}
@@ -8402,6 +8419,7 @@ async function saveInvoice() {
   }
 
   toast('Invoice ' + inv_no + ' saved.', 'success');
+  try { if (typeof _jobOnInvoiceSaved === 'function') _jobOnInvoiceSaved(inv_no); } catch(e){ console.warn('job link on invoice save', e); }
   closeModal('modal-invoice');
   loadInvoices();
   loadAllocations();
@@ -10480,6 +10498,13 @@ function soUpdateTracking(so_id, field, value) {
 // auto-scan will never duplicate it.
 // ════════════════════════════════════════════════════════════════════════
 let _jobsTab = 'inprogress';
+let _jobsSort = { col: 'due', dir: 'asc' };
+let _jobIssuingKey = null;  // job whose invoice is being created via the invoice modal
+function jobsSortBy(col){
+  if (_jobsSort.col === col) _jobsSort.dir = (_jobsSort.dir === 'asc') ? 'desc' : 'asc';
+  else { _jobsSort.col = col; _jobsSort.dir = 'asc'; }
+  renderJobsBoard();
+}
 const JOB_STAGE_LABELS = { upcoming:'Upcoming', inprogress:'In Progress', delivered:'Delivered', invoiced:'Invoiced', all:'All' };
 const JOB_TYPE_LABELS = {
   cosec_retainer:'Cosec Retainer', cosec_other:'Cosec Other', cosec:'Cosec',
@@ -10537,13 +10562,14 @@ function buildJobsModel(){
     const sig = 'deadline:' + r.client_id + ':' + r.task + ':' + r.year;
     const so = soBySig[sig] || null;
     if (so) usedSO.add(so.so_id);
+    const link = getJobInvLink(sig);
     jobs.push({
       key: sig, client_id: r.client_id, client_name: r.client_name,
       task: r.task, job_type: _jobTaskToJobType(r.task),
       label: r.label || _jobTypeLabel(_jobTaskToJobType(r.task)),
       period: r.fyLabel || '', due: r.deadline || null,
-      invRef: (so && so.converted_inv_no) || r.invoiceRef || '',
-      invId:  (so && so.converted_inv_id) || _jobInvIdByNo(r.invoiceRef) || '',
+      invRef: (link && link.inv_no) || (so && so.converted_inv_no) || r.invoiceRef || '',
+      invId:  (link ? _jobInvIdByNo(link.inv_no) : '') || (so && so.converted_inv_id) || _jobInvIdByNo(r.invoiceRef) || '',
       so: so, fromDeadline: true
     });
   });
@@ -10551,12 +10577,15 @@ function buildJobsModel(){
   // 2) Sales Orders not tied to a deadline — manual jobs + cosec retainers
   sos.forEach(s => {
     if (usedSO.has(s.so_id)) return;
+    const k = 'so:' + s.so_id;
+    const link = getJobInvLink(k);
     jobs.push({
-      key: 'so:' + s.so_id, client_id: s.client_id, client_name: s.client_name,
+      key: k, client_id: s.client_id, client_name: s.client_name,
       task: s.job_type || 'other', job_type: s.job_type || 'other',
       label: (s.line_items && s.line_items[0] && s.line_items[0].desc) || _jobTypeLabel(s.job_type),
       period: s.period_covered || '', due: s.due_date ? new Date(s.due_date) : null,
-      invRef: s.converted_inv_no || '', invId: s.converted_inv_id || '',
+      invRef: (link && link.inv_no) || s.converted_inv_no || '',
+      invId:  (link ? _jobInvIdByNo(link.inv_no) : '') || s.converted_inv_id || '',
       so: s, fromDeadline: false
     });
   });
@@ -10574,34 +10603,55 @@ function _jobWorkLabel(j, cls){
   if (finalDone) return pill('Delivered','var(--blue-bg)','var(--blue)');
   const draftDone = (cls==='fs' && so.fs_draft_sent) || (cls==='tax' && so.tax_draft_sent);
   if (draftDone) return pill('Draft sent','var(--amber-bg)','var(--amber)');
-  return `<span style="color:var(--text3);font-size:11px">In progress</span>`;
+  return `<span style="color:var(--text3);font-size:11px">Pending</span>`;
 }
 
 function _jobRowHTML(j, today){
   const stop = 'event.stopPropagation()';
   const cls  = _jobClassOf(j);
   const so   = j.so;
-  // Due cell
+  // Due cell — date on line 1, urgency badge on line 2 (saves width)
   let dueCell = '—';
   if (j.due && !isNaN(j.due)) {
     const d = _daysBetween(today, j.due);
     let badge;
-    if (d < 0)       badge = `<span style="background:var(--red-bg);color:var(--red);padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">${-d}d late</span>`;
-    else if (d <= 30) badge = `<span style="background:var(--amber-bg);color:var(--amber);padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">${d}d</span>`;
-    else if (d <= 90) badge = `<span style="background:var(--blue-bg);color:var(--blue);padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">${d}d</span>`;
-    else              badge = `<span style="color:var(--text3);font-size:10px">${d}d</span>`;
-    dueCell = `${typeof formatDate==='function'?formatDate(_dateStr(j.due)):_dateStr(j.due)} ${badge}`;
+    if (d < 0)       badge = `<span style="background:var(--red-bg);color:var(--red);padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;white-space:nowrap">${-d}d late</span>`;
+    else if (d <= 30) badge = `<span style="background:var(--amber-bg);color:var(--amber);padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;white-space:nowrap">${d}d</span>`;
+    else if (d <= 90) badge = `<span style="background:var(--blue-bg);color:var(--blue);padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;white-space:nowrap">${d}d</span>`;
+    else              badge = `<span style="color:var(--text3);font-size:10px;white-space:nowrap">${d}d</span>`;
+    const dateStr = (typeof formatDate==='function'?formatDate(_dateStr(j.due)):_dateStr(j.due));
+    dueCell = `<div style="white-space:nowrap">${dateStr}</div><div style="margin-top:3px">${badge}</div>`;
   }
   // Tracking inputs — write to the SO, creating it on demand
   const inB = `font-size:11px;padding:3px 4px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text)`;
   const dateCell = (f) => `<td style="padding:4px 6px"><input type="date" value="${so&&so[f]?so[f]:''}" onclick="${stop}" onchange="${stop};jobUpdateTracking('${j.key}','${f}',this.value)" style="${inB}" /></td>`;
   const numCell  = (f) => `<td style="padding:4px 6px"><input type="number" min="0" value="${so&&so[f]!=null&&so[f]!==''?so[f]:''}" onclick="${stop}" onchange="${stop};jobUpdateTracking('${j.key}','${f}',this.value)" style="${inB};width:46px;text-align:right" /></td>`;
-  const copyCell = (f) => { const v = so&&so[f]?so[f]:''; return `<td style="padding:4px 6px"><select onclick="${stop}" onchange="${stop};jobUpdateTracking('${j.key}','${f}',this.value)" style="${inB}"><option value=""${v===''?' selected':''}>—</option><option value="Original"${v==='Original'?' selected':''}>Original</option><option value="Photocopy"${v==='Photocopy'?' selected':''}>Photocopy</option></select></td>`; };
+  // Sets cell — Original (top) + Photocopy (bottom), keyed separately
+  const miniNum = (f) => `<input type="number" min="0" value="${so&&so[f]!=null&&so[f]!==''?so[f]:''}" onclick="${stop}" onchange="${stop};jobUpdateTracking('${j.key}','${f}',this.value)" style="${inB};width:42px;text-align:right" />`;
+  const setsCell = () => `<td style="padding:4px 6px"><div style="display:flex;flex-direction:column;gap:3px">
+      <label style="display:flex;align-items:center;gap:4px;font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.03em">Ori ${miniNum('fs_sets_orig')}</label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.03em">P/C ${miniNum('fs_sets_copy')}</label>
+    </div></td>`;
   const dash = `<td style="padding:6px 8px;text-align:center;color:var(--text3)">—</td>`;
-  let draftC, finalC, pagesC, setsC, copyC;
-  if (cls === 'fs')      { draftC=dateCell('fs_draft_sent');  finalC=dateCell('fs_final_sent'); pagesC=numCell('fs_pages'); setsC=numCell('fs_sets'); copyC=copyCell('fs_copy'); }
-  else if (cls === 'tax'){ draftC=dateCell('tax_draft_sent'); finalC=dateCell('tax_submitted'); pagesC=dash; setsC=dash; copyC=dash; }
-  else                   { draftC=dash; finalC=dash; pagesC=dash; setsC=dash; copyC=dash; }
+  let draftC, finalC, pagesC, setsC;
+  if (cls === 'fs')      { draftC=dateCell('fs_draft_sent');  finalC=dateCell('fs_final_sent'); pagesC=numCell('fs_pages'); setsC=setsCell(); }
+  else if (cls === 'tax'){ draftC=dateCell('tax_draft_sent'); finalC=dateCell('tax_submitted'); pagesC=dash; setsC=dash; }
+  else                   { draftC=dash; finalC=dash; pagesC=dash; setsC=dash; }
+  // Official bill raised by external principal (Prestige / PC Koay) — tax & audit only.
+  // They invoice the client; we bill our sub-com fee to them later.
+  const extCell = () => {
+    const v  = so && so.ext_biller   ? so.ext_biller   : '';
+    const dv = so && so.ext_inv_date ? so.ext_inv_date : '';
+    return `<td style="padding:4px 6px"><div style="display:flex;flex-direction:column;gap:3px">
+      <select onclick="${stop}" onchange="${stop};jobUpdateTracking('${j.key}','ext_biller',this.value)" style="${inB}">
+        <option value=""${v===''?' selected':''}>—</option>
+        <option value="Prestige"${v==='Prestige'?' selected':''}>Prestige</option>
+        <option value="PC Koay"${v==='PC Koay'?' selected':''}>PC Koay</option>
+      </select>
+      <input type="date" value="${dv}" onclick="${stop}" onchange="${stop};jobUpdateTracking('${j.key}','ext_inv_date',this.value)" style="${inB}" title="Date the official bill was issued to the client" />
+    </div></td>`;
+  };
+  const extC = (cls === 'fs' || cls === 'tax') ? extCell() : dash;
   // Billing cell
   let billing = '<span style="color:var(--text3)">—</span>';
   if (j.invId)       billing = `<a onclick="${stop};previewInvoiceById('${j.invId}')" style="color:var(--blue);cursor:pointer;font-family:'DM Mono',monospace;font-size:11px">${j.invRef||'Invoice'}</a>`;
@@ -10610,19 +10660,18 @@ function _jobRowHTML(j, today){
   // Action cell
   let action;
   if (j.stage === 'upcoming')      action = `<button class="btn btn-ghost btn-sm" onclick="${stop};jobStart('${j.key}')" style="color:var(--brand);font-size:11px;font-weight:600">Start</button>`;
-  else if (j.stage === 'invoiced') action = j.invId ? `<button class="btn btn-ghost btn-sm" onclick="${stop};previewInvoiceById('${j.invId}')" style="color:var(--blue);font-size:11px">View Invoice</button>` : `<span style="color:var(--text3);font-size:11px">Invoiced</span>`;
-  else                             action = `<button class="btn btn-ghost btn-sm" onclick="${stop};jobIssueInvoice('${j.key}')" style="color:var(--brand);font-size:11px;font-weight:600">Issue Invoice</button>`;
-  const openA = so ? ` <button class="btn btn-ghost btn-sm" onclick="${stop};openSalesOrderModal('${so.so_id}')" style="font-size:11px">Open</button>` : '';
+  else if (j.stage === 'invoiced') action = (j.invId ? `<button class="btn btn-ghost btn-sm" onclick="${stop};previewInvoiceById('${j.invId}')" style="color:var(--blue);font-size:11px">View Invoice</button>` : `<span style="color:var(--text3);font-size:11px">Invoiced</span>`) + ` <button class="btn btn-ghost btn-sm" onclick="${stop};jobLinkInvoice('${j.key}')" style="color:var(--text2);font-size:11px" title="Change / clear the linked invoice">Re-link</button>`;
+  else                             action = `<button class="btn btn-ghost btn-sm" onclick="${stop};jobIssueInvoice('${j.key}')" style="color:var(--brand);font-size:11px;font-weight:600">Issue Invoice</button> <button class="btn btn-ghost btn-sm" onclick="${stop};jobLinkInvoice('${j.key}')" style="color:var(--text2);font-size:11px" title="Link an invoice you already issued in the Invoices section">Link</button>`;
   const rowAttr = so ? `onclick="openSalesOrderModal('${so.so_id}')" style="cursor:pointer;border-top:1px solid var(--border)"` : `style="border-top:1px solid var(--border)"`;
   return `<tr ${rowAttr}>
     <td style="padding:10px 12px;font-size:13px"><strong>${j.client_name||''}</strong></td>
     <td style="padding:10px 12px;font-size:12px;color:var(--text2)">${j.label||''}</td>
     <td style="padding:10px 12px;font-size:12px;color:var(--text2)">${j.period||'—'}</td>
-    <td style="padding:10px 12px;font-size:12px;color:var(--text2);white-space:nowrap">${dueCell}</td>
-    <td style="padding:10px 8px">${_jobWorkLabel(j, cls)}</td>
-    ${draftC}${finalC}${pagesC}${setsC}${copyC}
-    <td style="padding:10px 12px">${billing}</td>
-    <td style="padding:10px 12px;white-space:nowrap;text-align:right">${action}${openA}</td>
+    <td style="padding:10px 12px;font-size:12px;color:var(--text2);vertical-align:top">${dueCell}</td>
+    <td style="padding:10px 8px;vertical-align:top">${_jobWorkLabel(j, cls)}</td>
+    ${draftC}${finalC}${pagesC}${setsC}${extC}
+    <td style="padding:10px 12px;vertical-align:top">${billing}</td>
+    <td style="padding:10px 12px;white-space:nowrap;text-align:right">${action}</td>
   </tr>`;
 }
 
@@ -10637,7 +10686,22 @@ function renderJobsBoard(){
   });
   const tab = _jobsTab;
   let rows = (tab === 'all') ? all.filter(j => j.stage !== 'na') : all.filter(j => j.stage === tab);
-  rows.sort((a,b) => { const ad = a.due ? a.due.getTime() : 8e15, bd = b.due ? b.due.getTime() : 8e15; return ad - bd; });
+  // Sorting
+  const _jv = (j, c) => {
+    if (c === 'due')    return j.due ? j.due.getTime() : 8e15;
+    if (c === 'client') return (j.client_name||'').toLowerCase();
+    if (c === 'job')    return (j.label||'').toLowerCase();
+    if (c === 'period') return (j.period||'').toLowerCase();
+    if (c === 'status') return ['upcoming','inprogress','delivered','invoiced','na'].indexOf(j.stage);
+    if (c === 'billing')return (j.invRef||'').toLowerCase();
+    return '';
+  };
+  rows.sort((a,b) => {
+    const va = _jv(a,_jobsSort.col), vb = _jv(b,_jobsSort.col);
+    let c = (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    if (c === 0 && _jobsSort.col !== 'due') { const da = a.due?a.due.getTime():8e15, db = b.due?b.due.getTime():8e15; c = da - db; }
+    return _jobsSort.dir === 'desc' ? -c : c;
+  });
   const wrap = document.getElementById('jobs-table-wrap');
   if (!wrap) return;
   if (!rows.length) {
@@ -10646,19 +10710,24 @@ function renderJobsBoard(){
     return;
   }
   const today = new Date(); today.setHours(0,0,0,0);
+  const sortable = (key, label, align) => {
+    const active = _jobsSort.col === key;
+    const arrow = active ? (_jobsSort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+    return `<th onclick="jobsSortBy('${key}')" style="padding:10px 12px;text-align:${align||'left'};cursor:pointer;user-select:none;${active?'color:var(--brand-dark);font-weight:700':''}" title="Sort by ${label}">${label}${arrow}</th>`;
+  };
   wrap.innerHTML = `<table style="width:100%;border-collapse:collapse">
     <thead><tr style="background:var(--surface2);font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--text2)">
-      <th style="padding:10px 12px;text-align:left">Client</th>
-      <th style="padding:10px 12px;text-align:left">Job</th>
-      <th style="padding:10px 12px;text-align:left">FY / Period</th>
-      <th style="padding:10px 12px;text-align:left">Due</th>
-      <th style="padding:10px 8px;text-align:left">Work</th>
+      ${sortable('client','Client')}
+      ${sortable('job','Job')}
+      ${sortable('period','FY / Period')}
+      ${sortable('due','Due')}
+      ${sortable('status','Status')}
       <th style="padding:10px 8px;text-align:left;white-space:nowrap">Draft Sent</th>
       <th style="padding:10px 8px;text-align:left;white-space:nowrap">Final / Submitted</th>
       <th style="padding:10px 8px;text-align:left">Pages</th>
-      <th style="padding:10px 8px;text-align:left">Sets</th>
-      <th style="padding:10px 8px;text-align:left">O/PC</th>
-      <th style="padding:10px 12px;text-align:left">Billing</th>
+      <th style="padding:10px 8px;text-align:left;white-space:nowrap">Sets (Ori / P-C)</th>
+      <th style="padding:10px 8px;text-align:left;white-space:nowrap">Official Bill<br><span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text3)">Prestige / PC Koay</span></th>
+      ${sortable('billing','Billing')}
       <th style="padding:10px 12px;text-align:right">Action</th>
     </tr></thead>
     <tbody>${rows.map(j => _jobRowHTML(j, today)).join('')}</tbody>
@@ -10712,9 +10781,80 @@ function jobStart(key){
   const so = _jobEnsureSO(key);
   if (so) { renderJobsBoard(); try { toast('Job started — now In Progress.', 'success'); } catch(e){} }
 }
-function jobIssueInvoice(key){
-  const so = _jobEnsureSO(key);
-  if (so) { openSalesOrderModal(so.so_id); try { toast('Review the line items, then click Generate Invoice.', 'info'); } catch(e){} }
+
+// ── Job ↔ invoice links (so a job can show its invoice without an SO) ──────
+const JOB_INV_LINK_KEY = 'seraya_job_inv_links_v1';
+function _getJobInvLinks(){ try { return JSON.parse(localStorage.getItem(JOB_INV_LINK_KEY)||'{}'); } catch(e){ return {}; } }
+function getJobInvLink(key){ return _getJobInvLinks()[key] || null; }
+function setJobInvLink(key, inv_no){
+  const all = _getJobInvLinks();
+  if (inv_no) all[key] = { inv_no: inv_no, at: new Date().toISOString() };
+  else delete all[key];
+  localStorage.setItem(JOB_INV_LINK_KEY, JSON.stringify(all));
+  try { pushSyncedBlob('_job_inv_links_blob'); } catch(e) {}
+}
+
+// Issue an invoice DIRECTLY from a job — opens the real Invoice modal (full
+// details + allocation + auto invoice number, editable), prefilled from the
+// job. On save, the new invoice number is linked back to this job.
+async function jobIssueInvoice(key){
+  const j = _jobByKey(key);
+  if (!j) { try { toast('Job not found.', 'error'); } catch(e){} return; }
+  try { await openInvoiceModal(); } catch(e){ console.warn('openInvoiceModal', e); }
+  _jobIssuingKey = key;  // set AFTER openInvoiceModal (which resets it) so only job-issued invoices link
+  try {
+    const cli = (CLIENTS||[]).find(c => String(c.client_id) === String(j.client_id));
+    const setV = (id,v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    setV('inv-client-name', j.client_name || '');
+    if (cli) { setV('inv-billing-party', cli.billing_party || ''); setV('inv-billing-addr', cli.billing_addr || cli.client_addr || ''); }
+    const jtSel = document.getElementById('inv-job-type');
+    if (jtSel) { jtSel.value = _jobInvJobType(j.job_type); try { onJobTypeChange(); } catch(e){} }
+    // Prefill a single line from the job description (amount left blank for you)
+    try {
+      clearInvLines();
+      const desc = (j.label || _jobTypeLabel(j.job_type)) + (j.period ? ' — ' + j.period : '');
+      addInvLine(desc, 0, false);
+      recalcInvLines(); recalcAllocation();
+    } catch(e){}
+    try { toast('Invoice prefilled from job — set the amount, check the allocation, then Save.', 'info'); } catch(e){}
+  } catch(e){ console.warn('prefill invoice from job', e); }
+}
+// Map a job_type → the Invoice modal's job-type option value
+function _jobInvJobType(jt){
+  jt = (jt||'').toLowerCase();
+  if (jt === 'fs') return 'FS';
+  if (jt === 'audit') return 'Audit';
+  if (jt === 'tax' || jt === 'cp204' || jt === 'cp204a') return 'Tax';
+  if (jt === 'mbrs') return 'MBRS';
+  if (jt === 'cosec' || jt === 'cosec_retainer' || jt === 'cosec_other') return 'Cosec';
+  if (jt === 'bookkeeping') return 'Bookkeeping';
+  return 'Other';
+}
+// Link a job to an invoice already raised in the Invoices section.
+function jobLinkInvoice(key){
+  const j = _jobByKey(key);
+  if (!j) return;
+  const invs = (typeof INVOICES !== 'undefined' ? INVOICES : []).filter(i =>
+    (i.client_id && String(i.client_id) === String(j.client_id)) ||
+    (i.client_name && j.client_name && (i.client_name||'').toLowerCase().trim() === (j.client_name||'').toLowerCase().trim()))
+    .sort((a,b) => (a.date||'') < (b.date||'') ? 1 : -1);
+  const list = invs.slice(0,15).map(i => '  ' + i.inv_no + '  ·  RM ' + parseFloat(i.amount||0).toLocaleString('en-MY',{minimumFractionDigits:2}) + '  ·  ' + ((i.date||'')+'').slice(0,10)).join('\n');
+  const cur = getJobInvLink(key);
+  const def = cur ? cur.inv_no : (invs[0] ? invs[0].inv_no : '');
+  const ans = prompt('Link this job to an invoice number (blank to clear the link).\n\nRecent invoices for ' + (j.client_name||'') + ':\n' + (list || '  (none found)'), def);
+  if (ans == null) return;
+  const no = ans.trim();
+  setJobInvLink(key, no);
+  try { toast(no ? ('Linked to invoice ' + no + '.') : 'Invoice link cleared.', no ? 'success' : 'info'); } catch(e){}
+  renderJobsBoard();
+}
+// Called from saveInvoice() after a successful save — links the new invoice
+// number to the job that was being invoiced.
+function _jobOnInvoiceSaved(inv_no){
+  if (!_jobIssuingKey) return;
+  setJobInvLink(_jobIssuingKey, inv_no);
+  _jobIssuingKey = null;
+  try { if (window.__currentPageId === 'jobs') renderJobsBoard(); } catch(e){}
 }
 
 // Quick actions (no modal)
