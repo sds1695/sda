@@ -749,6 +749,7 @@
         <div class="page-title">Jobs Board <span style="font-size:10px;font-weight:600;color:#fff;background:var(--brand);padding:2px 8px;border-radius:10px;vertical-align:middle;letter-spacing:.5px">PROTOTYPE</span></div>
         <div class="page-sub">Every job in one pipeline — upcoming deadline → in progress → delivered → invoiced. Cosec retainers included. Runs alongside Sales Orders &amp; Client Deadlines; nothing is removed yet.</div>
         <div class="page-actions">
+          <button class="btn btn-primary" onclick="openNewJobModal()">+ New Job</button>
           <button class="btn btn-secondary" onclick="try{runSalesOrderAutoScansManual()}catch(e){};renderJobsBoard()" title="Re-scan retainers and deadlines, then refresh the board">⟳ Re-scan</button>
         </div>
       </div>
@@ -763,6 +764,45 @@
 
       <div id="jobs-scroll-top" style="overflow-x:auto;overflow-y:hidden;height:16px;display:none"><div id="jobs-scroll-top-inner" style="height:1px"></div></div>
       <div id="jobs-table-wrap" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow-x:auto"></div>
+    </div>
+
+    <!-- ══ MODAL: NEW JOB (Jobs Board) ══ -->
+    <div class="modal-overlay" id="modal-new-job">
+      <div class="modal" style="max-width:560px">
+        <div class="modal-header">
+          <div class="modal-title">New Job</div>
+          <button class="modal-close" onclick="closeModal('modal-new-job')">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-grid">
+            <div class="form-field form-full"><label>Client</label><select id="nj-client"></select></div>
+            <div class="form-field"><label>Job Type</label>
+              <select id="nj-job-type">
+                <option value="">— Select —</option>
+                <option value="cosec_retainer">Cosec Retainer</option>
+                <option value="cosec_other">Cosec Other</option>
+                <option value="audit">Audit</option>
+                <option value="fs">FS (Audit Exemption)</option>
+                <option value="tax">Tax (Form C)</option>
+                <option value="cp204">CP204</option>
+                <option value="cp204a">CP204a</option>
+                <option value="mbrs">MBRS</option>
+                <option value="form_e">Form E</option>
+                <option value="bookkeeping">Bookkeeping</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div class="form-field"><label>FY / Period</label><input type="text" id="nj-period" placeholder="e.g. FY Dec 2025" /></div>
+            <div class="form-field"><label>Due Date</label><input type="date" id="nj-due" /></div>
+            <div class="form-field form-full"><label>Description</label><input type="text" id="nj-desc" placeholder="e.g. Audit/FS — FY Dec 2025" /></div>
+          </div>
+          <div style="font-size:11px;color:var(--text3);margin-top:10px">This adds a job to the pipeline (In&nbsp;Progress). Track its dates, then press <strong>Issue&nbsp;Invoice</strong> when you're ready to bill it.</div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal('modal-new-job')">Cancel</button>
+          <button class="btn btn-primary" onclick="saveNewJob()">Create Job</button>
+        </div>
+      </div>
     </div>
 
     <!-- ══ INVOICES ══ -->
@@ -10780,6 +10820,43 @@ function jobUpdateTracking(key, field, value){
 function jobStart(key){
   const so = _jobEnsureSO(key);
   if (so) { renderJobsBoard(); try { toast('Job started — now In Progress.', 'success'); } catch(e){} }
+}
+
+// ── Manually open a new job (becomes a pipeline job → later an invoice) ────
+function openNewJobModal(){
+  const sel = document.getElementById('nj-client');
+  if (sel) {
+    const deleted = (typeof getDeletedClients === 'function' ? getDeletedClients() : []).map(String);
+    sel.innerHTML = '<option value="">— Select Client —</option>' + (CLIENTS||[])
+      .filter(c => !deleted.includes(String(c.client_id)))
+      .slice().sort((a,b) => (a.name||'').localeCompare(b.name||''))
+      .map(c => `<option value="${c.client_id}" data-name="${(c.name||'').replace(/"/g,'&quot;')}">${c.name||''}${c.reg_no?' ('+c.reg_no+')':''}</option>`)
+      .join('');
+  }
+  ['nj-period','nj-due','nj-desc'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const jt = document.getElementById('nj-job-type'); if (jt) jt.value = '';
+  openModal('modal-new-job');
+}
+function saveNewJob(){
+  const sel = document.getElementById('nj-client');
+  const client_id = sel ? sel.value : '';
+  if (!client_id) { try { toast('Pick a client first.', 'error'); } catch(e){} return; }
+  const opt = sel.options[sel.selectedIndex];
+  const client_name = opt ? (opt.dataset.name || opt.text) : '';
+  const job_type = document.getElementById('nj-job-type').value;
+  const period   = document.getElementById('nj-period').value.trim();
+  const due      = document.getElementById('nj-due').value;
+  const desc     = document.getElementById('nj-desc').value.trim() || _jobTypeLabel(job_type) || 'Job';
+  addSalesOrder({
+    client_id, client_name, job_type,
+    period_covered: period, due_date: due,
+    line_items: [{ desc: desc, amt: 0, isDisb: false }],
+    amount: 0, source: 'manual', status: 'pending'
+  });
+  closeModal('modal-new-job');
+  _jobsTab = 'inprogress';
+  renderJobsBoard();
+  try { toast('Job created — now In Progress.', 'success'); } catch(e){}
 }
 
 // ── Job ↔ invoice links (so a job can show its invoice without an SO) ──────
