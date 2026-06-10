@@ -775,7 +775,15 @@
         </div>
         <div class="modal-body">
           <div class="form-grid">
-            <div class="form-field form-full"><label>Client</label><select id="nj-client"></select></div>
+            <div class="form-field form-full"><label>End Client</label>
+              <input type="text" id="nj-client" list="nj-client-list" placeholder="Pick existing or type a new client…" autocomplete="off" />
+              <datalist id="nj-client-list"></datalist>
+              <small style="color:var(--text3);font-size:11px">New name → auto-created in the Client Registry on save.</small>
+            </div>
+            <div class="form-field form-full"><label>Bill To / Billing Party</label>
+              <input type="text" id="nj-billing" list="nj-bp-list" placeholder="e.g. FRAZ / Prestige / PC Koay — leave blank to bill the client directly" autocomplete="off" />
+              <datalist id="nj-bp-list"></datalist>
+            </div>
             <div class="form-field"><label>Job Type</label>
               <select id="nj-job-type">
                 <option value="">— Select —</option>
@@ -792,11 +800,17 @@
                 <option value="other">Other</option>
               </select>
             </div>
+            <div class="form-field"><label>Agreed Fee (RM)</label><input type="number" step="0.01" id="nj-fee" placeholder="0.00" /></div>
             <div class="form-field"><label>FY / Period</label><input type="text" id="nj-period" placeholder="e.g. FY Dec 2025" /></div>
             <div class="form-field"><label>Due Date</label><input type="date" id="nj-due" /></div>
+            <div class="form-field"><label>Preparer <span style="color:var(--text3);font-weight:400">(optional)</span></label>
+              <select id="nj-prep"><option value="">—</option><option value="ET">ET</option><option value="Koay">Koay</option><option value="Koay PH">Koay PH</option><option value="Ivy">Ivy</option></select></div>
+            <div class="form-field"><label>Reviewer <span style="color:var(--text3);font-weight:400">(optional)</span></label>
+              <select id="nj-rev"><option value="">—</option><option value="KC">KC</option><option value="Koay">Koay</option><option value="TKC">TKC</option></select></div>
             <div class="form-field form-full"><label>Description</label><input type="text" id="nj-desc" placeholder="e.g. Audit/FS — FY Dec 2025" /></div>
+            <div class="form-field form-full"><label>Notes (internal)</label><textarea id="nj-notes" rows="2" placeholder="Anything to remember — not shown on the invoice"></textarea></div>
           </div>
-          <div style="font-size:11px;color:var(--text3);margin-top:10px">This adds a job to the pipeline (In&nbsp;Progress). Track its dates, then press <strong>Issue&nbsp;Invoice</strong> when you're ready to bill it.</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:10px">This adds a job to the pipeline (In&nbsp;Progress). Track its dates, then press <strong>Issue&nbsp;Invoice</strong> when you're ready to bill it — the fee, client and Bill&nbsp;To prefill the invoice.</div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" onclick="closeModal('modal-new-job')">Cancel</button>
@@ -10558,6 +10572,10 @@ function _jobInvIdByNo(no){
   const inv = (typeof INVOICES !== 'undefined' ? INVOICES : []).find(x => String(x.inv_no) === String(no));
   return inv ? (inv.inv_id || inv.id || '') : '';
 }
+function _jobClientBP(client_id){
+  const c = (typeof CLIENTS !== 'undefined' ? CLIENTS : []).find(x => String(x.client_id) === String(client_id));
+  return c ? (c.billing_party || '') : '';
+}
 function switchJobsTab(tab){ _jobsTab = tab; renderJobsBoard(); }
 
 // Map a deadline task → the SO job_type (mirrors jobTypeMap in scanDeadlinesDue)
@@ -10608,6 +10626,9 @@ function buildJobsModel(){
       task: r.task, job_type: _jobTaskToJobType(r.task),
       label: r.label || _jobTypeLabel(_jobTaskToJobType(r.task)),
       period: r.fyLabel || '', due: r.deadline || null,
+      billing_party: (so && so.billing_party) || _jobClientBP(r.client_id) || '',
+      amount: (so && parseFloat(so.amount)) || 0,
+      preparer: (so && so.preparer) || '', reviewer: (so && so.reviewer) || '',
       invRef: (link && link.inv_no) || (so && so.converted_inv_no) || r.invoiceRef || '',
       invId:  (link ? _jobInvIdByNo(link.inv_no) : '') || (so && so.converted_inv_id) || _jobInvIdByNo(r.invoiceRef) || '',
       so: so, fromDeadline: true
@@ -10624,6 +10645,8 @@ function buildJobsModel(){
       task: s.job_type || 'other', job_type: s.job_type || 'other',
       label: (s.line_items && s.line_items[0] && s.line_items[0].desc) || _jobTypeLabel(s.job_type),
       period: s.period_covered || '', due: s.due_date ? new Date(s.due_date) : null,
+      billing_party: s.billing_party || '', amount: parseFloat(s.amount) || 0,
+      preparer: s.preparer || '', reviewer: s.reviewer || '',
       invRef: (link && link.inv_no) || s.converted_inv_no || '',
       invId:  (link ? _jobInvIdByNo(link.inv_no) : '') || s.converted_inv_id || '',
       so: s, fromDeadline: false
@@ -10692,6 +10715,13 @@ function _jobRowHTML(j, today){
     </div></td>`;
   };
   const extC = (cls === 'fs' || cls === 'tax') ? extCell() : dash;
+  // Assigned (preparer / reviewer) — both optional, stacked
+  const PREP_OPTS = ['','ET','Koay','Koay PH','Ivy'];
+  const REV_OPTS  = ['','KC','Koay','TKC'];
+  const miniSel = (field, opts, ph) => { const v = so&&so[field]?so[field]:''; return `<select onclick="${stop}" onchange="${stop};jobUpdateTracking('${j.key}','${field}',this.value)" style="${inB};max-width:88px">` + opts.map(o => `<option value="${o}"${v===o?' selected':''}>${o||ph}</option>`).join('') + `</select>`; };
+  const assignedC = `<td style="padding:4px 6px"><div style="display:flex;flex-direction:column;gap:3px">${miniSel('preparer',PREP_OPTS,'Prep')}${miniSel('reviewer',REV_OPTS,'Rev')}</div></td>`;
+  // Fee (RM) — optional
+  const feeC = `<td style="padding:4px 6px;text-align:right"><input type="number" min="0" step="0.01" value="${so&&so.amount?so.amount:''}" onclick="${stop}" onchange="${stop};jobUpdateFee('${j.key}',this.value)" style="${inB};width:78px;text-align:right" placeholder="0.00" /></td>`;
   // Billing cell
   let billing = '<span style="color:var(--text3)">—</span>';
   if (j.invId)       billing = `<a onclick="${stop};previewInvoiceById('${j.invId}')" style="color:var(--blue);cursor:pointer;font-family:'DM Mono',monospace;font-size:11px">${j.invRef||'Invoice'}</a>`;
@@ -10703,13 +10733,16 @@ function _jobRowHTML(j, today){
   else if (j.stage === 'invoiced') action = (j.invId ? `<button class="btn btn-ghost btn-sm" onclick="${stop};previewInvoiceById('${j.invId}')" style="color:var(--blue);font-size:11px">View Invoice</button>` : `<span style="color:var(--text3);font-size:11px">Invoiced</span>`) + ` <button class="btn btn-ghost btn-sm" onclick="${stop};jobLinkInvoice('${j.key}')" style="color:var(--text2);font-size:11px" title="Change / clear the linked invoice">Re-link</button>`;
   else                             action = `<button class="btn btn-ghost btn-sm" onclick="${stop};jobIssueInvoice('${j.key}')" style="color:var(--brand);font-size:11px;font-weight:600">Issue Invoice</button> <button class="btn btn-ghost btn-sm" onclick="${stop};jobLinkInvoice('${j.key}')" style="color:var(--text2);font-size:11px" title="Link an invoice you already issued in the Invoices section">Link</button>`;
   const rowAttr = so ? `onclick="openSalesOrderModal('${so.so_id}')" style="cursor:pointer;border-top:1px solid var(--border)"` : `style="border-top:1px solid var(--border)"`;
+  const bpSub = (j.billing_party && j.billing_party !== j.client_name) ? `<br><span style="font-size:11px;color:var(--text3)">▸ ${j.billing_party}</span>` : '';
   return `<tr ${rowAttr}>
-    <td style="padding:10px 12px;font-size:13px"><strong>${j.client_name||''}</strong></td>
-    <td style="padding:10px 12px;font-size:12px;color:var(--text2)">${j.label||''}</td>
+    <td style="padding:10px 12px;font-size:13px;vertical-align:top"><strong>${j.client_name||''}</strong>${bpSub}</td>
+    <td style="padding:10px 12px;font-size:12px;color:var(--text2);vertical-align:top">${j.label||''}</td>
     <td style="padding:10px 12px;font-size:12px;color:var(--text2)">${j.period||'—'}</td>
     <td style="padding:10px 12px;font-size:12px;color:var(--text2);vertical-align:top">${dueCell}</td>
     <td style="padding:10px 8px;vertical-align:top">${_jobWorkLabel(j, cls)}</td>
+    ${assignedC}
     ${draftC}${finalC}${pagesC}${setsC}${extC}
+    ${feeC}
     <td style="padding:10px 12px;vertical-align:top">${billing}</td>
     <td style="padding:10px 12px;white-space:nowrap;text-align:right">${action}</td>
   </tr>`;
@@ -10762,11 +10795,13 @@ function renderJobsBoard(){
       ${sortable('period','FY / Period')}
       ${sortable('due','Due')}
       ${sortable('status','Status')}
+      <th style="padding:10px 8px;text-align:left;white-space:nowrap">Assigned<br><span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text3)">Prep / Rev</span></th>
       <th style="padding:10px 8px;text-align:left;white-space:nowrap">Draft Sent</th>
       <th style="padding:10px 8px;text-align:left;white-space:nowrap">Final / Submitted</th>
       <th style="padding:10px 8px;text-align:left">Pages</th>
       <th style="padding:10px 8px;text-align:left;white-space:nowrap">Sets (Ori / P-C)</th>
       <th style="padding:10px 8px;text-align:left;white-space:nowrap">Official Bill<br><span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text3)">Prestige / PC Koay</span></th>
+      <th style="padding:10px 8px;text-align:right;white-space:nowrap">Fee (RM)</th>
       ${sortable('billing','Billing')}
       <th style="padding:10px 12px;text-align:right">Action</th>
     </tr></thead>
@@ -10817,41 +10852,92 @@ function jobUpdateTracking(key, field, value){
   updateSalesOrder(so.so_id, { [field]: value });
   renderJobsBoard();
 }
+function jobUpdateFee(key, value){
+  const so = _jobEnsureSO(key);
+  if (!so) return;
+  const amt = parseFloat(value) || 0;
+  const patch = { amount: amt };
+  if (so.line_items && so.line_items.length) patch.line_items = so.line_items.map((l,i) => i === 0 ? Object.assign({}, l, { amt: amt }) : l);
+  else patch.line_items = [{ desc: _jobTypeLabel(so.job_type) || 'Job', amt: amt, isDisb: false }];
+  updateSalesOrder(so.so_id, patch);
+  renderJobsBoard();
+}
 function jobStart(key){
   const so = _jobEnsureSO(key);
   if (so) { renderJobsBoard(); try { toast('Job started — now In Progress.', 'success'); } catch(e){} }
 }
 
 // ── Manually open a new job (becomes a pipeline job → later an invoice) ────
+const _njNorm = s => (s||'').toLowerCase().trim().replace(/[.,]/g,'').replace(/\s+/g,' ');
 function openNewJobModal(){
-  const sel = document.getElementById('nj-client');
-  if (sel) {
-    const deleted = (typeof getDeletedClients === 'function' ? getDeletedClients() : []).map(String);
-    sel.innerHTML = '<option value="">— Select Client —</option>' + (CLIENTS||[])
-      .filter(c => !deleted.includes(String(c.client_id)))
-      .slice().sort((a,b) => (a.name||'').localeCompare(b.name||''))
-      .map(c => `<option value="${c.client_id}" data-name="${(c.name||'').replace(/"/g,'&quot;')}">${c.name||''}${c.reg_no?' ('+c.reg_no+')':''}</option>`)
-      .join('');
-  }
-  ['nj-period','nj-due','nj-desc'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
-  const jt = document.getElementById('nj-job-type'); if (jt) jt.value = '';
+  const deleted = (typeof getDeletedClients === 'function' ? getDeletedClients() : []).map(String);
+  const live = (CLIENTS||[]).filter(c => !deleted.includes(String(c.client_id)));
+  // End-client datalist
+  const cl = document.getElementById('nj-client-list');
+  if (cl) cl.innerHTML = live.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''))
+    .map(c => `<option value="${(c.name||'').replace(/"/g,'&quot;')}">${c.reg_no?('Reg '+c.reg_no):''}</option>`).join('');
+  // Billing-party datalist (distinct billing parties already on file)
+  const bps = [...new Set(live.map(c => (c.billing_party||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  const bl = document.getElementById('nj-bp-list');
+  if (bl) bl.innerHTML = bps.map(b => `<option value="${b.replace(/"/g,'&quot;')}"></option>`).join('');
+  ['nj-client','nj-billing','nj-period','nj-due','nj-desc','nj-fee','nj-notes'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  ['nj-job-type','nj-prep','nj-rev'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   openModal('modal-new-job');
+  // Auto-fill Bill To from the chosen client's registered billing party
+  const cliInput = document.getElementById('nj-client');
+  if (cliInput) cliInput.onchange = () => {
+    const m = (CLIENTS||[]).find(c => _njNorm(c.name||'') === _njNorm(cliInput.value));
+    const bpEl = document.getElementById('nj-billing');
+    if (m && bpEl && !bpEl.value.trim()) bpEl.value = m.billing_party || '';
+  };
 }
-function saveNewJob(){
-  const sel = document.getElementById('nj-client');
-  const client_id = sel ? sel.value : '';
-  if (!client_id) { try { toast('Pick a client first.', 'error'); } catch(e){} return; }
-  const opt = sel.options[sel.selectedIndex];
-  const client_name = opt ? (opt.dataset.name || opt.text) : '';
+async function saveNewJob(){
+  const nameInput = (document.getElementById('nj-client').value || '').trim();
+  if (!nameInput) { try { toast('Enter or pick the end client.', 'error'); } catch(e){} return; }
+  const bp       = (document.getElementById('nj-billing').value || '').trim();
   const job_type = document.getElementById('nj-job-type').value;
-  const period   = document.getElementById('nj-period').value.trim();
+  const period   = (document.getElementById('nj-period').value || '').trim();
   const due      = document.getElementById('nj-due').value;
-  const desc     = document.getElementById('nj-desc').value.trim() || _jobTypeLabel(job_type) || 'Job';
+  const fee      = parseFloat(document.getElementById('nj-fee').value || '0') || 0;
+  const notes    = (document.getElementById('nj-notes').value || '').trim();
+  const prep     = (document.getElementById('nj-prep').value || '').trim();
+  const rev      = (document.getElementById('nj-rev').value || '').trim();
+  const desc     = (document.getElementById('nj-desc').value || '').trim() || _jobTypeLabel(job_type) || 'Job';
+
+  // Resolve / auto-create the end client (mirrors the invoice-save behaviour)
+  let client = (CLIENTS||[]).find(c => _njNorm(c.name || c.client_name || '') === _njNorm(nameInput));
+  if (!client) {
+    try {
+      const cRes = await api({ action: 'save_client', data: {
+        client_id:'', name:nameInput, reg_no:'', type:'',
+        billing_party: bp, billing_reg:'', billing_addr:'', client_addr:'', year_end:'',
+        services: JSON.stringify([ (job_type||'').toLowerCase().replace(/[^a-z]/g,'') || 'other' ]),
+        ar_date:'', quotations: JSON.stringify([])
+      }});
+      if (cRes && cRes.ok) { try { await loadClients(); } catch(e){} client = (CLIENTS||[]).find(c => _njNorm(c.name||'') === _njNorm(nameInput)); toast('New client "'+nameInput+'" created in registry.', 'success'); }
+    } catch(e){ console.warn('auto-create client', e); }
+  }
+  // Auto-create the billing party as its own registry entry if it's new
+  if (bp && _njNorm(bp) !== _njNorm(nameInput) && !(CLIENTS||[]).some(c => _njNorm(c.name||'') === _njNorm(bp))) {
+    try {
+      await api({ action: 'save_client', data: {
+        client_id:'', name:bp, reg_no:'', type:'billing_party',
+        billing_party:'', billing_reg:'', billing_addr:'', client_addr:'', year_end:'',
+        services: JSON.stringify([]), ar_date:'', quotations: JSON.stringify([])
+      }});
+      try { await loadClients(); } catch(e){}
+    } catch(e){ console.warn('auto-create billing party', e); }
+  }
+
+  const client_id   = client ? client.client_id : '';
+  const client_name = client ? (client.name || nameInput) : nameInput;
   addSalesOrder({
-    client_id, client_name, job_type,
+    client_id, client_name, billing_party: bp, job_type,
     period_covered: period, due_date: due,
-    line_items: [{ desc: desc, amt: 0, isDisb: false }],
-    amount: 0, source: 'manual', status: 'pending'
+    line_items: [{ desc: desc, amt: fee, isDisb: false }],
+    amount: fee, disb_amount: 0, notes: notes,
+    preparer: prep, reviewer: rev,
+    source: 'manual', status: 'pending'
   });
   closeModal('modal-new-job');
   _jobsTab = 'inprogress';
@@ -10883,14 +10969,18 @@ async function jobIssueInvoice(key){
     const cli = (CLIENTS||[]).find(c => String(c.client_id) === String(j.client_id));
     const setV = (id,v) => { const el = document.getElementById(id); if (el) el.value = v; };
     setV('inv-client-name', j.client_name || '');
-    if (cli) { setV('inv-billing-party', cli.billing_party || ''); setV('inv-billing-addr', cli.billing_addr || cli.client_addr || ''); }
+    const bp = j.billing_party || (cli && cli.billing_party) || '';
+    setV('inv-billing-party', bp);
+    if (cli) setV('inv-billing-addr', cli.billing_addr || cli.client_addr || '');
     const jtSel = document.getElementById('inv-job-type');
     if (jtSel) { jtSel.value = _jobInvJobType(j.job_type); try { onJobTypeChange(); } catch(e){} }
-    // Prefill a single line from the job description (amount left blank for you)
+    if (j.preparer) setV('inv-preparer', j.preparer);
+    if (j.reviewer) setV('inv-reviewer', j.reviewer);
+    // Prefill a single line from the job description + agreed fee
     try {
       clearInvLines();
       const desc = (j.label || _jobTypeLabel(j.job_type)) + (j.period ? ' — ' + j.period : '');
-      addInvLine(desc, 0, false);
+      addInvLine(desc, parseFloat(j.amount) || 0, false);
       recalcInvLines(); recalcAllocation();
     } catch(e){}
     try { toast('Invoice prefilled from job — set the amount, check the allocation, then Save.', 'info'); } catch(e){}
