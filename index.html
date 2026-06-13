@@ -12008,6 +12008,8 @@ async function loadPayout() {
       monthSel.appendChild(o);
     });
   }
+  // Auto-reconcile using the stored cutoff + outstanding list (runs silently, idempotent)
+  _autoReconcileOnLoad();
   renderPayoutView();
 }
 
@@ -13043,6 +13045,22 @@ function openReceiptEdit(r) {
 }
 
 let _receiptSaving = false;
+// When a client payment is receipted, move the invoice(s) from the
+// "outstanding" list (awaiting client) to the "pending payout" list (ready to distribute).
+// _autoReconcileOnLoad() skips pending-payout items so they stay visible in Ready to Pay.
+function _freeFromOutstanding(invNos) {
+  if (!invNos || !invNos.length) return;
+  try {
+    const osKey = 'seraya_outstanding_invs_v1';
+    const ppKey = 'seraya_pending_payout_v1';
+    let outstanding = new Set(JSON.parse(localStorage.getItem(osKey) || '[]'));
+    let pendingPayout = new Set(JSON.parse(localStorage.getItem(ppKey) || '[]'));
+    invNos.forEach(n => { if (n) { outstanding.delete(n); pendingPayout.add(n); } });
+    localStorage.setItem(osKey, JSON.stringify([...outstanding]));
+    localStorage.setItem(ppKey, JSON.stringify([...pendingPayout]));
+  } catch(e) { console.warn('_freeFromOutstanding error:', e); }
+}
+
 async function saveReceipt() {
   if (_receiptSaving) return;            // ← guard: ignore duplicate clicks
   _receiptSaving = true;
@@ -13121,6 +13139,7 @@ async function saveReceipt() {
     const res = await api({ action: 'save_receipt', data });
     if (res.ok) {
       toast('Receipt updated ✓ — dashboard refreshing…', 'success');
+      _freeFromOutstanding([data.inv_no].filter(Boolean)); // move from outstanding → pending payout
       closeModal('modal-receipt');
       // Remove the fix banner so it doesn't linger on next open
       const b = document.getElementById('rc-fix-banner');
@@ -13171,7 +13190,11 @@ async function saveReceipt() {
 
   if (saved)  toast(`${saved} receipt(s) saved. Invoice status updated.`, 'success');
   if (failed) toast(`${failed} receipt(s) failed — check console.`, 'error');
-  if (saved) { closeModal('modal-receipt'); loadInvoices(); loadReceipts(); }
+  if (saved) {
+    // Move receipted invoices from outstanding → pending payout so they appear in Ready to Pay
+    _freeFromOutstanding(boxes.map(b => b.dataset.invNo).filter(Boolean));
+    closeModal('modal-receipt'); loadInvoices(); loadReceipts();
+  }
   } finally {
     _receiptSaving = false;
     if (_saveBtn) { _saveBtn.disabled = false; _saveBtn.textContent = _origText || 'Save Receipt'; }
@@ -14971,6 +14994,8 @@ async function saveVoucher() {
     // are reflected immediately. Without this it shows a stale balance until
     // the user hard-reloads.
     try { if (typeof loadDashboard === 'function') loadDashboard(); } catch(e) {}
+    // Payout summary: re-render so the invoices just paid disappear from Ready to Pay immediately
+    try { if (typeof renderPayoutView === 'function') renderPayoutView(); } catch(e) {}
   } else {
     // Save failed — undo the void so original stays visible
     if (existingId) {
@@ -15674,19 +15699,12 @@ function renderInvoiceBreakdown() {
     return out;
   }
 
-  // Detect "non-standard" allocation: kc_commission diverges materially from K × 10%
+  // Detect "non-standard" allocation: kc_commission diverges materially from expected 10%.
+  // Lee Eng rule: KC commission = Gross × 10% for ALL job types.
+  // (Dashboard previously checked Net×10% which caused false ⚠ on every job with Abot.)
   function isNonStandard(a) {
     const G = parseFloat(a.gross_fee || 0);
-    const H = parseFloat(a.disbursements || 0);
-    const I = parseFloat(a.abot_cost || 0);
-    const J = parseFloat(a.cecilia_fee || 0);
-    const ssm = parseFloat(a.ssm_fee || 0);
-    const job = a.job_type || '';
-    let K;
-    if (job === 'Cosec_Retainer') K = G - J;
-    else if (job === 'Cosec_Other') K = G - ssm;
-    else K = G - H - I;
-    const expectedKC = K * 0.10;
+    const expectedKC = G * 0.10;  // 10% of GROSS — per Lee Eng formula
     const actualKC = parseFloat(a.kc_commission || 0);
     return Math.abs(actualKC - expectedKC) > 1.0;
   }
@@ -16857,7 +16875,7 @@ function reconcileAgainstExcelGreen() {
 
       <div style="margin-bottom:14px">
         <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px">Last payment-round date (invoices ON or BEFORE this date + already paid = mark as settled):</label>
-        <input id="_recon_cutoff" type="date" value="${_localToday()}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px">
+        <input id="_recon_cutoff" type="date" value="${(()=>{try{return localStorage.getItem('seraya_last_recon_cutoff_v1')||_localToday();}catch(e){return _localToday();}})()}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px">
         <div style="font-size:10px;color:var(--text3);margin-top:3px">Tip: set this to your last PV payment date, e.g. 2026-05-23</div>
       </div>
 
@@ -16883,8 +16901,9 @@ function _doReconcileExcel() {
   const cutoff = cutoffRaw; // YYYY-MM-DD
   const outstanding = new Set(osRaw.split('\n').map(s => s.trim()).filter(Boolean));
 
-  // Save outstanding list for next time
+  // Save outstanding list AND cutoff for auto-reconcile on future loads
   try { localStorage.setItem('seraya_outstanding_invs_v1', JSON.stringify([...outstanding])); } catch(e) {}
+  try { localStorage.setItem('seraya_last_recon_cutoff_v1', cutoff); } catch(e) {}
 
   // Collect all invoice-person pairs to settle:
   // - Invoice status = 'paid' AND inv_date <= cutoff AND inv_no NOT in outstanding
@@ -16938,6 +16957,63 @@ function _doReconcileExcel() {
   document.getElementById('_recon_excel_modal').remove();
   toast(`✓ Marked ${count} entries as settled (up to ${cutoff}). Outstanding invoices and post-cutoff items untouched.`, 'success');
   renderPayoutView();
+}
+
+// Silent auto-reconcile on every Payout page load.
+// Reads the stored cutoff date + outstanding invoice list set by the user via
+// "↻ Reconcile from Excel". Marks all client-paid invoices whose date ≤ cutoff
+// and that are NOT in the outstanding list as wage-settled — exactly the same
+// logic as _doReconcileExcel but with no modal and no toast unless something changed.
+// Safe to call repeatedly (idempotent via the settle-only-if-not-already-settled guard).
+function _autoReconcileOnLoad() {
+  try {
+    const cutoff = localStorage.getItem('seraya_last_recon_cutoff_v1');
+    if (!cutoff) return; // first run ever — user hasn't set a cutoff yet
+    let outstanding = new Set();
+    let pendingPayout = new Set(); // recently receipted from client — must stay in Ready to Pay
+    try { outstanding = new Set(JSON.parse(localStorage.getItem('seraya_outstanding_invs_v1') || '[]')); } catch(e) {}
+    try { pendingPayout = new Set(JSON.parse(localStorage.getItem('seraya_pending_payout_v1') || '[]')); } catch(e) {}
+
+    if (typeof INVOICES === 'undefined' || typeof ALLOCATIONS === 'undefined') return;
+    const normPerson = p => (p === 'Koay PH') ? 'Koay' : p;
+    const m = getWagePaidMap();
+    let count = 0;
+
+    const settle = (allocId, person, invNo) => {
+      if (!allocId) return;
+      const ck = allocId + '|' + person;
+      if (m[ck] !== undefined && m[ck] !== null) return;
+      if (m[allocId] !== undefined && m[allocId] !== null) return;
+      m[ck] = cutoff; count++;
+      if (invNo && !m['inv:' + invNo]) { m['inv:' + invNo] = cutoff; }
+    };
+
+    (INVOICES || []).forEach(inv => {
+      const invNo = inv.inv_no || '';
+      if (outstanding.has(invNo)) return;   // client hasn't paid — Awaiting Client
+      if (pendingPayout.has(invNo)) return; // client just paid — must stay in Ready to Pay
+      if (inv.status !== 'paid') return;
+      const invDate = (inv.inv_date || inv.date || '').slice(0, 10);
+      if (invDate > cutoff) return; // after cutoff — stays in Ready to Pay
+
+      const allocRows = (ALLOCATIONS || []).filter(a => a.inv_no === invNo && !isVoided('allocations', a.alloc_id));
+      if (allocRows.length) {
+        allocRows.forEach(a => {
+          const id = a.alloc_id;
+          if (a.preparer_name) settle(id, normPerson(a.preparer_name), invNo);
+          if (a.reviewer_name) settle(id, normPerson(a.reviewer_name), invNo);
+          if (parseFloat(a.kc_commission || 0) > 0) settle(id, 'KC', invNo);
+          if (parseFloat(a.koay_commission || 0) > 0) settle(id, 'Koay', invNo);
+          if (parseFloat(a.cecilia_fee || 0) > 0) settle(id, 'Cecilia', invNo);
+          if (m[id] === undefined || m[id] === null) { m[id] = cutoff; count++; }
+        });
+      } else {
+        if (!m['inv:' + invNo]) { m['inv:' + invNo] = cutoff; count++; }
+      }
+    });
+
+    if (count > 0) { setWagePaidMap(m); console.log(`[autoRecon] Settled ${count} new entries up to ${cutoff}.`); }
+  } catch(e) { console.warn('_autoReconcileOnLoad failed:', e); }
 }
 
 // VOUCHERS-as-source-of-truth back-fill: walk active vouchers and mark the
