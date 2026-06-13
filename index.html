@@ -3970,7 +3970,7 @@ function getInvJobType(inv) {
   // Try allocations cache (only available after Invoice Breakdown is visited)
   if (__jtCache === null) _rebuildJtCache();
   const k = (inv.inv_no||'').toString().trim();
-  const fromCache = k ? (__jtCache[k] || '') : '';
+  const fromCache = (k && __jtCache) ? (__jtCache[k] || '') : '';
   if (fromCache) return fromCache;
   // Fallback: read lineType from first non-disb line in desc1 JSON
   try {
