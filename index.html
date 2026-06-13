@@ -626,6 +626,10 @@
       <div class="nav-item" onclick="showPage('reminders')">
         <span class="icon">⏰</span><span>Client Deadlines</span>
       </div>
+      <div class="nav-section">Notes</div>
+      <div class="nav-item" onclick="showPage('notes')">
+        <span class="icon">✎</span><span>Notes</span>
+      </div>
       <div class="nav-section">Configuration</div>
       <div class="nav-item" onclick="showPage('coa')">
         <span class="icon">⚙</span><span>Chart of Accounts</span>
@@ -1562,6 +1566,18 @@
         <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Free-form notes</div>
         <textarea id="rem-notes-box" placeholder="Anything the team should know — paste reminders, links, internal SOPs, etc." oninput="saveRemFreeNotes()" style="width:100%;min-height:90px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-family:inherit;font-size:13px;background:var(--surface);resize:vertical"></textarea>
       </div>
+    </div>
+
+    <!-- ══ NOTES ══ -->
+    <div class="page" id="page-notes">
+      <div class="page-header">
+        <div class="page-title">Notes</div>
+        <div class="page-sub">Internal notes for the team — each note auto-saves and syncs to Google Sheets.</div>
+        <div class="page-actions">
+          <button class="btn btn-primary" onclick="addNote()">+ New Note</button>
+        </div>
+      </div>
+      <div id="notes-list" style="display:flex;flex-direction:column;gap:16px;max-width:860px"></div>
     </div>
 
   </div><!-- end main -->
@@ -2879,6 +2895,7 @@ function _showPageLoader(id) {
   else if (id === 'clients')        loadClients();
   else if (id === 'invoices')       loadInvoices && loadInvoices();
   else if (id === 'dashboard')      loadDashboard();
+  else if (id === 'notes')          loadNotesPage();
 }
 // Tick the "ago" display every 15s without a full re-render
 setInterval(() => {
@@ -2910,6 +2927,7 @@ function showPage(id) {
   if (id === 'team-members')        renderTeamMembers();
   if (id === 'sales-orders')        renderSalesOrders();
   if (id === 'jobs')                { (async () => { try { await loadClients(); } catch(e){} try { renderJobsBoard(); } catch(e){ console.warn('renderJobsBoard', e); } })(); }
+  if (id === 'notes')               loadNotesPage();
 }
 
 // ══════════════════════════════════════════════════
@@ -19135,6 +19153,7 @@ const SYNCED_BLOBS = [
   { settingsKey: '_disb_person_blob',         pattern: 'disb_person_' },
   { settingsKey: '_ib_linedefs_blob',         pattern: 'ib_linedefs_' },
   { settingsKey: '_ib_ld_blob',               pattern: 'ib_ld_' },
+  { settingsKey: '_notes_blob',               lsKey: 'seraya_notes_v1' },
 ];
 
 // Keep references to original Storage methods — used internally so we don't
@@ -20015,6 +20034,112 @@ function saveHorizontalAlloc() {
   toast(`Allocation saved for ${rows.length} line${rows.length>1?'s':''} ✓`, 'success');
 }
 
+
+// ══════════════════════════════════════════════════
+// NOTES
+// ══════════════════════════════════════════════════
+const NOTES_LS_KEY = 'seraya_notes_v1';
+let _noteSaveTimer = null;
+
+function _getNotes() {
+  try { return JSON.parse(localStorage.getItem(NOTES_LS_KEY) || '[]'); } catch(e) { return []; }
+}
+function _setNotes(arr) {
+  localStorage.setItem(NOTES_LS_KEY, JSON.stringify(arr));
+  try { pushSyncedBlob('_notes_blob'); } catch(e) {}
+}
+
+function loadNotesPage() {
+  const notes = _getNotes();
+  const container = document.getElementById('notes-list');
+  if (!container) return;
+  if (!notes.length) {
+    container.innerHTML = `<div style="color:var(--text3);font-size:13px;padding:20px 0">No notes yet. Click <strong>+ New Note</strong> to create one.</div>`;
+    return;
+  }
+  container.innerHTML = notes.map((n, i) => `
+    <div class="card" id="note-card-${n.id}" style="padding:16px 18px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <input
+          type="text"
+          value="${(n.title||'').replace(/"/g,'&quot;')}"
+          placeholder="Note title…"
+          oninput="updateNoteTitle('${n.id}', this.value)"
+          style="flex:1;font-size:14px;font-weight:600;border:none;border-bottom:1px solid var(--border);background:transparent;padding:2px 0;outline:none;color:var(--text1)"
+        />
+        <span style="font-size:11px;color:var(--text3);white-space:nowrap">${_fmtNoteDate(n.updated||n.created)}</span>
+        <button onclick="deleteNote('${n.id}')" class="btn btn-ghost" style="font-size:11px;padding:2px 8px;color:var(--danger,#b91c1c)" title="Delete note">✕</button>
+      </div>
+      <textarea
+        placeholder="Type your note here…"
+        oninput="updateNoteBody('${n.id}', this.value)"
+        style="width:100%;min-height:120px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-family:inherit;font-size:13px;background:var(--surface);resize:vertical;color:var(--text1);line-height:1.55"
+      >${(n.body||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+    </div>
+  `).join('');
+}
+
+function _fmtNoteDate(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-MY', { day:'2-digit', month:'short', year:'numeric' })
+      + ' ' + d.toLocaleTimeString('en-MY', { hour:'2-digit', minute:'2-digit' });
+  } catch(e) { return ''; }
+}
+
+function addNote() {
+  const notes = _getNotes();
+  const id = 'n' + Date.now();
+  notes.unshift({ id, title: '', body: '', created: new Date().toISOString(), updated: new Date().toISOString() });
+  _setNotes(notes);
+  loadNotesPage();
+  // Focus the title of the new note
+  setTimeout(() => {
+    const card = document.getElementById('note-card-' + id);
+    if (card) { const inp = card.querySelector('input'); if (inp) inp.focus(); }
+  }, 50);
+}
+
+function updateNoteTitle(id, val) {
+  _scheduleNoteSave(id, { title: val });
+}
+function updateNoteBody(id, val) {
+  _scheduleNoteSave(id, { body: val });
+}
+
+// Debounce saves — bundle rapid keystrokes into one write
+const _noteDirty = {};
+function _scheduleNoteSave(id, patch) {
+  _noteDirty[id] = Object.assign(_noteDirty[id]||{}, patch);
+  clearTimeout(_noteSaveTimer);
+  _noteSaveTimer = setTimeout(() => {
+    const notes = _getNotes();
+    for (const nid in _noteDirty) {
+      const idx = notes.findIndex(n => n.id === nid);
+      if (idx !== -1) {
+        Object.assign(notes[idx], _noteDirty[nid], { updated: new Date().toISOString() });
+      }
+    }
+    for (const k in _noteDirty) delete _noteDirty[k];
+    _setNotes(notes);
+    // Update timestamps in UI without full re-render
+    notes.forEach(n => {
+      const card = document.getElementById('note-card-' + n.id);
+      if (card) {
+        const ts = card.querySelector('span[style*="text3"]');
+        if (ts) ts.textContent = _fmtNoteDate(n.updated||n.created);
+      }
+    });
+  }, 800);
+}
+
+function deleteNote(id) {
+  if (!confirm('Delete this note? This cannot be undone.')) return;
+  const notes = _getNotes().filter(n => n.id !== id);
+  _setNotes(notes);
+  loadNotesPage();
+}
 
 // ══════════════════════════════════════════════════
 // LEE ENG — AI chat with deterministic handlers
