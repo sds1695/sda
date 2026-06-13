@@ -16822,6 +16822,124 @@ function markWagePaid(allocId, paidDate, _person, _invNo){
   }
   setWagePaidMap(m);
 }
+// ── Reconcile from Excel Green ──────────────────────────────────────────────
+// Bulk-marks ALL invoice-person pairs as "wage paid" EXCEPT:
+//   (a) invoices in the user-supplied outstanding set (client hasn't paid yet), and
+//   (b) invoices raised after the last payment round (recently collected, not yet distributed).
+// The user is prompted to confirm and to enter a "last paid up to" date cutoff
+// so anything invoiced AFTER that date is left untouched.
+function reconcileAgainstExcelGreen() {
+  // Default outstanding = the known green invoices as of Jun 2026.
+  // User can edit this list if needed; it's stored in localStorage for persistence.
+  const _osKey = 'seraya_outstanding_invs_v1';
+  let storedOs;
+  try { storedOs = JSON.parse(localStorage.getItem(_osKey) || 'null'); } catch(e) { storedOs = null; }
+  const defaultOutstanding = [
+    'INV260302','INV260411',
+    'INV260515','INV260516','INV260517','INV260518','INV260519','INV260520'
+  ];
+  const currentOs = storedOs || defaultOutstanding;
+
+  // Build modal
+  const modalId = '_recon_modal_' + Date.now();
+  const existing = document.getElementById('_recon_excel_modal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = '_recon_excel_modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML = `
+    <div style="background:var(--surface2);border-radius:12px;padding:24px;max-width:520px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,.3)">
+      <div style="font-size:16px;font-weight:700;margin-bottom:4px">↻ Reconcile Payout from Excel</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:16px">
+        Marks all historical invoice allocations as <strong>wage paid</strong>, except the invoices still outstanding (client hasn't paid) and anything invoiced after the cutoff date (recently collected, not yet distributed).
+      </div>
+
+      <div style="margin-bottom:14px">
+        <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px">Last payment-round date (invoices ON or BEFORE this date + already paid = mark as settled):</label>
+        <input id="_recon_cutoff" type="date" value="${_localToday()}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px">
+        <div style="font-size:10px;color:var(--text3);margin-top:3px">Tip: set this to your last PV payment date, e.g. 2026-05-23</div>
+      </div>
+
+      <div style="margin-bottom:14px">
+        <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px">Outstanding invoices to EXCLUDE (one per line — client hasn't paid, DO NOT mark as settled):</label>
+        <textarea id="_recon_outstanding" rows="8" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;font-family:'DM Mono',monospace;resize:vertical">${currentOs.join('\n')}</textarea>
+        <div style="font-size:10px;color:var(--text3);margin-top:3px">These will stay as "Awaiting Client" — do not pay until client settles.</div>
+      </div>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+        <button class="btn btn-ghost" onclick="document.getElementById('_recon_excel_modal').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="_doReconcileExcel()">↻ Mark Historical as Settled</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function _doReconcileExcel() {
+  const cutoffRaw = (document.getElementById('_recon_cutoff').value || '').trim();
+  const osRaw = (document.getElementById('_recon_outstanding').value || '').trim();
+  if (!cutoffRaw) { toast('Please enter a cutoff date.', 'error'); return; }
+
+  const cutoff = cutoffRaw; // YYYY-MM-DD
+  const outstanding = new Set(osRaw.split('\n').map(s => s.trim()).filter(Boolean));
+
+  // Save outstanding list for next time
+  try { localStorage.setItem('seraya_outstanding_invs_v1', JSON.stringify([...outstanding])); } catch(e) {}
+
+  // Collect all invoice-person pairs to settle:
+  // - Invoice status = 'paid' AND inv_date <= cutoff AND inv_no NOT in outstanding
+  // - We iterate ALLOCATIONS (legacy path) + INVOICES (for live multi-line path)
+  const PERSONS = ['KC','Koay','ET','Ivy','Cecilia','TKC','Koay PH'];
+  const normPerson = p => (p === 'Koay PH') ? 'Koay' : p;
+  const m = getWagePaidMap();
+  const settleDate = cutoff;
+  let count = 0;
+
+  // Helper: mark if not already settled
+  const settle = (allocId, person, invNo) => {
+    if (!allocId) return;
+    const ck = allocId + '|' + person;
+    if (m[ck] !== undefined && m[ck] !== null) return; // already settled
+    if (m[allocId] !== undefined && m[allocId] !== null) return; // legacy plain key settled
+    m[ck] = settleDate;
+    if (invNo) m['inv:' + invNo] = settleDate;
+    count++;
+  };
+
+  // Walk INVOICES — filter by paid + cutoff + not outstanding
+  (INVOICES || []).forEach(inv => {
+    const invNo = inv.inv_no || '';
+    if (outstanding.has(invNo)) return;
+    if (inv.status !== 'paid') return;
+    const invDate = (inv.inv_date || inv.date || '').slice(0,10);
+    if (invDate > cutoff) return; // after cutoff — leave as Ready
+
+    // Find all alloc rows for this invoice
+    const allocRows = (ALLOCATIONS || []).filter(a => a.inv_no === invNo && !isVoided('allocations', a.alloc_id));
+    if (allocRows.length) {
+      allocRows.forEach(a => {
+        const allocId = a.alloc_id;
+        // Settle for each person on this alloc
+        if (a.preparer_name) settle(allocId, normPerson(a.preparer_name), invNo);
+        if (a.reviewer_name) settle(allocId, normPerson(a.reviewer_name), invNo);
+        if (parseFloat(a.kc_commission||0) > 0) settle(allocId, 'KC', invNo);
+        if (parseFloat(a.koay_commission||0) > 0) settle(allocId, 'Koay', invNo);
+        if (parseFloat(a.cecilia_fee||0) > 0) settle(allocId, 'Cecilia', invNo);
+        // Also mark the plain alloc_id (covers legacy rows that don't have per-person tracking)
+        if (m[allocId] === undefined || m[allocId] === null) { m[allocId] = settleDate; count++; }
+      });
+    } else {
+      // No alloc row — mark via inv: key so it at least stops showing in Ready
+      if (!m['inv:' + invNo]) { m['inv:' + invNo] = settleDate; count++; }
+    }
+  });
+
+  setWagePaidMap(m);
+  document.getElementById('_recon_excel_modal').remove();
+  toast(`✓ Marked ${count} entries as settled (up to ${cutoff}). Outstanding invoices and post-cutoff items untouched.`, 'success');
+  renderPayoutView();
+}
+
 // VOUCHERS-as-source-of-truth back-fill: walk active vouchers and mark the
 // corresponding alloc/invoice in wpMap if it's not already there. Treats
 // VOUCHERS as authoritative — wpMap is just a local cache that can drift
