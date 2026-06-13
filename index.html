@@ -11683,7 +11683,7 @@ function aeUpdateCheck() {
   }
 }
 
-// Auto-recalculate allocations from gross fee using standard formula
+// Auto-recalculate allocations from gross fee using Lee Eng standard formula
 function aeRecalc() {
   const G   = parseFloat(document.getElementById('ae-gross').value||0);
   const H   = parseFloat(document.getElementById('ae-disb').value||0);
@@ -11691,24 +11691,42 @@ function aeRecalc() {
   const J   = parseFloat(document.getElementById('ae-cec-fee').value||0);
   const ssm = parseFloat(document.getElementById('ae-ssm-fee').value||0);
   const jt  = document.getElementById('ae-job-type').value;
-  let K;
-  if (jt === 'Cosec_Retainer') K = G - J;
-  else if (jt === 'Cosec_Other') K = G - ssm;
-  else K = G - H - I;
-  const kcc  = Math.round(K * 0.10 * 100) / 100;
-  const koac = Math.round(K * 0.05 * 100) / 100; // Koay 5% if applicable — user can adjust
-  const remain = K - kcc - koac;
   const prep = document.getElementById('ae-preparer').value;
   const rev  = document.getElementById('ae-reviewer').value;
-  // Standard split: reviewer gets 20%, preparer gets 80% of remain (after KC/Koay commission)
-  const rAmt = Math.round(remain * 0.20 * 100) / 100;
-  const pAmt = Math.round((remain - rAmt) * 100) / 100;
-  document.getElementById('ae-kc-comm').value    = kcc.toFixed(2);
-  document.getElementById('ae-reviewer-amt').value = (rev ? rAmt : 0).toFixed(2);
+
+  // Net = gross minus appropriate deductions per job type
+  let net;
+  if (jt === 'Cosec_Retainer') net = G - J;      // Type B: gross minus Cecilia fee
+  else if (jt === 'Cosec_Other') net = G - ssm;  // Type C: gross minus SSM filing fee
+  else net = G - H - I;                           // Type A: gross minus disbursements and Abot
+
+  // Admin retention: 15% of net — Lee Eng rule (all job types)
+  const admin = Math.round(net * 0.15 * 100) / 100;
+
+  // KC commission: 10% of GROSS — Lee Eng rule (NOT net)
+  const kcc = Math.round(G * 0.10 * 100) / 100;
+
+  // For split: net minus admin minus KC commission
+  const forSplit = Math.round((net - admin - kcc) * 100) / 100;
+
+  // Preparer/Reviewer split:
+  //   Type A (standard jobs): 70% preparer / 30% reviewer
+  //   Type B & C (cosec): 50% preparer / 50% reviewer
+  const isCosec = (jt === 'Cosec_Retainer' || jt === 'Cosec_Other');
+  const prepShare = isCosec ? 0.50 : 0.70;
+  const pAmt = Math.round(forSplit * prepShare * 100) / 100;
+  const rAmt = Math.round((forSplit - pAmt) * 100) / 100;
+
+  // Reviewer top-up RM20 (sourced from Abot, not additional cost):
+  // Only for Type A when reviewer is present. Not applicable for Cosec jobs (no Abot).
+  const top20 = (!isCosec && rev) ? 20 : 0;
+
+  document.getElementById('ae-retain').value        = admin.toFixed(2);
+  document.getElementById('ae-kc-comm').value       = kcc.toFixed(2);
+  document.getElementById('ae-koay-comm').value     = '0.00'; // set manually if applicable
   document.getElementById('ae-preparer-amt').value  = (prep ? pAmt : 0).toFixed(2);
-  document.getElementById('ae-koay-comm').value  = '0.00'; // user sets manually if applicable
-  document.getElementById('ae-top20').value       = '0.00';
-  document.getElementById('ae-retain').value      = '0.00';
+  document.getElementById('ae-reviewer-amt').value  = (rev  ? rAmt : 0).toFixed(2);
+  document.getElementById('ae-top20').value         = (rev  ? top20 : 0).toFixed(2);
   aeUpdateCheck();
   toast('Recalculated — review and adjust as needed.', 'info');
 }
