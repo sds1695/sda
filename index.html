@@ -3967,9 +3967,20 @@ function invalidateJtCache() { __jtCache = null; }
 function getInvJobType(inv) {
   if (!inv) return '';
   if (inv.job_type && String(inv.job_type).trim()) return String(inv.job_type).trim();
+  // Try allocations cache (only available after Invoice Breakdown is visited)
   if (__jtCache === null) _rebuildJtCache();
   const k = (inv.inv_no||'').toString().trim();
-  return k ? (__jtCache[k] || '') : '';
+  const fromCache = k ? (__jtCache[k] || '') : '';
+  if (fromCache) return fromCache;
+  // Fallback: read lineType from first non-disb line in desc1 JSON
+  try {
+    const lines = JSON.parse(inv.desc1 || '');
+    if (Array.isArray(lines)) {
+      const mainLine = lines.find(l => !l.isDisb && l.lineType);
+      if (mainLine && mainLine.lineType) return String(mainLine.lineType).trim();
+    }
+  } catch(e) {}
+  return '';
 }
 
 // ══════════════════════════════════════════════════
