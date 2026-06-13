@@ -5016,7 +5016,8 @@ function runAccountingHealth(receipts, vouchers) {
                   iNoSet, iClArr
                 )
               );
-              const _paidNoRcpt = allInvs.filter(i => i.status === 'paid').filter(i => {
+              // Only FY26 (non-preOB) paid invoices matter for drift — pre-FY ones are in OB_1100
+              const _paidNoRcpt = allInvs.filter(i => i.status === 'paid' && !isPreOB(i)).filter(i => {
                 const paid = _rcptByInv[(i.inv_no||'').toLowerCase().trim()] || 0;
                 return paid < parseFloat(i.amount||0) - 0.02;
               });
