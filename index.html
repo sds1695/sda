@@ -3889,6 +3889,22 @@ function computeAccountValue(acct, invoices, vouchers) {
                      .reduce((s,v) => s + parseFloat(v.amount||0), 0);
     }
   }
+  // Auto-match coa_XXXX voucher categories by account code — no mapsFrom entry needed.
+  // When a voucher is saved with category "coa_5160", it auto-routes to account 5160
+  // without the user having to add "coa_5160" to the account's mapsFrom list.
+  if (acct.code) {
+    const _codeToken = 'coa_' + String(acct.code).toLowerCase();
+    const _sec = COA_SECTIONS[acct.section] || {};
+    // Only apply to expense accounts (revenue uses invoice job_type matching above)
+    if (_sec.side === 'expense') {
+      // Skip if already covered by an explicit mapsFrom to avoid double-count
+      const _alreadyCovered = !!(acct.mapsFrom||[]).some(m => (m||'').toLowerCase() === _codeToken);
+      if (!_alreadyCovered) {
+        sum += vouchers.filter(v => (v.category||'').toLowerCase() === _codeToken)
+                       .reduce((s,v) => s + parseFloat(v.amount||0), 0);
+      }
+    }
+  }
   // Local journals (manual + auto-posted) — match by acct code/name and add the
   // appropriate side. Works for both mapped and freshly-created (mapsFrom-less)
   // accounts. So a journal posting to "5151 Claude - Subscription" flows straight
@@ -18237,8 +18253,14 @@ async function loadIncomeStatement() {
   const mappedExpTokens = new Set();
   let disbHandled = false;
   coa.forEach(a => {
-    if (!a.mapsFrom) return;
     const sec = COA_SECTIONS[a.section] || {};
+    // Auto-register coa_XXXX token for every account with a code — no mapsFrom needed
+    if (a.code) {
+      const codeToken = 'coa_' + String(a.code).toLowerCase();
+      if (sec.side === 'income') mappedRevTokens.add(codeToken);
+      else if (sec.side === 'expense') mappedExpTokens.add(codeToken);
+    }
+    if (!a.mapsFrom) return;
     a.mapsFrom.forEach(t => {
       const k = (t||'').toLowerCase();
       if (sec.side === 'income') {
