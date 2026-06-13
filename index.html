@@ -20039,7 +20039,6 @@ function saveHorizontalAlloc() {
 // NOTES
 // ══════════════════════════════════════════════════
 const NOTES_LS_KEY = 'seraya_notes_v1';
-let _noteSaveTimer = null;
 
 function _getNotes() {
   try { return JSON.parse(localStorage.getItem(NOTES_LS_KEY) || '[]'); } catch(e) { return []; }
@@ -20047,36 +20046,6 @@ function _getNotes() {
 function _setNotes(arr) {
   localStorage.setItem(NOTES_LS_KEY, JSON.stringify(arr));
   try { pushSyncedBlob('_notes_blob'); } catch(e) {}
-}
-
-function loadNotesPage() {
-  const notes = _getNotes();
-  const container = document.getElementById('notes-list');
-  if (!container) return;
-  if (!notes.length) {
-    container.innerHTML = `<div style="color:var(--text3);font-size:13px;padding:20px 0">No notes yet. Click <strong>+ New Note</strong> to create one.</div>`;
-    return;
-  }
-  container.innerHTML = notes.map((n, i) => `
-    <div class="card" id="note-card-${n.id}" style="padding:16px 18px">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-        <input
-          type="text"
-          value="${(n.title||'').replace(/"/g,'&quot;')}"
-          placeholder="Note title…"
-          oninput="updateNoteTitle('${n.id}', this.value)"
-          style="flex:1;font-size:14px;font-weight:600;border:none;border-bottom:1px solid var(--border);background:transparent;padding:2px 0;outline:none;color:var(--text1)"
-        />
-        <span style="font-size:11px;color:var(--text3);white-space:nowrap">${_fmtNoteDate(n.updated||n.created)}</span>
-        <button onclick="deleteNote('${n.id}')" class="btn btn-ghost" style="font-size:11px;padding:2px 8px;color:var(--danger,#b91c1c)" title="Delete note">✕</button>
-      </div>
-      <textarea
-        placeholder="Type your note here…"
-        oninput="updateNoteBody('${n.id}', this.value)"
-        style="width:100%;min-height:120px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-family:inherit;font-size:13px;background:var(--surface);resize:vertical;color:var(--text1);line-height:1.55"
-      >${(n.body||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
-    </div>
-  `).join('');
 }
 
 function _fmtNoteDate(iso) {
@@ -20088,50 +20057,119 @@ function _fmtNoteDate(iso) {
   } catch(e) { return ''; }
 }
 
+function loadNotesPage() {
+  const notes = _getNotes();
+  const container = document.getElementById('notes-list');
+  if (!container) return;
+  if (!notes.length) {
+    container.innerHTML = `<div style="color:var(--text3);font-size:13px;padding:20px 0">No notes yet. Click <strong>+ New Note</strong> to create one.</div>`;
+    return;
+  }
+  container.innerHTML = notes.map(n => _renderNoteCard(n, !!n._editing)).join('');
+}
+
+function _renderNoteCard(n, editing) {
+  const safeTitle = (n.title||'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+  const safeBody  = (n.body||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  if (editing) {
+    return `
+    <div class="card" id="note-card-${n.id}" style="padding:16px 18px;border:1.5px solid var(--brand,#0d9488)">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <input
+          type="text"
+          id="note-title-${n.id}"
+          value="${safeTitle}"
+          placeholder="Note title…"
+          style="flex:1;font-size:14px;font-weight:600;border:none;border-bottom:1px solid var(--border);background:transparent;padding:2px 0;outline:none;color:var(--text1)"
+        />
+        <span style="font-size:11px;color:var(--text3);white-space:nowrap">${_fmtNoteDate(n.updated||n.created)}</span>
+      </div>
+      <textarea
+        id="note-body-${n.id}"
+        placeholder="Type your note here…"
+        style="width:100%;min-height:140px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-family:inherit;font-size:13px;background:var(--surface);resize:vertical;color:var(--text1);line-height:1.6"
+      >${safeBody}</textarea>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button onclick="saveNote('${n.id}')" class="btn btn-primary" style="font-size:12px;padding:4px 16px">💾 Save</button>
+        <button onclick="cancelNoteEdit('${n.id}')" class="btn btn-ghost" style="font-size:12px;padding:4px 12px">Cancel</button>
+        <button onclick="deleteNote('${n.id}')" class="btn btn-ghost" style="font-size:12px;padding:4px 12px;color:var(--danger,#b91c1c);margin-left:auto">✕ Delete</button>
+      </div>
+    </div>`;
+  } else {
+    const bodyDisplay = safeBody
+      ? `<div style="font-size:13px;color:var(--text1);white-space:pre-wrap;line-height:1.6;padding:2px 0">${safeBody}</div>`
+      : `<div style="font-size:13px;color:var(--text3);font-style:italic">(empty)</div>`;
+    return `
+    <div class="card" id="note-card-${n.id}" style="padding:16px 18px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <div style="flex:1;font-size:14px;font-weight:600;color:var(--text1)">${safeTitle || '<span style="color:var(--text3);font-style:italic">Untitled</span>'}</div>
+        <span style="font-size:11px;color:var(--text3);white-space:nowrap">Saved ${_fmtNoteDate(n.updated||n.created)}</span>
+        <button onclick="editNote('${n.id}')" class="btn btn-secondary" style="font-size:12px;padding:3px 12px">✎ Edit</button>
+        <button onclick="deleteNote('${n.id}')" class="btn btn-ghost" style="font-size:12px;padding:3px 10px;color:var(--danger,#b91c1c)">✕</button>
+      </div>
+      ${bodyDisplay}
+    </div>`;
+  }
+}
+
 function addNote() {
   const notes = _getNotes();
   const id = 'n' + Date.now();
-  notes.unshift({ id, title: '', body: '', created: new Date().toISOString(), updated: new Date().toISOString() });
+  const newNote = { id, title: '', body: '', created: new Date().toISOString(), updated: new Date().toISOString(), _editing: true };
+  notes.unshift(newNote);
   _setNotes(notes);
   loadNotesPage();
-  // Focus the title of the new note
   setTimeout(() => {
-    const card = document.getElementById('note-card-' + id);
-    if (card) { const inp = card.querySelector('input'); if (inp) inp.focus(); }
+    const inp = document.getElementById('note-title-' + id);
+    if (inp) inp.focus();
   }, 50);
 }
 
-function updateNoteTitle(id, val) {
-  _scheduleNoteSave(id, { title: val });
-}
-function updateNoteBody(id, val) {
-  _scheduleNoteSave(id, { body: val });
+function editNote(id) {
+  const notes = _getNotes();
+  const idx = notes.findIndex(n => n.id === id);
+  if (idx === -1) return;
+  notes[idx]._editing = true;
+  _setNotes(notes);
+  // Re-render just this card
+  const card = document.getElementById('note-card-' + id);
+  if (card) {
+    card.outerHTML = _renderNoteCard(notes[idx], true);
+    setTimeout(() => { const inp = document.getElementById('note-title-' + id); if (inp) inp.focus(); }, 30);
+  }
 }
 
-// Debounce saves — bundle rapid keystrokes into one write
-const _noteDirty = {};
-function _scheduleNoteSave(id, patch) {
-  _noteDirty[id] = Object.assign(_noteDirty[id]||{}, patch);
-  clearTimeout(_noteSaveTimer);
-  _noteSaveTimer = setTimeout(() => {
-    const notes = _getNotes();
-    for (const nid in _noteDirty) {
-      const idx = notes.findIndex(n => n.id === nid);
-      if (idx !== -1) {
-        Object.assign(notes[idx], _noteDirty[nid], { updated: new Date().toISOString() });
-      }
-    }
-    for (const k in _noteDirty) delete _noteDirty[k];
+function saveNote(id) {
+  const notes = _getNotes();
+  const idx = notes.findIndex(n => n.id === id);
+  if (idx === -1) return;
+  const titleEl = document.getElementById('note-title-' + id);
+  const bodyEl  = document.getElementById('note-body-' + id);
+  notes[idx].title   = titleEl ? titleEl.value : notes[idx].title;
+  notes[idx].body    = bodyEl  ? bodyEl.value  : notes[idx].body;
+  notes[idx].updated = new Date().toISOString();
+  delete notes[idx]._editing;
+  _setNotes(notes);
+  // Re-render just this card in view mode
+  const card = document.getElementById('note-card-' + id);
+  if (card) card.outerHTML = _renderNoteCard(notes[idx], false);
+}
+
+function cancelNoteEdit(id) {
+  const notes = _getNotes();
+  const idx = notes.findIndex(n => n.id === id);
+  if (idx === -1) return;
+  // If note has never been saved (empty body+title), just remove it
+  if (!notes[idx].title && !notes[idx].body) {
+    notes.splice(idx, 1);
     _setNotes(notes);
-    // Update timestamps in UI without full re-render
-    notes.forEach(n => {
-      const card = document.getElementById('note-card-' + n.id);
-      if (card) {
-        const ts = card.querySelector('span[style*="text3"]');
-        if (ts) ts.textContent = _fmtNoteDate(n.updated||n.created);
-      }
-    });
-  }, 800);
+    loadNotesPage();
+    return;
+  }
+  delete notes[idx]._editing;
+  _setNotes(notes);
+  const card = document.getElementById('note-card-' + id);
+  if (card) card.outerHTML = _renderNoteCard(notes[idx], false);
 }
 
 function deleteNote(id) {
