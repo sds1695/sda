@@ -5004,7 +5004,41 @@ function runAccountingHealth(receipts, vouchers) {
                   }).join('<br>') +
                   '<br><span style="opacity:.75;font-style:italic">Fix: open each invoice in GSheets and set amount_outstanding to the "should be" value above.</span>'
                 : `<br><span style="opacity:.75;font-style:italic">Drift source unclear — no single FY26 invoice has stale ao. Check if OB_1100 (${fmtRM(obTD)}) is correct, or if any pre-FY26 invoice has an unrecorded partial payment.</span>`)
-          : `${fmtRM(Math.abs(tdDrift))} drift — receipts recorded without matching invoice`;
+          : (() => {
+              // Negative drift: liveTD > statusTD — something is reducing liveTD less than it should,
+              // OR newInv is inflated. Two culprits:
+              // (a) Drawings receipts that fail matchDrawingsClient — not subtracted from liveTD
+              // (b) Paid invoices with no matching receipt — newInv includes them, bankRc doesn't offset
+              const _unmatchedDraw = receipts.filter(r =>
+                _isD(r) && !matchDrawingsClient(
+                  (r.inv_no||'').toLowerCase().trim(),
+                  (r.client_name||'').toLowerCase().trim(),
+                  iNoSet, iClArr
+                )
+              );
+              const _paidNoRcpt = allInvs.filter(i => i.status === 'paid').filter(i => {
+                const paid = _rcptByInv[(i.inv_no||'').toLowerCase().trim()] || 0;
+                return paid < parseFloat(i.amount||0) - 0.02;
+              });
+              let msg = `${fmtRM(Math.abs(tdDrift))} drift — receipts not offsetting invoices`;
+              if (_unmatchedDraw.length) {
+                msg += `<br><span style="color:var(--amber)">⚠ ${_unmatchedDraw.length} drawings receipt${_unmatchedDraw.length>1?'s':''} not matched to any invoice client (not subtracted from live TD):</span><br>` +
+                  _unmatchedDraw.slice(0,3).map(r => {
+                    const rno = r.receipt_no || r.receipt_id || '?';
+                    return `${rno} · ${r.client_name||'(no client)'} · ${fmtRM(parseFloat(r.amount||0))} · inv_no: ${r.inv_no||'(none)'}`;
+                  }).join('<br>') + (_unmatchedDraw.length > 3 ? `<br>+${_unmatchedDraw.length-3} more` : '') +
+                  '<br><span style="opacity:.75;font-style:italic">Fix: in Receipts tab, ensure client_name matches the invoice client exactly, or set inv_no to the correct invoice number.</span>';
+              }
+              if (_paidNoRcpt.length) {
+                msg += `<br><span style="color:var(--amber)">⚠ ${_paidNoRcpt.length} invoice${_paidNoRcpt.length>1?'s':''} marked paid in GSheets but no receipt found:</span><br>` +
+                  _paidNoRcpt.slice(0,3).map(i => `${i.inv_no||'?'} · ${i.client_name||'?'} · ${fmtRM(parseFloat(i.amount||0))}`).join('<br>') + (_paidNoRcpt.length > 3 ? `<br>+${_paidNoRcpt.length-3} more` : '') +
+                  '<br><span style="opacity:.75;font-style:italic">Fix: add the missing receipt in GSheets, or revert the invoice status to Outstanding.</span>';
+              }
+              if (!_unmatchedDraw.length && !_paidNoRcpt.length) {
+                msg += `<br><span style="opacity:.75;font-style:italic">Live TD: OB ${fmtRM(obTD)} + FY26 inv ${fmtRM(newInv)} − bank rc ${fmtRM(bankRc)} − draw rc ${fmtRM(tdDrawRc)} = ${fmtRM(liveTD)} — check for a receipt linked to a cancelled invoice.</span>`;
+              }
+              return msg;
+            })();
     const drawDetail = drawOk
       ? 'All drawings receipts matched to invoice clients'
       : unmatchedDraw.map(r => {
@@ -5553,27 +5587,29 @@ function runAccountingHealth(receipts, vouchers) {
       // Back-fill from VOUCHERS first (authoritative), then migrate legacy
       // alloc_id keys to rotation-safe inv: form, then read the result.
       const _rec = (typeof reconcileWagePaidFromVouchers === 'function') ? reconcileWagePaidFromVouchers() : { added: 0 };
-      const _mig = (typeof migrateWpMapToInvKeys === 'function') ? migrateWpMapToInvKeys() : { migrated: 0, orphans: 0 };
+      const _mig = (typeof migrateWpMapToInvKeys === 'function') ? migrateWpMapToInvKeys() : { migrated: 0, orphans: 0, purged: 0 };
       const m = getWagePaidMap();
       const raw = (typeof window !== 'undefined' && Array.isArray(window.ALLOCATIONS_RAW)) ? window.ALLOCATIONS_RAW : [];
       const orphans = [];
       const unmigrated = [];
       Object.keys(m).forEach(k => {
         if (k.startsWith('inv:')) return;
-        const a = raw.find(x => x && x.alloc_id === k);
+        // Strip |person suffix on composite keys before alloc_id lookup
+        const baseId = k.includes('|') ? k.split('|')[0] : k;
+        const a = raw.find(x => x && x.alloc_id === baseId);
         if (!a) { orphans.push(k); return; }
         const invKey = 'inv:' + a.inv_no;
-        if (m[invKey] === undefined || m[invKey] === null) unmigrated.push({ aid: k, inv: a.inv_no });
+        if (!k.includes('|') && (m[invKey] === undefined || m[invKey] === null)) unmigrated.push({ aid: k, inv: a.inv_no });
       });
       if (orphans.length || unmigrated.length) {
         _wpMapOk = false;
         const parts = [];
         if (orphans.length) parts.push(`${orphans.length} orphaned alloc_id key${orphans.length>1?'s':''} (no matching row)`);
         if (unmigrated.length) parts.push(`${unmigrated.length} legacy key${unmigrated.length>1?'s':''} not yet rotation-safe`);
-        const _heals = [_rec.added && `back-filled ${_rec.added} from vouchers`, _mig.migrated && `migrated ${_mig.migrated} legacy key${_mig.migrated>1?'s':''}`].filter(Boolean).join(', ');
+        const _heals = [_rec.added && `back-filled ${_rec.added} from vouchers`, _mig.migrated && `migrated ${_mig.migrated} legacy key${_mig.migrated>1?'s':''}`, _mig.purged && `purged ${_mig.purged} orphaned key${_mig.purged>1?'s':''}`].filter(Boolean).join(', ');
         _wpMapDetail = parts.join(' · ') + (_heals ? ` — auto-healed: ${_heals}` : '');
-      } else if (_mig.migrated || _rec.added) {
-        const _heals = [_rec.added && `back-filled ${_rec.added} from vouchers`, _mig.migrated && `migrated ${_mig.migrated} legacy key${_mig.migrated>1?'s':''}`].filter(Boolean).join(', ');
+      } else if (_mig.migrated || _mig.purged || _rec.added) {
+        const _heals = [_rec.added && `back-filled ${_rec.added} from vouchers`, _mig.migrated && `migrated ${_mig.migrated} legacy key${_mig.migrated>1?'s':''}`, _mig.purged && `purged ${_mig.purged} orphaned key${_mig.purged>1?'s':''}`].filter(Boolean).join(', ');
         _wpMapDetail = `wage_paid map clean — auto-healed: ${_heals}`;
       }
     } catch(e) { console.warn('wpmap integrity check failed', e); }
@@ -17143,21 +17179,36 @@ function migrateWpMapToInvKeys() {
   try {
     const m = getWagePaidMap();
     const raw = (typeof window !== 'undefined' && Array.isArray(window.ALLOCATIONS_RAW)) ? window.ALLOCATIONS_RAW : [];
-    if (!raw.length) return { migrated: 0, orphans: 0 };
-    let migrated = 0, orphans = 0;
+    if (!raw.length) return { migrated: 0, orphans: 0, purged: 0 };
+    let migrated = 0, orphans = 0, purged = 0;
+    const toPurge = [];
     Object.keys(m).forEach(k => {
       if (k.startsWith('inv:')) return;
-      const a = raw.find(x => x && x.alloc_id === k);
-      if (!a || !a.inv_no) { orphans++; return; }
-      const invKey = 'inv:' + a.inv_no;
-      if (m[invKey] === undefined || m[invKey] === null) {
-        m[invKey] = m[k];
-        migrated++;
+      // Composite keys like "allocId|Person" — strip suffix before lookup
+      const baseId = k.includes('|') ? k.split('|')[0] : k;
+      const a = raw.find(x => x && x.alloc_id === baseId);
+      if (!a || !a.inv_no) {
+        orphans++;
+        // Safe to purge: inv: companion was always written alongside these keys
+        // (composite keys via reconcileAgainstExcelGreen/markWagePaid, plain keys
+        // via markWagePaid dual-write). Paid status is preserved via inv: key.
+        toPurge.push(k);
+        return;
+      }
+      // Plain legacy key — write inv: companion if missing
+      if (!k.includes('|')) {
+        const invKey = 'inv:' + a.inv_no;
+        if (m[invKey] === undefined || m[invKey] === null) {
+          m[invKey] = m[k];
+          migrated++;
+        }
       }
     });
-    if (migrated) setWagePaidMap(m);
-    return { migrated, orphans };
-  } catch(e) { console.warn('wpMap migration failed', e); return { migrated: 0, orphans: 0 }; }
+    // Purge orphaned keys now that inv: companions cover paid status
+    toPurge.forEach(k => { delete m[k]; purged++; });
+    if (migrated || purged) setWagePaidMap(m);
+    return { migrated, orphans, purged };
+  } catch(e) { console.warn('wpMap migration failed', e); return { migrated: 0, orphans: 0, purged: 0 }; }
 }
 
 // Robust wage-paid check: handles alloc_id rotation. Returns true if THIS
