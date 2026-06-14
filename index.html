@@ -2487,22 +2487,16 @@ window.ALLOC_VOID_IDS = [
 // Receipt numbers (receipt_no field) to suppress everywhere.
 // Used when the edit-duplicate bug created extra rows that can't be __VOID__'d
 // in GSheets without a backend delete endpoint.
-// 2026-05-15 recon: RV260408–RV260419 are duplicate Prithishan-255 drawings
+// 2026-05-15 recon: RV260408–RV260419 were duplicate Prithishan-255 drawings
 // receipts created by the edit-bug cascade on RV260407.
-window.RECEIPT_VOID_NOS = [
-  'RV260408',  // duplicate of RV260407 (Prithishan 255 drawings, Apr 2026)
-  'RV260409',  // duplicate of RV260407 (Prithishan 255 drawings, Apr 2026)
-  'RV260410',  // duplicate of RV260407 (edit-bug cascade)
-  'RV260411',  // duplicate of RV260407 (edit-bug cascade)
-  'RV260412',  // duplicate of RV260407 (edit-bug cascade)
-  'RV260413',  // duplicate of RV260407 (edit-bug cascade)
-  'RV260414',  // duplicate of RV260407 (edit-bug cascade)
-  'RV260415',  // duplicate of RV260407 (edit-bug cascade)
-  'RV260416',  // duplicate of RV260407 (edit-bug cascade)
-  'RV260417',  // duplicate of RV260407 (edit-bug cascade)
-  'RV260418',  // duplicate of RV260407 (edit-bug cascade)
-  'RV260419',  // duplicate of RV260407 (edit-bug cascade)
-];
+// 2026-06-14 CLEARED: The 14 duplicate INV251212-RM255 receipts are now in
+// the localStorage void list (seraya_voided_receipts). Clearing this list
+// because the RV sequential numbering shifted after bulk cleanup — RV260408–
+// RV260417 now map to legitimate Apr-2026 receipts (INV260403, INV251212,
+// INV260413, INV260112, INV260406, INV260412, INV260414, INV260416, INV260501,
+// INV260415) and RECEIPT_VOID_NOS was incorrectly suppressing them.
+// RECEIPT_VOID_CRITERIA below handles any remaining INV251212 duplicates safely.
+window.RECEIPT_VOID_NOS = [];
 
 // Content-based duplicate suppression — more robust than RV number matching.
 // Each entry finds all receipts matching the criteria and keeps only the FIRST
