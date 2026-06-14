@@ -2498,15 +2498,10 @@ window.ALLOC_VOID_IDS = [
 // RECEIPT_VOID_CRITERIA below handles any remaining INV251212 duplicates safely.
 window.RECEIPT_VOID_NOS = [];
 
-// Content-based duplicate suppression — more robust than RV number matching.
-// Each entry finds all receipts matching the criteria and keeps only the FIRST
-// (by receipt_id ascending = original), voiding the rest (= edit-bug duplicates).
-// This works even when RV sequential numbering shifts due to other receipts.
-window.RECEIPT_VOID_CRITERIA = [
-  // Keep only the FIRST Apr 2026 RM 255 drawings receipt linked to INV251212.
-  // All others are edit-bug duplicates of RV260407 (Prithishan partial drawings).
-  { year_month: '2026-04', amount: 255, inv_no: 'INV251212', keep_first_only: true },
-];
+// Content-based duplicate suppression — cleared 2026-06-14 after GAS dedup_cleanup.gs
+// permanently deleted all 43 duplicate rows from GSheets (39 receipts, 4 vouchers).
+// INV251212 duplicates and all other edit-bug duplicates are now gone at source.
+window.RECEIPT_VOID_CRITERIA = [];
 
 // Precision suppression by exact receipt_id — used when criteria-based matching
 // is too broad or ambiguous. These IDs are unconditionally excluded from all
