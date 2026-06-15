@@ -2557,12 +2557,13 @@ window.INV_STATUS_OVERRIDES = {
 // ══════════════════════════════════════════════════
 async function api(payload) {
   if (SESSION && SESSION.token) payload.token = SESSION.token;
+  payload._t = Date.now(); // bust GAS CacheService key so stale callback names are never served
   return new Promise((resolve) => {
     const cbName = 'cb_' + Math.random().toString(36).slice(2);
     const encoded = encodeURIComponent(JSON.stringify(payload));
     const url = API + '?callback=' + cbName + '&payload=' + encoded;
     const script = document.createElement('script');
-    const timeout = setTimeout(() => { cleanup(); resolve({ ok: false, error: 'Request timed out.' }); }, 45000);
+    const timeout = setTimeout(() => { cleanup(); resolve({ ok: false, error: 'Request timed out.' }); }, 90000);
     function cleanup() {
       clearTimeout(timeout);
       delete window[cbName];
