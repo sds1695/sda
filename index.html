@@ -2563,7 +2563,7 @@ async function api(payload) {
     const encoded = encodeURIComponent(JSON.stringify(payload));
     const url = API + '?callback=' + cbName + '&payload=' + encoded;
     const script = document.createElement('script');
-    const timeout = setTimeout(() => { cleanup(); resolve({ ok: false, error: 'Request timed out.' }); }, 90000);
+    const timeout = setTimeout(() => { cleanup(); resolve({ ok: false, error: 'Request timed out.' }); }, 120000);
     function cleanup() {
       clearTimeout(timeout);
       delete window[cbName];
