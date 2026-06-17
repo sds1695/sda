@@ -2519,6 +2519,11 @@ window.RECEIPT_SUPPRESS_IDS = new Set([
   'R1778854922241',  // artefact copy of INV260208 (Corning TCM, Feb 27)
   'R1778854928154',  // artefact copy of INV260415 (Mutualpro, Apr 29)
   'R1778854931674',  // artefact copy of INV260415 (Mutualpro, Apr 29)
+  // ── INV260108 H&B split fix (2026-06-17): original 988.80 batch receipt voided ──
+  // Jan-20 payment of RM 988.80 covered both INV260108 (618.80) + INV260109 (370).
+  // INV260109 portion was later receipted separately (R1781377621423, RM 370).
+  // Replaced by R1781705152309 (RM 618.80) to hold only INV260108's correct share.
+  'R1776953033283',
 ]);
 
 // Invoice amount overrides: GSheets holds the raw-data amount; Excel GL has the
