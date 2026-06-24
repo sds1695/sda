@@ -20571,4 +20571,407 @@ function leAnswer(rawText) {
     // Match BOTH voucher payments AND manual GL journal entries containing
     // 'dividend' in any field (dr_account, cr_account, description).
     const reDiv = /dividend/i;
-    // Voucher-side: broader match — category, description,
+    // Voucher-side: broader match — category, description,    // Voucher-side: broader match — category, description, OR payee
+    const vDivs = (VOUCHERS||[]).filter(v => {
+      if ((v.description||'').startsWith('__VOID__')) return false;
+      return reDiv.test(v.category||'') || reDiv.test(v.description||'') || reDiv.test(v.payee||'');
+    });
+    // Manual journal side
+    const journals = (window._GL_JOURNALS_CACHE || []).filter(j => {
+      return reDiv.test(j.dr_account||'') || reDiv.test(j.cr_account||'') || reDiv.test(j.description||'');
+    });
+
+    const allEntries = [];
+    vDivs.forEach(v => allEntries.push({ date: v.date||'', source: 'Voucher', ref: v.voucher_no||'', who: v.payee||'—', desc: v.description||'', amount: parseFloat(v.amount||0) }));
+    journals.forEach(j => allEntries.push({ date: j.date||'', source: 'GL Journal', ref: j.ref || j.gl_id || '', who: (j.dr_account||'') + ' / ' + (j.cr_account||''), desc: j.description||'', amount: parseFloat(j.amount||0) }));
+
+    const yrEntries = allEntries.filter(e => _leYear(e.date) === yr);
+    const total = yrEntries.reduce((s,e) => s + e.amount, 0);
+    const allTime = allEntries.reduce((s,e) => s + e.amount, 0);
+
+    if (!allEntries.length) {
+      return "No dividend entries found — checked voucher category/description/payee and GL manual journals. If you've posted dividends, make sure the term 'dividend' appears in one of: voucher category, voucher description, manual journal DR/CR account name, or journal description.";
+    }
+
+    let html = '<strong>Dividends paid in ' + yr + ':</strong> ' + _leFmt(total) + ' (' + yrEntries.length + ' entr' + (yrEntries.length!==1?'ies':'y') + ')';
+    if (Math.abs(allTime - total) > 0.01) {
+      html += "<br><span style='color:var(--text3);font-size:11px'>All-time: " + _leFmt(allTime) + " across " + allEntries.length + " entries</span>";
+    }
+    // Split count between vouchers vs journals
+    const vCnt = yrEntries.filter(e => e.source === 'Voucher').length;
+    const jCnt = yrEntries.filter(e => e.source === 'GL Journal').length;
+    if (vCnt && jCnt) {
+      html += "<br><span style='color:var(--text3);font-size:11px'>From " + vCnt + " voucher" + (vCnt!==1?'s':'') + " + " + jCnt + " GL journal entr" + (jCnt!==1?'ies':'y') + "</span>";
+    } else if (jCnt) {
+      html += "<br><span style='color:var(--text3);font-size:11px'>From " + jCnt + " GL journal entr" + (jCnt!==1?'ies':'y') + " (no voucher payments tagged)</span>";
+    }
+
+    const showList = yrEntries.length ? yrEntries : allEntries;
+    if (showList.length) {
+      html += '<table><thead><tr><th>Date</th><th>Source</th><th>Account / Payee</th><th>Amount</th></tr></thead><tbody>';
+      showList.sort((a,b) => (b.date||'').localeCompare(a.date||'')).slice(0,10).forEach(e => {
+        html += '<tr><td>' + (e.date||'').slice(0,10) + '</td><td style="font-size:11px">' + e.source + '</td><td style="font-size:11px">' + e.who + '</td><td>' + _leFmt(e.amount) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      if (showList.length > 10) html += "<div style='font-size:11px;color:var(--text3);margin-top:4px'>+ " + (showList.length - 10) + " more</div>";
+    }
+    if (!(window._GL_JOURNALS_CACHE) || !window._GL_JOURNALS_CACHE.length) {
+      html += "<div style='font-size:11px;color:var(--text3);margin-top:6px;font-style:italic'>Tip: GL journals haven't been loaded yet — open the General Ledger page once to fetch them, then ask me again for the complete number.</div>";
+    }
+    return html;
+  }
+
+  if (/(revenue|sales|billed|invoiced|turnover)/.test(text)) {
+    const invs = (INVOICES||[]).filter(i => _leYear(i.date) === yr && (i.status||'') !== 'cancelled');
+    const total = invs.reduce((s,i) => s + parseFloat(i.amount||0), 0);
+    let html = "<strong>Revenue (invoiced) in " + yr + ":</strong> " + _leFmt(total) + "<br>";
+    html += "<span style='color:var(--text3);font-size:11px'>" + invs.length + " invoices, average " + _leFmt(invs.length ? total/invs.length : 0) + "</span>";
+    const byMo = {};
+    invs.forEach(i => { const m = (i.date||'').slice(0,7); byMo[m] = (byMo[m]||0) + parseFloat(i.amount||0); });
+    const months = Object.keys(byMo).sort();
+    if (months.length) {
+      html += '<table><thead><tr><th>Month</th><th>Amount</th></tr></thead><tbody>';
+      months.slice(-6).forEach(m => { html += '<tr><td>' + m + '</td><td>' + _leFmt(byMo[m]) + '</td></tr>'; });
+      html += '</tbody></table>';
+    }
+    return html;
+  }
+
+  if (/(outstanding|debtor|receivable|owe|unpaid|aging|aged)/.test(text)) {
+    const today = new Date();
+    const outInvs = (INVOICES||[]).filter(i => { const st = (i.status||'').toLowerCase(); return st !== 'paid' && st !== 'cancelled'; });
+    if (!outInvs.length) return "✓ No outstanding invoices. Account is fully settled.";
+    const _ao = i => parseFloat(i.amount_outstanding||'') || parseFloat(i.amount||0);
+    const total = outInvs.reduce((s,i) => s + _ao(i), 0);
+    if (/aged|aging|bucket/.test(text)) {
+      const buckets = {'0-30':0,'31-60':0,'61-90':0,'90+':0};
+      const cnt = {'0-30':0,'31-60':0,'61-90':0,'90+':0};
+      outInvs.forEach(i => {
+        const d = new Date(i.date || i.inv_date);
+        const days = Math.floor((today - d) / 86400000);
+        const b = days <= 30 ? '0-30' : days <= 60 ? '31-60' : days <= 90 ? '61-90' : '90+';
+        buckets[b] += _ao(i); cnt[b]++;
+      });
+      let html = '<strong>Aged Debtors:</strong> ' + _leFmt(total) + ' across ' + outInvs.length + ' invoices';
+      html += '<table><thead><tr><th>Bucket</th><th>Count</th><th>Amount</th></tr></thead><tbody>';
+      ['0-30','31-60','61-90','90+'].forEach(b => { html += '<tr><td>' + b + ' days</td><td>' + cnt[b] + '</td><td>' + _leFmt(buckets[b]) + '</td></tr>'; });
+      html += '</tbody></table>';
+      return html;
+    }
+    const byClient = {};
+    outInvs.forEach(i => { const k = i.client_name || '?'; byClient[k] = (byClient[k]||0) + _ao(i); });
+    const top = Object.entries(byClient).sort((a,b) => b[1]-a[1]).slice(0,8);
+    let html = '<strong>Outstanding debtors:</strong> ' + _leFmt(total) + ' from ' + outInvs.length + ' invoices';
+    html += '<table><thead><tr><th>Client</th><th>Owes</th></tr></thead><tbody>';
+    top.forEach(([c, amt]) => { html += '<tr><td>' + c + '</td><td>' + _leFmt(amt) + '</td></tr>'; });
+    html += '</tbody></table>';
+    return html;
+  }
+
+  if (/top\s*\d*\s*(client|customer)/.test(text) || /biggest client/.test(text)) {
+    const n = parseInt((/top\s*(\d+)/.exec(text)||[])[1] || '5', 10);
+    const invs = (INVOICES||[]).filter(i => _leYear(i.date) === yr && (i.status||'') !== 'cancelled');
+    const byClient = {};
+    invs.forEach(i => { const k = i.client_name || '?'; byClient[k] = (byClient[k]||0) + parseFloat(i.amount||0); });
+    const sorted = Object.entries(byClient).sort((a,b) => b[1]-a[1]).slice(0, n);
+    if (!sorted.length) return 'No revenue in ' + yr + ' yet.';
+    let html = '<strong>Top ' + sorted.length + ' clients in ' + yr + ' by revenue:</strong>';
+    html += '<table><thead><tr><th>Client</th><th>Revenue</th></tr></thead><tbody>';
+    sorted.forEach(([c,a]) => { html += '<tr><td>' + c + '</td><td>' + _leFmt(a) + '</td></tr>'; });
+    html += '</tbody></table>';
+    return html;
+  }
+
+  if (/(expense|spending|outflow)/.test(text) || (/\bcost\b/.test(text) && !/cosec/.test(text))) {
+    const vchs = (VOUCHERS||[]).filter(v => _leYear(v.date) === yr && (v.category||'').toLowerCase() !== 'dividend');
+    const total = vchs.reduce((s,v) => s + parseFloat(v.amount||0), 0);
+    const byCat = {};
+    vchs.forEach(v => { const c = v.category || 'uncategorized'; byCat[c] = (byCat[c]||0) + parseFloat(v.amount||0); });
+    let html = '<strong>Expenses in ' + yr + ':</strong> ' + _leFmt(total) + ' (' + vchs.length + ' vouchers)';
+    html += '<table><thead><tr><th>Category</th><th>Amount</th></tr></thead><tbody>';
+    Object.entries(byCat).sort((a,b) => b[1]-a[1]).slice(0,8).forEach(([c,a]) => { html += '<tr><td>' + c + '</td><td>' + _leFmt(a) + '</td></tr>'; });
+    html += '</tbody></table>';
+    return html;
+  }
+
+  if (/(receipt|collected|received|cash in)/.test(text)) {
+    const recs = (RECEIPTS||[]).filter(r => _leYear(r.date) === yr && !(r.notes||'').startsWith('__VOID__'));
+    const total = recs.reduce((s,r) => s + parseFloat(r.amount||0), 0);
+    let html = '<strong>Collected in ' + yr + ':</strong> ' + _leFmt(total) + ' from ' + recs.length + ' receipts';
+    if (recs.length) {
+      html += '<table><thead><tr><th>Date</th><th>Inv</th><th>Amount</th></tr></thead><tbody>';
+      recs.sort((a,b) => (b.date||'').localeCompare(a.date||'')).slice(0,6).forEach(r => {
+        html += '<tr><td>' + (r.date||'').slice(0,10) + '</td><td>' + (r.inv_no||'—') + '</td><td>' + _leFmt(r.amount) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    }
+    return html;
+  }
+
+  if (/(profit|net|p&l|p and l|bottom line)/.test(text)) {
+    const invs = (INVOICES||[]).filter(i => _leYear(i.date) === yr && (i.status||'') !== 'cancelled');
+    const rev = invs.reduce((s,i) => s + parseFloat(i.amount||0), 0);
+    const vchs = (VOUCHERS||[]).filter(v => _leYear(v.date) === yr && (v.category||'').toLowerCase() !== 'dividend');
+    const exp = vchs.reduce((s,v) => s + parseFloat(v.amount||0), 0);
+    const net = rev - exp;
+    return '<strong>Indicative P&L ' + yr + ':</strong><br>' +
+      'Revenue: ' + _leFmt(rev) + '<br>' +
+      'Less: Expenses: ' + _leFmt(exp) + '<br>' +
+      "<strong style='color:" + (net>=0?'var(--green)':'var(--red)') + "'>Net: " + _leFmt(net) + "</strong><br>" +
+      "<span style='color:var(--text3);font-size:11px'>Invoice-vs-voucher P&L — accrual P&L lives on the Income Statement page.</span>";
+  }
+
+  const personMatch = /\b(koay|kc|ivy|et|cecilia)\b/i.exec(text);
+  if (personMatch) {
+    const p = personMatch[1].toLowerCase();
+    const persNorm = p === 'kc' ? 'KC' : p === 'koay' ? 'Koay' : p === 'et' ? 'ET' : p === 'ivy' ? 'Ivy' : 'Cecilia';
+    let earned = 0;
+    (ALLOCATIONS||[]).forEach(a => {
+      const pn = (a.preparer_name||'').replace(/\s*PH$/i,'');
+      const rn = (a.reviewer_name||'').replace(/\s*PH$/i,'');
+      if (pn.toLowerCase() === persNorm.toLowerCase()) earned += parseFloat(a.preparer_amt||0);
+      if (rn.toLowerCase() === persNorm.toLowerCase()) earned += parseFloat(a.reviewer_amt||0) + parseFloat(a.reviewer_top20||0);
+      if (persNorm === 'KC') earned += parseFloat(a.kc_commission||0);
+      if (persNorm === 'Koay') earned += parseFloat(a.koay_commission||0);
+    });
+    const paid = (VOUCHERS||[]).filter(v => {
+      const py = (v.payee||'').toLowerCase();
+      if (persNorm === 'Koay') return /koay|txy/i.test(py);
+      if (persNorm === 'KC') return /^kc$|^ho$|\bw\b/i.test(py);
+      return new RegExp('^' + persNorm + '$|^' + persNorm.toLowerCase() + '$', 'i').test(py);
+    }).reduce((s,v) => s + parseFloat(v.amount||0), 0);
+    return '<strong>' + persNorm + ':</strong><br>' +
+      'Earned all-time: ' + _leFmt(earned) + '<br>' +
+      'Paid out: ' + _leFmt(paid) + '<br>' +
+      "<strong style='color:" + ((earned-paid)>0.5?'var(--amber)':'var(--green)') + "'>Still owing: " + _leFmt(earned-paid) + "</strong>";
+  }
+
+  if (/(cash|bank|balance|cimb)/.test(text) && !/account no/.test(text)) {
+    const recs = (RECEIPTS||[]).reduce((s,r) => s + parseFloat(r.amount||0), 0);
+    const out = (VOUCHERS||[]).filter(v => (v.payment_account||v.bank_account||'').toLowerCase().includes('cimb') || (v.payment_account||'').toLowerCase() === 'bank').reduce((s,v) => s + parseFloat(v.amount||0), 0);
+    return '<strong>Cash/Bank (estimate):</strong><br>' +
+      'Receipts in: ' + _leFmt(recs) + '<br>' +
+      'Bank vouchers out: ' + _leFmt(out) + '<br>' +
+      '<strong>Estimated balance: ' + _leFmt(recs - out) + '</strong>';
+  }
+
+  if (/cosec/.test(text)) {
+    const cs = (CLIENTS||[]).filter(c => {
+      let s = c.services; if (typeof s === 'string') { try { s = JSON.parse(s); } catch(e) { s = s.split(/[,;]/); } }
+      return Array.isArray(s) && s.some(x => /cosec/i.test(String(x)));
+    });
+    let html = '<strong>' + cs.length + ' cosec clients:</strong>';
+    html += '<ul style="margin:6px 0 0 18px;padding:0;font-size:12px">';
+    cs.slice(0,15).forEach(c => { html += '<li>' + c.name + '</li>'; });
+    if (cs.length > 15) html += "<li style='color:var(--text3)'>… + " + (cs.length - 15) + " more</li>";
+    html += '</ul>';
+    return html;
+  }
+
+  if (/audit/.test(text) || /year.end|year end|december|june year/i.test(text)) {
+    const monthMatch = /(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.exec(text);
+    const monthMap = {jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12'};
+    const targetMo = monthMatch ? monthMap[monthMatch[1].toLowerCase().slice(0,3)] : null;
+    const cs = (CLIENTS||[]).filter(c => {
+      let s = c.services; if (typeof s === 'string') { try { s = JSON.parse(s); } catch(e) { s = s.split(/[,;]/); } }
+      const hasAudit = Array.isArray(s) && s.some(x => /audit/i.test(String(x)));
+      if (!hasAudit) return false;
+      if (!targetMo) return true;
+      const ye = c.year_end || '';
+      return ye.includes('/' + targetMo) || ye.startsWith(targetMo + '/');
+    });
+    let html = '<strong>' + cs.length + ' audit clients' + (targetMo?' with year-end month '+targetMo:'') + ':</strong>';
+    html += '<ul style="margin:6px 0 0 18px;padding:0;font-size:12px">';
+    cs.slice(0,15).forEach(c => { html += '<li>' + c.name + " <span style='color:var(--text3)'>— YE " + (c.year_end||'?') + '</span></li>'; });
+    if (cs.length > 15) html += "<li style='color:var(--text3)'>+" + (cs.length-15) + " more</li>";
+    html += '</ul>';
+    return html;
+  }
+
+  if (/(missing|empty|incomplete|gap)/.test(text)) {
+    const noInc = (CLIENTS||[]).filter(c => !c.ar_date && !c.date_of_incorporation);
+    const noYE = (CLIENTS||[]).filter(c => !c.year_end);
+    const noAddr = (CLIENTS||[]).filter(c => !c.client_addr && !c.billing_addr);
+    let html = '<strong>Clients with missing data:</strong>';
+    html += '<br>• No incorporation date: <strong>' + noInc.length + '</strong>';
+    html += '<br>• No year end: <strong>' + noYE.length + '</strong>';
+    html += '<br>• No address: <strong>' + noAddr.length + '</strong>';
+    if (noInc.length) {
+      html += '<div style="margin-top:8px;font-size:11px;color:var(--text3)">No incorporation date examples:</div>';
+      html += '<ul style="margin:2px 0 0 18px;padding:0;font-size:12px">';
+      noInc.slice(0,5).forEach(c => { html += '<li>' + c.name + '</li>'; });
+      html += '</ul>';
+    }
+    return html;
+  }
+
+  if (/(dormant|inactive|no recent|stale)/.test(text)) {
+    const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
+    const lastInv = {};
+    (INVOICES||[]).forEach(i => {
+      const d = i.date || '';
+      const k = i.client_id || i.client_name;
+      if (!lastInv[k] || d > lastInv[k]) lastInv[k] = d;
+    });
+    const dormant = (CLIENTS||[]).filter(c => {
+      const last = lastInv[c.client_id] || lastInv[c.name];
+      return !last || new Date(last) < cutoff;
+    });
+    let html = '<strong>' + dormant.length + " dormant clients</strong> (no invoice in 6+ months):";
+    html += '<ul style="margin:6px 0 0 18px;padding:0;font-size:12px">';
+    dormant.slice(0,12).forEach(c => { html += '<li>' + c.name + '</li>'; });
+    if (dormant.length > 12) html += "<li style='color:var(--text3)'>+" + (dormant.length-12) + " more</li>";
+    html += '</ul>';
+    return html;
+  }
+
+  if (/invoice.*for|for\s+\w+.*invoice|invoices? of/.test(text)) {
+    const c = _leClientMatch(text);
+    if (c) {
+      const invs = (INVOICES||[]).filter(i => String(i.client_id) === String(c.client_id) && (i.status||'') !== 'cancelled');
+      const total = invs.reduce((s,i) => s + parseFloat(i.amount||0), 0);
+      let html = '<strong>' + c.name + '</strong> — ' + invs.length + ' invoices, total billed ' + _leFmt(total);
+      html += '<table><thead><tr><th>Inv</th><th>Date</th><th>Status</th><th>Amount</th></tr></thead><tbody>';
+      invs.sort((a,b) => (b.date||'').localeCompare(a.date||'')).slice(0,8).forEach(i => {
+        html += '<tr><td>' + i.inv_no + '</td><td>' + (i.date||'').slice(0,10) + '</td><td>' + (i.status||'—') + '</td><td>' + _leFmt(i.amount) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      return html;
+    }
+  }
+
+  if (/recent invoice|latest invoice|last invoice/.test(text)) {
+    const invs = (INVOICES||[]).slice().sort((a,b) => (b.date||'').localeCompare(a.date||'')).slice(0,8);
+    let html = '<strong>Most recent invoices:</strong>';
+    html += '<table><thead><tr><th>Inv</th><th>Client</th><th>Amount</th></tr></thead><tbody>';
+    invs.forEach(i => { html += '<tr><td>' + i.inv_no + '</td><td>' + (i.client_name||'?') + '</td><td>' + _leFmt(i.amount) + '</td></tr>'; });
+    html += '</tbody></table>';
+    return html;
+  }
+
+  if (/count|how many|number of/.test(text) && /invoice/.test(text)) {
+    const all = (INVOICES||[]);
+    const by = {};
+    all.forEach(i => { const s = i.status||'?'; by[s] = (by[s]||0) + 1; });
+    let html = '<strong>' + all.length + ' total invoices:</strong><br>';
+    Object.entries(by).forEach(([s,n]) => { html += '• ' + s + ': ' + n + '<br>'; });
+    return html;
+  }
+
+  if (/retainer|quarterly|cecilia.*paid/.test(text)) {
+    try {
+      const cs = (typeof _cecRetCosecClients === 'function') ? _cecRetCosecClients() : [];
+      const state = (typeof _cecRetGet === 'function') ? _cecRetGet() : {};
+      const yr2 = _leParseYearFromText(text);
+      let paidQ = 0; const totalSlots = cs.length * 4;
+      cs.forEach(c => { [1,2,3,4].forEach(q => { if (state[c.client_id + '|' + yr2 + '|Q' + q]) paidQ++; }); });
+      return '<strong>Cecilia ' + yr2 + ' retainer:</strong><br>' +
+        paidQ + ' / ' + totalSlots + ' quarter-slots marked paid across ' + cs.length + ' cosec clients.<br>' +
+        "<span style='font-size:11px;color:var(--text3)'>Open the tracker on Payout Summary → 📅 Cecilia Retainer to see the matrix.</span>";
+    } catch(e) { return "Cecilia tracker not loaded yet — try again in a moment."; }
+  }
+
+  // ── Generic category / description lookup ──
+  // Catches questions like "deposit paid 2026", "rent paid", "insurance paid",
+  // "software 2025", "salary paid", "what is the X paid for Y"
+  const catMatch = /\b(deposit|rent|rental|insurance|utilit|water|electric|software|subscription|training|stationery|stationary|petrol|fuel|travel|meal|entertainment|salary|wage|payroll|professional|legal|accounting|audit fee|service charge|courier|postage|telephone|internet|advertising|marketing|donation|gift|repair|maintenance|tax|sst|gst|bank charge|charity|fine|penalty)/i.exec(text);
+  // Also try freeform "what is the X paid"  / "X paid for"
+  const freeMatch = /(?:what is the |total |how much |amount of )?([a-z][a-z\s-]{2,20}?)\s+(?:paid|expense|cost|spent)(?:\s+(?:for|in)\s+(\d{4}))?/i.exec(rawText);
+  let term = null;
+  if (catMatch) term = catMatch[1].toLowerCase();
+  else if (freeMatch && !/dividend|revenue|sales|debtor|profit|client|cosec|audit|cecilia|koay|kc|ivy|et|invoice|receipt/i.test(freeMatch[1])) {
+    term = freeMatch[1].trim().toLowerCase();
+  }
+  if (term) {
+    const re = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const all = (VOUCHERS||[]).filter(v => {
+      if ((v.description||'').startsWith('__VOID__')) return false;
+      return re.test(v.category||'') || re.test(v.description||'') || re.test(v.payee||'');
+    });
+    const yrV = all.filter(v => _leYear(v.date) === yr);
+    const total = yrV.reduce((s,v) => s + parseFloat(v.amount||0), 0);
+    const allTime = all.reduce((s,v) => s + parseFloat(v.amount||0), 0);
+    if (!all.length) {
+      return "No vouchers found matching <strong>\"" + term + "\"</strong>. Try the exact category name from the voucher list, or check the Vouchers page for what's recorded.";
+    }
+    const cap = term.charAt(0).toUpperCase() + term.slice(1);
+    let html = "<strong>" + cap + " paid in " + yr + ":</strong> " + _leFmt(total) + " (" + yrV.length + " voucher" + (yrV.length!==1?'s':'') + ")";
+    if (allTime > total + 0.01) {
+      html += "<br><span style='color:var(--text3);font-size:11px'>All-time: " + _leFmt(allTime) + " across " + all.length + " vouchers</span>";
+    }
+    if (yrV.length) {
+      html += '<table><thead><tr><th>Date</th><th>Payee</th><th>Description</th><th>Amount</th></tr></thead><tbody>';
+      yrV.sort((a,b) => (b.date||'').localeCompare(a.date||'')).slice(0,8).forEach(v => {
+        html += '<tr><td>' + (v.date||'').slice(0,10) + '</td><td>' + (v.payee||'—') + '</td><td style="font-size:11px;color:var(--text3)">' + ((v.description||'').slice(0,40)) + '</td><td>' + _leFmt(v.amount) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      if (yrV.length > 8) html += "<div style='font-size:11px;color:var(--text3);margin-top:4px'>+ " + (yrV.length - 8) + " more in " + yr + "</div>";
+    } else if (allTime > 0) {
+      html += '<br><span style="font-size:11px;color:var(--text2)">Nothing in ' + yr + ' specifically — most recent payments:</span>';
+      html += '<table><thead><tr><th>Date</th><th>Payee</th><th>Amount</th></tr></thead><tbody>';
+      all.sort((a,b) => (b.date||'').localeCompare(a.date||'')).slice(0,5).forEach(v => {
+        html += '<tr><td>' + (v.date||'').slice(0,10) + '</td><td>' + (v.payee||'—') + '</td><td>' + _leFmt(v.amount) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    }
+    return html;
+  }
+
+  return "I'm not sure how to answer that yet. Try one of the suggestion chips, or ask things like:" +
+    "<ul style='margin:6px 0 0 18px;padding:0;font-size:12px'>" +
+    "<li>Total dividends paid this year</li>" +
+    "<li>Total deposit paid in 2026</li>" +
+    "<li>Outstanding debtors</li>" +
+    "<li>Top 5 clients</li>" +
+    "<li>How much does Koay earn?</li>" +
+    "<li>Audit clients with December year-end</li>" +
+    "</ul>" +
+    "Type <strong>help</strong> for the full list.";
+}
+
+
+
+
+</script>
+
+
+<!-- ══ EXCEL LINE SNAPSHOT MODAL ══ -->
+<div class="modal-overlay" id="modal-excel-snapshot" style="display:none">
+  <div class="modal" style="max-width:900px;max-height:90vh;overflow:auto">
+    <div class="modal-header">
+      <div class="modal-title">📊 Excel Snapshot — line-by-line drift detection</div>
+      <button class="modal-close" onclick="document.getElementById('modal-excel-snapshot').style.display='none'">&#10005;</button>
+    </div>
+    <div class="modal-body" style="padding:16px">
+      <div style="margin-bottom:14px;color:var(--text2);font-size:13px;line-height:1.5">
+        Enter values from your Excel master BS/IS. Saved per-line and persists across reloads.
+        Drift cells turn amber when dashboard differs by more than RM 1.00.
+        Re-open this modal anytime to spot-check that the dashboard still matches your Excel.
+      </div>
+      <div style="margin-bottom:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:13px;font-weight:600">As-of date:</label>
+        <input type="text" id="els-asof" placeholder="31.12.26" style="padding:6px 10px;border:1px solid var(--border);border-radius:4px;width:120px;font-size:13px">
+        <span id="els-saved-at" style="color:var(--text3);font-size:11px"></span>
+      </div>
+      <table id="els-table" style="width:100%;font-size:12px;border-collapse:collapse">
+        <thead>
+          <tr style="color:var(--text3);font-size:11px;text-transform:uppercase">
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">Code</th>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">Account</th>
+            <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Dashboard (live)</th>
+            <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Excel value (you enter)</th>
+            <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)">Drift</th>
+          </tr>
+        </thead>
+        <tbody id="els-tbody"></tbody>
+      </table>
+    </div>
+    <div class="modal-footer" style="padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px">
+      <button class="btn btn-secondary" onclick="document.getElementById('modal-excel-snapshot').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="saveExcelLineSnapshot()">Save snapshot</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
