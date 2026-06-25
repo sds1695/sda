@@ -6007,7 +6007,8 @@ document.addEventListener('DOMContentLoaded', () => {
 async function loadDashboard() {
   try { markPageSynced('dashboard'); } catch(e){}
   // Pull synced blobs from Sheet on first load (then accept remote on subsequent loads)
-  // SYNC DISABLED — await ensureSyncBootPull() removed to stop data mutation
+  // Fresh device → pulls everything from GSheets; existing device → local wins and pushes.
+  ensureSyncBootPull().catch(e => console.warn('[sync] boot pull failed:', e));
   // Re-apply privacy state after dashboard re-renders (covers manual refresh)
   try { applyDashboardPrivacy(localStorage.getItem(DASH_PRIVACY_KEY) === '1'); } catch(e){}
   // Tally alert: surface immediately on the dashboard
@@ -19440,6 +19441,8 @@ const SYNCED_BLOBS = [
   { settingsKey: '_deleted_invoices_blob',    lsKey: 'seraya_deleted_invoices' },
   { settingsKey: '_pvno_overrides_blob',      lsKey: 'seraya_pvno_overrides' },
   { settingsKey: '_cecilia_retainer_blob',    lsKey: 'seraya_cecilia_retainer_v1' },
+  { settingsKey: '_coa_blob',                lsKey: 'seraya_coa_v1' },
+  { settingsKey: '_pending_payout_blob',     lsKey: 'seraya_pending_payout_v1' },
   // (alloc_cache + client_meta intentionally NOT synced — they're local
   // caches that auto-rebuild from Sheet data on every page load.)
   // Pattern-matched (multiple keys bundled into one blob)
@@ -19637,9 +19640,11 @@ let _syncBootPullDone = false;
 async function ensureSyncBootPull() {
   if (_syncBootPullDone) return;
   _syncBootPullDone = true;
-  // First load: preferLocal=true so existing local data wins over an empty
-  // remote Settings blob (one-time migration). Subsequent loads accept remote.
-  await pullSyncedBlobs({ preferLocal: true });
+  // Fresh device (no local wage_paid data) → remote is authoritative: pull everything.
+  // Existing device (already has local data) → prefer local so we don't overwrite
+  // good local state with a slightly older remote snapshot; local pushes keep remote current.
+  const isFreshDevice = !localStorage.getItem('seraya_wage_paid_v1');
+  await pullSyncedBlobs({ preferLocal: !isFreshDevice });
   try { renderReminders && renderReminders(); } catch(e){}
   try { renderSalesOrders && renderSalesOrders(); } catch(e){}
   try { renderPayoutView && renderPayoutView(); } catch(e){}
