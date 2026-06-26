@@ -11839,6 +11839,14 @@ async function saveAllocEdit() {
   // Use String() to avoid number/string type mismatch in Set.has() comparisons.
   const _preAllocIds = new Set((ALLOCATIONS||[]).filter(a => a.inv_no === inv_no).map(a => String(a.alloc_id||'')));
 
+  // Persist claude_retain to localStorage so bucketAmts can read it after reload
+  // (GAS sheet doesn't have a claude_retain column, so a.claude_retain is always 0 on fetch).
+  try {
+    const _cr = parseFloat(document.getElementById('ae-claude-retain').value||0);
+    if (_cr > 0.005) localStorage.setItem('claude_retain_' + inv_no, _cr);
+    else localStorage.removeItem('claude_retain_' + inv_no);
+  } catch(e) {}
+
   const res = await api({ action: 'save_allocation', data });
   if (res.ok) {
     toast('Allocation updated ✓', 'success');
