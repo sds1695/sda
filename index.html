@@ -5232,25 +5232,28 @@ function runAccountingHealth(receipts, vouchers) {
         const savedAllocs = (ALLOCATIONS||[]).filter(a => a.inv_no === inv.inv_no && !isVoided('allocations', a.alloc_id));
         // ── Sum check ──
         let savedSum = 0;
+        let _savedClaudeTotal = 0;
         savedAllocs.forEach(a => {
           savedSum += parseFloat(a.preparer_amt||0) + parseFloat(a.reviewer_amt||0)
                     + parseFloat(a.kc_commission||0) + parseFloat(a.koay_commission||0)
                     + parseFloat(a.admin_retain||0) + parseFloat(a.abot_cost||0) + parseFloat(a.disbursements||0)
-                    + parseFloat(a.cecilia_fee||0) + parseFloat(a.ssm_fee||0);
+                    + parseFloat(a.cecilia_fee||0) + parseFloat(a.ssm_fee||0)
+                    + parseFloat(a.claude_retain||0);
+          _savedClaudeTotal += parseFloat(a.claude_retain||0);
         });
-        // claude_retain: GAS drops this column, and the localStorage value is a
-        // historical display amount that goes stale when line totals change.
-        // The TRUE retained amount is what _liveResaveAlloc computed at save time:
-        // sum of (K * 0.025) per line, gated by localStorage's on/off flag.
-        // Recompute it the same way via _bucketForLine and add to savedSum.
-        try {
-          if (typeof _bucketForLine === 'function' && typeof _parseInvLines === 'function') {
-            const _ln = _parseInvLines(inv);
-            let _liveClaude = 0;
-            _ln.forEach(l => { const b = _bucketForLine(l, inv); if (b.claude) _liveClaude += b.claude; });
-            savedSum += _liveClaude;
-          }
-        } catch(e) {}
+        // claude_retain: if a manual value was saved on the allocation row use it (already
+        // included above). Only fall back to _bucketForLine live-compute when no manual
+        // value exists, to avoid double-counting.
+        if (_savedClaudeTotal < 0.005) {
+          try {
+            if (typeof _bucketForLine === 'function' && typeof _parseInvLines === 'function') {
+              const _ln = _parseInvLines(inv);
+              let _liveClaude = 0;
+              _ln.forEach(l => { const b = _bucketForLine(l, inv); if (b.claude) _liveClaude += b.claude; });
+              savedSum += _liveClaude;
+            }
+          } catch(e) {}
+        }
         if (savedAllocs.length === 0 && parseFloat(inv.disb_amount||0) > 0) savedSum += parseFloat(inv.disb_amount||0);
         const diff = Math.abs(gross - savedSum);
         let reason = '';
@@ -5656,7 +5659,7 @@ function runAccountingHealth(receipts, vouchers) {
     try {
       const off = [];
       (ALLOCATIONS||[]).filter(a => !isVoided('allocations', a.alloc_id)).forEach(a => {
-        const fields = ['preparer_amt','reviewer_amt','reviewer_top20','kc_commission','koay_commission','admin_retain','abot_cost','disbursements','cecilia_fee','ssm_fee','gross_fee'];
+        const fields = ['preparer_amt','reviewer_amt','reviewer_top20','kc_commission','koay_commission','admin_retain','abot_cost','disbursements','cecilia_fee','ssm_fee','gross_fee','claude_retain'];
         const negs = fields.filter(f => parseFloat(a[f]||0) < -0.005);
         if (negs.length) off.push({ inv: a.inv_no, alloc_id: a.alloc_id, fields: negs.join(',') });
       });
@@ -5689,7 +5692,8 @@ function runAccountingHealth(receipts, vouchers) {
           + parseFloat(a.abot_cost||0)
           + parseFloat(a.disbursements||0)
           + parseFloat(a.cecilia_fee||0)
-          + parseFloat(a.ssm_fee||0);
+          + parseFloat(a.ssm_fee||0)
+          + parseFloat(a.claude_retain||0);
         if (allocatedSum < 0.005) return;
         off.push({ inv: a.inv_no, alloc_id: a.alloc_id || '(no id)' });
       });
