@@ -12469,12 +12469,18 @@ function renderPayoutDetail() {
     const _wpRead = () => { try { return JSON.parse(localStorage.getItem('seraya_wage_paid_v1') || '{}'); } catch(e) { return {}; } };
     const _wpAll = _wpRead();
     const _wpKey  = (allocId, person) => `${allocId}|${person}`;
+    // Nominee alias map — a mark under any alias counts as paid for the group.
+    const _payoutAliases = { TXY: ['Koay','TXY'], Koay: ['Koay','TXY'],
+                              Ho: ['KC','Ho','W'], W: ['KC','Ho','W'], KC: ['KC','Ho','W'] };
     const _isPaid = (allocId, person) => {
       if (allocId == null) return false;
-      const ck = _wpKey(allocId, person);
-      // Composite explicit null overrides plain key — lets user mark a
-      // specific person as unpaid even when a legacy plain key is set.
-      if (ck in _wpAll) return _wpAll[ck] !== null && _wpAll[ck] !== undefined;
+      const aliases = _payoutAliases[person] || [person];
+      for (const alias of aliases) {
+        const ck = _wpKey(allocId, alias);
+        if (ck in _wpAll) {
+          if (_wpAll[ck] !== null && _wpAll[ck] !== undefined) return true;
+        }
+      }
       return _wpAll[allocId] !== undefined && _wpAll[allocId] !== null;
     };
     const _paidDate = (allocId, person) => {
@@ -12580,7 +12586,7 @@ function renderPayoutDetail() {
           <div style="font-size:10px;color:var(--text3)">${paidDate}</div>
         </div>
         ${markPaidBtn}
-        ${isSettled ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:10px;color:var(--text3)" title="Mark as unpaid (still owed)" onclick="event.stopPropagation();markWagePaid('${allocId}', null, '${person}');renderPayoutView();">↺</button>` : ''}
+        ${isSettled ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:10px;color:var(--text3)" title="Mark as unpaid (still owed)" onclick="event.stopPropagation();(['${person}',...({'TXY':['Koay','TXY'],'Koay':['Koay','TXY'],'Ho':['KC','Ho','W'],'W':['KC','Ho','W'],'KC':['KC','Ho','W']}['${person}']||[])].filter((v,i,a)=>a.indexOf(v)===i)).forEach(a=>markWagePaid('${allocId}',null,a));renderPayoutView();">↺</button>` : ''}
       </div>`;
     };
 
