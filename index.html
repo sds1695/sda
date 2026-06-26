@@ -13577,13 +13577,22 @@ function pvBuildChecklist(payee, preCheckIds, editMode) {
     //   "${allocId}|${person}" (new format) OR "${allocId}" (legacy).
     // Show readyRows + awaitRows (both pending), hide settledRows.
     const _wpKey = (allocId, person) => `${allocId}|${person}`;
+    // Nominee aliases: TXY is Koay's nominee, Ho/W are KC's nominees.
+    // A PV saved as payee=TXY writes allocId|TXY; the payout view checks allocId|Koay.
+    // Check ALL aliases so a mark under any alias counts as paid.
+    const _nomineeAliases = { TXY: ['Koay','TXY'], Koay: ['Koay','TXY'],
+                               Ho: ['KC','Ho','W'], W: ['KC','Ho','W'], KC: ['KC','Ho','W'] };
     const _isPaidForPerson = (allocId, person) => {
       if (allocId == null) return false;
-      const ck = _wpKey(allocId, person);
-      // Composite key explicit values override the legacy plain key:
-      //   composite=date  -> paid for THIS person
-      //   composite=null  -> NOT paid for THIS person (even if plain key set)
-      if (ck in wpMap) return wpMap[ck] !== null && wpMap[ck] !== undefined;
+      const aliases = _nomineeAliases[person] || [person];
+      for (const alias of aliases) {
+        const ck = _wpKey(allocId, alias);
+        if (ck in wpMap) {
+          if (wpMap[ck] !== null && wpMap[ck] !== undefined) return true;
+          // composite=null means explicitly NOT paid for this alias — skip but don't short-circuit
+        }
+      }
+      // Fall back to plain key (legacy)
       return wpMap[allocId] !== undefined && wpMap[allocId] !== null;
     };
     const grouped = {}; // keyed by inv_no
