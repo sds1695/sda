@@ -14852,6 +14852,8 @@ async function deleteVoucher(id, label) {
 
   // Un-mark wage_paid for all allocations linked to this voucher via ref_inv_nos
   if (_delV && typeof markWagePaid === 'function') {
+    const _payee = _delV.payee;
+    const _allocFn = PV_PAYEE_ALLOC[_payee];
     const _refNos = (_delV.ref_inv_nos || '').split(',').map(s => s.trim()).filter(Boolean);
     // Also handle single ref_inv_id for older vouchers
     if (!_refNos.length && _delV.ref_inv_id) {
@@ -14859,14 +14861,27 @@ async function deleteVoucher(id, label) {
       if (_inv) _refNos.push(_inv.inv_no);
     }
     if (_refNos.length) {
-      // Find all allocations for these invoices that belong to this payee
-      const _payee = _delV.payee;
-      const _allocFn = PV_PAYEE_ALLOC[_payee];
+      // Known ref invoices — un-mark only those
       (ALLOCATIONS||[]).forEach(a => {
         if (!_refNos.includes(a.inv_no)) return;
-        if (_allocFn && !_allocFn(a)) return; // not this payee's allocation
-        markWagePaid(a.alloc_id, null); // null = un-mark (revert to unpaid)
+        if (_allocFn && !_allocFn(a)) return;
+        markWagePaid(a.alloc_id, null, _payee); // pass payee so composite key is cleared
       });
+    } else {
+      // Old PV with no ref_inv_nos — fall back to date matching:
+      // un-mark every allocation where this payee was marked paid on the same date.
+      const _pvDate = (_delV.date || '').slice(0, 10);
+      if (_pvDate && _payee) {
+        const _wpMap = getWagePaidMap();
+        (ALLOCATIONS||[]).forEach(a => {
+          if (_allocFn && !_allocFn(a)) return; // not this payee's allocation
+          const _ck = (a.alloc_id || '') + '|' + _payee;
+          const _marked = _wpMap[_ck] || _wpMap[a.alloc_id];
+          if (_marked && String(_marked).slice(0, 10) === _pvDate) {
+            markWagePaid(a.alloc_id, null, _payee);
+          }
+        });
+      }
     }
   }
 
