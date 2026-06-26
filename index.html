@@ -13594,13 +13594,13 @@ function pvBuildChecklist(payee, preCheckIds, editMode) {
       const share = allocFn(a);
       if (!share) return;
       const isPaid = _isPaidForPerson(a.alloc_id, payee);
-      if (!editMode && isPaid) return;
-      // In edit mode: hide already-paid invoices that are NOT pre-selected —
-      // but ONLY when we actually know which invoices were originally linked
-      // (preCheckIds non-empty). If preCheckIds is empty (old PV with no ref_inv_nos),
-      // show all so the user can re-select them.
       const invId = inv.inv_id || '';
-      if (editMode && isPaid && (preCheckIds||[]).length > 0 && invId && !(preCheckIds||[]).includes(invId)) return;
+      // Hide already-paid invoices in ALL cases — EXCEPT when editing and this
+      // invoice was originally linked to this PV (i.e. it's in preCheckIds).
+      // For old PVs with no ref_inv_nos (preCheckIds empty), already-paid are
+      // always hidden; user re-links originals via "+ Add Invoice".
+      const _isPreSelected = editMode && (preCheckIds||[]).length > 0 && invId && (preCheckIds||[]).includes(invId);
+      if (isPaid && !_isPreSelected) return;
       const key = inv.inv_no;
       if (!grouped[key]) grouped[key] = { inv, allocIds: [], share: 0, isPaid };
       grouped[key].allocIds.push(a.alloc_id);
