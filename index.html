@@ -13595,6 +13595,10 @@ function pvBuildChecklist(payee, preCheckIds, editMode) {
       if (!share) return;
       const isPaid = _isPaidForPerson(a.alloc_id, payee);
       if (!editMode && isPaid) return;
+      // In edit mode: also hide already-paid invoices UNLESS they were pre-selected
+      // (i.e. they belong to THIS voucher). Pre-selection is by inv_id via preCheckIds.
+      const invId = inv.inv_id || '';
+      if (editMode && isPaid && invId && !(preCheckIds||[]).includes(invId)) return;
       const key = inv.inv_no;
       if (!grouped[key]) grouped[key] = { inv, allocIds: [], share: 0, isPaid };
       grouped[key].allocIds.push(a.alloc_id);
