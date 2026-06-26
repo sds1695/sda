@@ -2130,6 +2130,7 @@
         <div class="form-field"><label>Admin Retention (RM)</label><input type="number" id="ae-retain" step="0.01" oninput="aeUpdateCheck()" /></div>
         <div class="form-field"><label>Cecilia Fee (RM)</label><input type="number" id="ae-cec-fee" step="0.01" oninput="aeUpdateCheck()" /></div>
         <div class="form-field"><label>SSM Fee (RM)</label><input type="number" id="ae-ssm-fee" step="0.01" oninput="aeUpdateCheck()" /></div>
+        <div class="form-field"><label>Claude Retention (RM)</label><input type="number" id="ae-claude-retain" step="0.01" oninput="aeUpdateCheck()" /></div>
       </div>
 
       <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin:14px 0 8px">People Allocation</div>
@@ -11648,7 +11649,7 @@ function openNewAllocForInv(inv_no, jobType, grossAmt, ldi) {
     inv_no,
     job_type: _jt, fy: '',
     gross_fee: parseFloat(grossAmt||0), disbursements: 0, disb_amount: 0,
-    abot_cost: 0, admin_retain: 0, cecilia_fee: 0, ssm_fee: 0,
+    abot_cost: 0, admin_retain: 0, cecilia_fee: 0, ssm_fee: 0, claude_retain: 0,
     preparer_name: '', preparer_amt: 0,
     reviewer_name: '', reviewer_amt: 0, reviewer_top20: 0,
     kc_commission: 0, koay_commission: 0,
@@ -11668,6 +11669,7 @@ function openAllocEdit(a) {
   document.getElementById('ae-disb').value           = parseFloat(a.disbursements||a.disb_amount||0).toFixed(2);
   document.getElementById('ae-abot').value           = parseFloat(a.abot_cost||0).toFixed(2);
   document.getElementById('ae-retain').value         = parseFloat(a.admin_retain||0).toFixed(2);
+  document.getElementById('ae-claude-retain').value  = parseFloat(a.claude_retain||0).toFixed(2);
   document.getElementById('ae-cec-fee').value        = parseFloat(a.cecilia_fee||0).toFixed(2);
   document.getElementById('ae-ssm-fee').value        = parseFloat(a.ssm_fee||0).toFixed(2);
   document.getElementById('ae-preparer').value       = a.preparer_name || '';
@@ -11702,9 +11704,10 @@ function aeUpdateCheck() {
   const top  = parseFloat(document.getElementById('ae-top20').value||0);
   const kcc  = parseFloat(document.getElementById('ae-kc-comm').value||0);
   const koac = parseFloat(document.getElementById('ae-koay-comm').value||0);
+  const clauR = parseFloat(document.getElementById('ae-claude-retain').value||0);
   // reviewer_top20 (top) is a payout bonus sourced FROM the abot retained — it is NOT an
   // additional allocation item. Exclude it from the balance so the check uses gross abot.
-  const tot  = disb + abot + ret + cec + ssm + pAmt + rAmt + kcc + koac;
+  const tot  = disb + abot + ret + cec + ssm + pAmt + rAmt + kcc + koac + clauR;
   const diff = Math.round((g - tot)*100)/100;
   const el = document.getElementById('ae-check-line');
   if (!el) return;
@@ -11814,6 +11817,7 @@ async function saveAllocEdit() {
     admin_retain:   parseFloat(document.getElementById('ae-retain').value||0),
     cecilia_fee:    parseFloat(document.getElementById('ae-cec-fee').value||0),
     ssm_fee:        parseFloat(document.getElementById('ae-ssm-fee').value||0),
+    claude_retain:  parseFloat(document.getElementById('ae-claude-retain').value||0),
     preparer_name:  document.getElementById('ae-preparer').value,
     preparer_amt:   parseFloat(document.getElementById('ae-preparer-amt').value||0),
     reviewer_name:  document.getElementById('ae-reviewer').value,
