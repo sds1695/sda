@@ -1378,7 +1378,7 @@
           <div id="ret-variance-rows"></div>
         </div>
         <div class="recon-card">
-          <div class="fin-section-title">Claude Pool (2.5%) — Separate</div>
+          <div class="fin-section-title">Claude Pool (2.5%)</div>
           <div id="ret-claude-rows"></div>
         </div>
       </div>
@@ -2852,29 +2852,85 @@ async function loadRetention() {
     `<div class="fin-row subtotal" style="font-size:11px"><span>2026 subtotal</span><span class="fin-amt fin-neg">(${fmt(_sub2026)})</span></div>` +
     `<div class="fin-row subtotal"><span>Total Deductions</span><span class="fin-amt fin-neg">(${fmt(totalDeducted)})</span></div>`;
 
+  // ── 2025 detail lines ──
+  const _2025detail = [
+    { sub: 'Operating expenses', items: [
+      { label: 'SSM Incorporation fee', note: 'PV001.25 · 14 Jul', amount: 70.00 },
+      { label: 'Rubber stamp',          note: 'PV004.25 · 30 Jul', amount: 18.00 },
+      { label: 'Stationeries',          note: 'PV005.25 · 31 Jul', amount: 36.10 },
+      { label: 'Digicelcom — sim card', note: 'PV007.25 · 04 Aug', amount: 10.00 },
+      { label: 'Digicelcom — reload',   note: 'PV008.25 · 04 Aug', amount: 110.00 },
+      { label: 'Lunch @ Onya',          note: 'PV025.25 · 11 Nov', amount: 161.15 },
+      { label: 'Date chop',             note: '18 Dec',            amount: 16.00 },
+      { label: 'Entertainment — EJ Loh',note: 'PV033.25 · 11 Dec', amount: 98.00 },
+      { label: 'Bank charges',          note: 'GL 2025',           amount: 18.00 },
+    ]},
+    { sub: 'Dividend paid', items: [
+      { label: 'Dividend advance — Quah', note: '11 Nov', amount: 100.00 },
+      { label: 'Dividend paid',           note: '31 Dec', amount: 900.00 },
+    ]},
+    { sub: 'Abot software', items: [
+      { label: 'Abot Software (2025)', note: 'INV01818/9 · 08 Aug', amount: 2700.00 },
+    ]},
+  ];
+  const _2026detail = _ded2026;
+
+  const _detailLine = (d, indent) => `
+    <div class="fin-row" style="padding-left:${indent}px;font-size:11px;color:var(--text3)">
+      <span>${d.label}<span style="margin-left:6px;font-size:10px">${d.note||''}</span></span>
+      <span style="font-family:'DM Mono',monospace;margin-left:auto">(${fmt(d.amount)})</span>
+    </div>`;
+
+  const _subGroup = (g) => {
+    const sub = r2(g.items.reduce((s,i) => s + i.amount, 0));
+    const id  = 'ret-sg-' + Math.random().toString(36).slice(2);
+    return `
+    <div style="border-left:2px solid var(--border);margin:4px 0 4px 8px;padding-left:8px">
+      <div class="fin-row indent" style="cursor:pointer;font-size:12px;font-weight:500" onclick="document.getElementById('${id}').style.display=document.getElementById('${id}').style.display==='none'?'block':'none'">
+        <span>▸ ${g.sub}</span>
+        <span class="fin-amt fin-neg" style="font-size:12px">(${fmt(sub)})</span>
+      </div>
+      <div id="${id}" style="display:none">${g.items.map(i => _detailLine(i, 0)).join('')}</div>
+    </div>`;
+  };
+
+  const _makeDropdown = (label, subtotal, innerHtml, id) => `
+    <div style="margin:2px 0">
+      <div class="fin-row indent" style="cursor:pointer;font-weight:500" onclick="var el=document.getElementById('${id}');el.style.display=el.style.display==='none'?'block':'none'">
+        <span style="display:flex;align-items:center;gap:6px"><span id="${id}-arrow">▶</span>${label}</span>
+        <span class="fin-amt fin-neg">(${fmt(subtotal)})</span>
+      </div>
+      <div id="${id}" style="display:none;background:var(--surface2);border-radius:6px;padding:4px 0;margin:2px 0 4px 0">
+        ${innerHtml}
+      </div>
+    </div>`;
+
+  const _2025inner = _2025detail.map(_subGroup).join('');
+  const _2026inner = _2026detail.map(d => _detailLine(d, 8)).join('');
+
   // ── Reconciliation summary (Admin + Abot only) ──
   document.getElementById('ret-variance-rows').innerHTML = `
     <div class="fin-row indent"><span>Admin retention (15%)</span><span class="fin-amt">${fmt(_poolAdmin)}</span></div>
     <div class="fin-row indent"><span>Abot cost pool</span><span class="fin-amt">${fmt(_poolAbot)}</span></div>
-    <div class="fin-row subtotal"><span>Total pool</span><span class="fin-amt">${fmt(poolTotal)}</span></div>
-    <div class="fin-row indent"><span style="color:var(--text3);font-size:11px">2025 expenses</span><span class="fin-amt fin-neg" style="font-size:11px">(${fmt(_sub2025)})</span></div>
-    <div class="fin-row indent"><span style="color:var(--text3);font-size:11px">2026 expenses</span><span class="fin-amt fin-neg" style="font-size:11px">(${fmt(_sub2026)})</span></div>
-    <div class="fin-row indent"><span>Less: total deductions</span><span class="fin-amt fin-neg">(${fmt(totalDeducted)})</span></div>
+    <div class="fin-row subtotal"><span>Total pool</span><span class="fin-amt">${fmt(poolTotal)}</span></div>` +
+    _makeDropdown('2025 expenses', _sub2025, _2025inner, 'ret-dd-2025') +
+    _makeDropdown('2026 expenses', _sub2026, _2026inner, 'ret-dd-2026') +
+    `<div class="fin-row indent" style="border-top:1px solid var(--border);padding-top:6px;margin-top:4px"><span>Less: total deductions</span><span class="fin-amt fin-neg">(${fmt(totalDeducted)})</span></div>
     <div class="fin-row total" style="color:var(--green)">
       <span>Available balance</span>
       <span class="fin-amt">${fmt(computedBal)}</span>
     </div>`;
 
-  // ── Claude pool (separate) ──
+  // ── Claude pool ──
   document.getElementById('ret-claude-rows').innerHTML = `
     <div class="fin-row indent"><span>Claude retention collected (2.5%)</span><span class="fin-amt" style="color:var(--accent)">${fmt(claudePoolTotal)}</span></div>` +
     CLAUDE_DEDUCTIONS.map(d => `
     <div class="fin-row indent">
       <span style="font-size:12px">${d.label}<span style="color:var(--text3);margin-left:6px;font-size:11px">${d.note}</span></span>
-      <span class="fin-amt fin-neg" style="font-family:'DM Mono',monospace;font-size:12px">(${fmt(d.amount)})</span>
+      <span class="fin-amt fin-neg" style="font-size:12px">(${fmt(d.amount)})</span>
     </div>`).join('') +
     `<div class="fin-row total" style="color:var(--accent)">
-      <span>Claude pool balance</span>
+      <span>Balance remaining</span>
       <span class="fin-amt">${fmt(claudeBalance)}</span>
     </div>`;
 }
