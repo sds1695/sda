@@ -2723,7 +2723,11 @@ async function loadRetention() {
     .filter(r => r.total > 0)
     .sort((a,b) => (a.inv_no||'').localeCompare(b.inv_no||''));
 
-  const poolTotal = r2(poolRows.reduce((s,r) => s + r.total, 0));
+  // ── Brought-forward retention (per Excel Due-To tab, as at 27 Jun 2026) ──
+  const BF_POOL = { admin: 2565.83, abot: 1650.13, claude: 333.27 };
+  const BF_POOL_TOTAL = r2(BF_POOL.admin + BF_POOL.abot + BF_POOL.claude);
+
+  const poolTotal = r2(poolRows.reduce((s,r) => s + r.total, 0) + BF_POOL_TOTAL);
 
   // ── Hardcoded deductions (matched to GL 2026) ──
   const DEDUCTIONS = [
@@ -2751,9 +2755,9 @@ async function loadRetention() {
 
   // ── Pool rows ──
   // Subtotals for each component of the pool
-  const _poolAdmin  = r2(poolRows.reduce((s,r) => s + r.adminRet,  0));
-  const _poolAbot   = r2(poolRows.reduce((s,r) => s + r.abotCost,  0));
-  const _poolClaude = r2(poolRows.reduce((s,r) => s + (r.claudeRet||0), 0));
+  const _poolAdmin  = r2(poolRows.reduce((s,r) => s + r.adminRet,  0) + BF_POOL.admin);
+  const _poolAbot   = r2(poolRows.reduce((s,r) => s + r.abotCost,  0) + BF_POOL.abot);
+  const _poolClaude = r2(poolRows.reduce((s,r) => s + (r.claudeRet||0), 0) + BF_POOL.claude);
   document.getElementById('ret-pool-rows').innerHTML =
     `<div class="fin-row" style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;padding:4px 0;border-bottom:1px solid var(--border)">
       <span style="display:inline-block;width:38%">Invoice</span>
@@ -2761,6 +2765,13 @@ async function loadRetention() {
       <span style="display:inline-block;width:14%;text-align:right">Abot</span>
       <span style="display:inline-block;width:14%;text-align:right">Claude 2.5%</span>
       <span style="display:inline-block;width:14%;text-align:right">Total</span>
+    </div>` +
+    `<div class="fin-row indent" style="font-size:12px;color:var(--text3);font-style:italic">
+      <span style="display:inline-block;width:38%">Brought forward (per Excel, 27 Jun 2026)</span>
+      <span style="display:inline-block;width:18%;text-align:right;font-family:'DM Mono',monospace">${fmt(BF_POOL.admin)}</span>
+      <span style="display:inline-block;width:14%;text-align:right;font-family:'DM Mono',monospace">${fmt(BF_POOL.abot)}</span>
+      <span style="display:inline-block;width:14%;text-align:right;font-family:'DM Mono',monospace;color:var(--accent)">${fmt(BF_POOL.claude)}</span>
+      <span style="display:inline-block;width:14%;text-align:right;font-family:'DM Mono',monospace;font-weight:600">${fmt(BF_POOL_TOTAL)}</span>
     </div>` +
     poolRows.map(r => `
     <div class="fin-row indent" style="font-size:12px">
