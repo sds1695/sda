@@ -1356,11 +1356,12 @@
         <div class="page-title">Retention Reconciliation</div>
         <div class="page-sub">Admin 15% + Abot pool vs real expenses — Claude pool tracked separately</div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px">
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:20px">
         <div class="metric-card"><div class="metric-label">Admin + Abot Pool</div><div class="metric-value" id="ret-pool-total">—</div></div>
         <div class="metric-card"><div class="metric-label">Total Deducted</div><div class="metric-value red" id="ret-deducted">—</div></div>
         <div class="metric-card"><div class="metric-label">Available Balance</div><div class="metric-value green" id="ret-balance">—</div></div>
         <div class="metric-card" style="border-color:var(--accent)"><div class="metric-label" style="color:var(--accent)">Claude Pool Balance</div><div class="metric-value" id="ret-claude-balance" style="color:var(--accent)">—</div></div>
+        <div class="metric-card" id="ret-health"><div class="metric-label">Data Health</div><div class="metric-value" id="ret-health-val">—</div><div class="metric-sub" id="ret-health-sub" style="font-size:11px;color:var(--text3)">variance —</div></div>
       </div>
       <div class="recon-card">
         <div class="fin-section-title">Retention Pool (per invoice)</div>
@@ -2984,9 +2985,9 @@ async function loadRetention() {
     const gsub = r2(g.items.reduce((s,i)=>s+i.amount,0));
     const gid  = 'ret-sg-' + g.sub.replace(/\s+/g,'-');
     const items = g.items.map(i =>
-      `<div class="fin-row" style="font-size:11px;color:var(--text2);padding:2px 0">
+      `<div class="fin-row" style="font-size:11px;color:var(--text2)">
         <span>${i.label}<span style="color:var(--text3);font-size:10px;margin-left:6px">${i.note}</span></span>
-        <span style="font-family:'DM Mono',monospace;color:var(--text3)">(${fmt(i.amount)})</span>
+        <span class="fin-amt fin-neg">(${fmt(i.amount)})</span>
       </div>`).join('');
     return _dd(g.sub, gsub, items, gid);
   }).join('');
@@ -3012,7 +3013,7 @@ async function loadRetention() {
   document.getElementById('ret-claude-rows').innerHTML =
     `<div class="fin-row indent"><span>Collected (2.5%)</span><span class="fin-amt" style="color:var(--accent)">${fmt(claudePoolTotal)}</span></div>` +
     _editRowAmtOnly('claude_sub', 'Claude subscription', 'GL 2026', _claudeSubAmt) +
-    `<div class="fin-row total" style="color:var(--accent)">
+    `<div class="fin-row total">
       <span>Balance remaining</span>
       <span class="fin-amt">${fmt(r2(claudePoolTotal - _claudeSubAmt))}</span>
     </div>`;
@@ -3092,6 +3093,17 @@ async function loadRetention() {
     <div class="fin-row total" style="color:${_varColor}">
       <span>Variance</span><span class="fin-amt">${_varFmt}</span>
     </div>`;
+
+  // ── Health check metric card ──
+  const _absVar = Math.abs(_netVar);
+  const _hLabel = _absVar < 100 ? '✓ Healthy' : _absVar < 500 ? '⚠ Review' : '✗ Check data';
+  const _hColor = _absVar < 100 ? 'var(--green)' : _absVar < 500 ? 'var(--amber)' : 'var(--red)';
+  const _hCard  = document.getElementById('ret-health');
+  if (_hCard) _hCard.style.borderColor = _hColor;
+  const _hVal = document.getElementById('ret-health-val');
+  if (_hVal) { _hVal.textContent = _hLabel; _hVal.style.color = _hColor; _hVal.style.fontSize = '16px'; }
+  const _hSub = document.getElementById('ret-health-sub');
+  if (_hSub) _hSub.textContent = 'Net cash variance: ' + fmt(_absVar);
 }
 
 // ══════════════════════════════════════════════════
