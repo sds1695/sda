@@ -1362,17 +1362,11 @@
         <div class="metric-card"><div class="metric-label">Available Balance</div><div class="metric-value green" id="ret-balance">—</div></div>
         <div class="metric-card" style="border-color:var(--accent)"><div class="metric-label" style="color:var(--accent)">Claude Pool Balance</div><div class="metric-value" id="ret-claude-balance" style="color:var(--accent)">—</div></div>
       </div>
-      <div style="display:grid;grid-template-columns:1.45fr 1fr;gap:20px">
-        <div class="recon-card">
-          <div class="fin-section-title">Retention Pool (per invoice)</div>
-          <div id="ret-pool-rows"></div>
-        </div>
-        <div class="recon-card">
-          <div class="fin-section-title">Deductions (Admin + Abot)</div>
-          <div id="ret-abot-rows"></div>
-        </div>
+      <div class="recon-card">
+        <div class="fin-section-title">Retention Pool (per invoice)</div>
+        <div id="ret-pool-rows"></div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:16px">
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:20px;margin-top:16px">
         <div class="recon-card">
           <div class="fin-section-title">Reconciliation Summary — Admin + Abot</div>
           <div id="ret-variance-rows"></div>
@@ -1382,6 +1376,11 @@
           <div id="ret-claude-rows"></div>
         </div>
       </div>
+      <div class="recon-card" style="margin-top:16px">
+        <div class="fin-section-title">Net Cash Position</div>
+        <div id="ret-netcash-rows"></div>
+      </div>
+      <div id="ret-abot-rows" style="display:none"></div>
     </div>
 
 
@@ -2852,18 +2851,23 @@ async function loadRetention() {
     `<div class="fin-row subtotal" style="font-size:11px"><span>2026 subtotal</span><span class="fin-amt fin-neg">(${fmt(_sub2026)})</span></div>` +
     `<div class="fin-row subtotal"><span>Total Deductions</span><span class="fin-amt fin-neg">(${fmt(totalDeducted)})</span></div>`;
 
-  // ── 2025 detail lines ──
-  const _2025detail = [
+  // ── Load editable deduction amounts from localStorage ──
+  const _dedAmt = (id, def) => parseFloat(localStorage.getItem('ret_ded_' + id) || def);
+  const _saveDedAmt = (id, val) => { try { localStorage.setItem('ret_ded_' + id, val); } catch(e){} };
+  const _claudeSubAmt = _dedAmt('claude_sub', 160.00);
+
+  // ── 2025 detail lines (hardcoded historical, not editable) ──
+  const _2025groups = [
     { sub: 'Operating expenses', items: [
-      { label: 'SSM Incorporation fee', note: 'PV001.25 · 14 Jul', amount: 70.00 },
-      { label: 'Rubber stamp',          note: 'PV004.25 · 30 Jul', amount: 18.00 },
-      { label: 'Stationeries',          note: 'PV005.25 · 31 Jul', amount: 36.10 },
-      { label: 'Digicelcom — sim card', note: 'PV007.25 · 04 Aug', amount: 10.00 },
-      { label: 'Digicelcom — reload',   note: 'PV008.25 · 04 Aug', amount: 110.00 },
-      { label: 'Lunch @ Onya',          note: 'PV025.25 · 11 Nov', amount: 161.15 },
-      { label: 'Date chop',             note: '18 Dec',            amount: 16.00 },
-      { label: 'Entertainment — EJ Loh',note: 'PV033.25 · 11 Dec', amount: 98.00 },
-      { label: 'Bank charges',          note: 'GL 2025',           amount: 18.00 },
+      { label: 'SSM Incorporation fee',  note: 'PV001.25 · 14 Jul', amount: 70.00 },
+      { label: 'Rubber stamp',           note: 'PV004.25 · 30 Jul', amount: 18.00 },
+      { label: 'Stationeries',           note: 'PV005.25 · 31 Jul', amount: 36.10 },
+      { label: 'Digicelcom — sim card',  note: 'PV007.25 · 04 Aug', amount: 10.00 },
+      { label: 'Digicelcom — reload',    note: 'PV008.25 · 04 Aug', amount: 110.00 },
+      { label: 'Lunch @ Onya',           note: 'PV025.25 · 11 Nov', amount: 161.15 },
+      { label: 'Date chop',              note: '18 Dec',             amount: 16.00 },
+      { label: 'Entertainment — EJ Loh', note: 'PV033.25 · 11 Dec', amount: 98.00 },
+      { label: 'Bank charges',           note: 'GL 2025',            amount: 18.00 },
     ]},
     { sub: 'Dividend paid', items: [
       { label: 'Dividend advance — Quah', note: '11 Nov', amount: 100.00 },
@@ -2873,65 +2877,149 @@ async function loadRetention() {
       { label: 'Abot Software (2025)', note: 'INV01818/9 · 08 Aug', amount: 2700.00 },
     ]},
   ];
-  const _2026detail = _ded2026;
 
-  const _detailLine = (d, indent) => `
-    <div class="fin-row" style="padding-left:${indent}px;font-size:11px;color:var(--text3)">
-      <span>${d.label}<span style="margin-left:6px;font-size:10px">${d.note||''}</span></span>
-      <span style="font-family:'DM Mono',monospace;margin-left:auto">(${fmt(d.amount)})</span>
-    </div>`;
+  // 2026 editable items
+  const _2026items = [
+    { id:'6ix',   label:'6ixteen courier charges',           note:'PV004.26', def:32.40 },
+    { id:'onya',  label:'Lunch at Onya',                     note:'GL 2026',  def:91.60 },
+    { id:'hamAh', label:'Raya Hamper for Ahmad (FRAZ)',       note:'PV006.26', def:93.38 },
+    { id:'hamAi', label:'Raya Hamper for Ain (Freelance)',    note:'PV007.26', def:93.38 },
+    { id:'div26', label:'Dividend paid — March 2026',         note:'GL 2026',  def:500.00 },
+    { id:'abot26',label:'Abot software subscription (2026)', note:'GL 2026',  def:1080.00 },
+    { id:'tax26', label:'Tax expenses',                       note:'GL 2026',  def:306.54 },
+    { id:'trav',  label:'Travelling claim — Amatic',          note:'GL 2026',  def:47.75 },
+    { id:'rnd',   label:'Rounding adjustment',                note:'GL 2026',  def:2.53 },
+  ];
+  _2026items.forEach(d => { d.amount = _dedAmt(d.id, d.def); });
 
-  const _subGroup = (g) => {
-    const sub = r2(g.items.reduce((s,i) => s + i.amount, 0));
-    const id  = 'ret-sg-' + Math.random().toString(36).slice(2);
-    return `
-    <div style="border-left:2px solid var(--border);margin:4px 0 4px 8px;padding-left:8px">
-      <div class="fin-row indent" style="cursor:pointer;font-size:12px;font-weight:500" onclick="document.getElementById('${id}').style.display=document.getElementById('${id}').style.display==='none'?'block':'none'">
-        <span>▸ ${g.sub}</span>
-        <span class="fin-amt fin-neg" style="font-size:12px">(${fmt(sub)})</span>
-      </div>
-      <div id="${id}" style="display:none">${g.items.map(i => _detailLine(i, 0)).join('')}</div>
-    </div>`;
+  const _sub2025computed = r2(_2025groups.reduce((s,g) => s + g.items.reduce((ss,i) => ss + i.amount, 0), 0));
+  const _sub2026computed = r2(_2026items.reduce((s,d) => s + d.amount, 0));
+  const totalDeductedAll = r2(_sub2025computed + _sub2026computed);
+  const computedBalFinal = r2(poolTotal - totalDeductedAll);
+
+  // Update metric cards with recomputed values (override old values set above)
+  document.getElementById('ret-deducted').textContent       = fmt(totalDeductedAll);
+  document.getElementById('ret-balance').textContent        = fmt(computedBalFinal);
+  document.getElementById('ret-claude-balance').textContent = fmt(r2(claudePoolTotal - _claudeSubAmt));
+
+  // ── Helper: editable amount span ──
+  const _editAmt = (id, amount, onSave) => {
+    const eid = 'ret-ea-' + id;
+    return `<span id="${eid}" style="font-family:'DM Mono',monospace;cursor:pointer;border-bottom:1px dashed var(--text3)"
+      title="Click to edit" onclick="
+        var s=document.getElementById('${eid}');
+        var cur=parseFloat(s.getAttribute('data-val')||0);
+        var inp=document.createElement('input');
+        inp.type='number';inp.step='0.01';inp.value=cur.toFixed(2);
+        inp.style='width:80px;font-size:12px;font-family:DM Mono,monospace;text-align:right;border:1px solid var(--accent);border-radius:3px;padding:1px 4px;background:var(--surface);color:var(--text1)';
+        inp.onblur=function(){
+          var v=parseFloat(inp.value||0);
+          localStorage.setItem('ret_ded_${id}',v);
+          loadRetention();
+        };
+        inp.onkeydown=function(e){if(e.key==='Enter')inp.blur();if(e.key==='Escape'){loadRetention();}};
+        s.replaceWith(inp);inp.focus();inp.select();
+      " data-val="${amount}">(${fmt(amount)})</span>`;
   };
 
-  const _makeDropdown = (label, subtotal, innerHtml, id) => `
-    <div style="margin:2px 0">
-      <div class="fin-row indent" style="cursor:pointer;font-weight:500" onclick="var el=document.getElementById('${id}');el.style.display=el.style.display==='none'?'block':'none'">
-        <span style="display:flex;align-items:center;gap:6px"><span id="${id}-arrow">▶</span>${label}</span>
+  // ── Render: collapsible dropdown helper ──
+  const _dd = (label, subtotal, inner, id) =>
+    `<div style="margin:4px 0">
+      <div class="fin-row indent" style="cursor:pointer" onclick="var el=document.getElementById('${id}');el.style.display=el.style.display==='none'?'block':'none';this.querySelector('.dd-arrow').textContent=el.style.display==='none'?'▶':'▼'">
+        <span><span class="dd-arrow" style="font-size:9px;margin-right:6px;color:var(--text3)">▶</span>${label}</span>
         <span class="fin-amt fin-neg">(${fmt(subtotal)})</span>
       </div>
-      <div id="${id}" style="display:none;background:var(--surface2);border-radius:6px;padding:4px 0;margin:2px 0 4px 0">
-        ${innerHtml}
-      </div>
+      <div id="${id}" style="display:none;margin:2px 0 4px 16px;border-left:2px solid var(--border);padding-left:8px">${inner}</div>
     </div>`;
 
-  const _2025inner = _2025detail.map(_subGroup).join('');
-  const _2026inner = _2026detail.map(d => _detailLine(d, 8)).join('');
+  // ── 2025 sub-groups (read-only) ──
+  const _2025inner = _2025groups.map(g => {
+    const gsub = r2(g.items.reduce((s,i)=>s+i.amount,0));
+    const gid  = 'ret-sg-' + g.sub.replace(/\s+/g,'-');
+    const items = g.items.map(i =>
+      `<div class="fin-row" style="font-size:11px;color:var(--text2);padding:2px 0">
+        <span>${i.label}<span style="color:var(--text3);font-size:10px;margin-left:6px">${i.note}</span></span>
+        <span style="font-family:'DM Mono',monospace;color:var(--text3)">(${fmt(i.amount)})</span>
+      </div>`).join('');
+    return _dd(g.sub, gsub, items, gid);
+  }).join('');
 
-  // ── Reconciliation summary (Admin + Abot only) ──
-  document.getElementById('ret-variance-rows').innerHTML = `
-    <div class="fin-row indent"><span>Admin retention (15%)</span><span class="fin-amt">${fmt(_poolAdmin)}</span></div>
+  // ── 2026 items (editable) ──
+  const _2026inner = _2026items.map(d =>
+    `<div class="fin-row indent" style="font-size:12px">
+      <span>${d.label}<span style="color:var(--text3);font-size:10px;margin-left:6px">${d.note}</span></span>
+      ${_editAmt(d.id, d.amount)}
+    </div>`).join('');
+
+  // ── Reconciliation summary ──
+  document.getElementById('ret-variance-rows').innerHTML =
+    `<div class="fin-row indent"><span>Admin retention (15%)</span><span class="fin-amt">${fmt(_poolAdmin)}</span></div>
     <div class="fin-row indent"><span>Abot cost pool</span><span class="fin-amt">${fmt(_poolAbot)}</span></div>
     <div class="fin-row subtotal"><span>Total pool</span><span class="fin-amt">${fmt(poolTotal)}</span></div>` +
-    _makeDropdown('2025 expenses', _sub2025, _2025inner, 'ret-dd-2025') +
-    _makeDropdown('2026 expenses', _sub2026, _2026inner, 'ret-dd-2026') +
-    `<div class="fin-row indent" style="border-top:1px solid var(--border);padding-top:6px;margin-top:4px"><span>Less: total deductions</span><span class="fin-amt fin-neg">(${fmt(totalDeducted)})</span></div>
+    _dd('2025 expenses', _sub2025computed, _2025inner, 'ret-dd-2025') +
+    _dd('2026 expenses', _sub2026computed, _2026inner, 'ret-dd-2026') +
+    `<div class="fin-row indent" style="border-top:1px solid var(--border);padding-top:6px;margin-top:2px">
+      <span>Less: total deductions</span><span class="fin-amt fin-neg">(${fmt(totalDeductedAll)})</span>
+    </div>
     <div class="fin-row total" style="color:var(--green)">
-      <span>Available balance</span>
-      <span class="fin-amt">${fmt(computedBal)}</span>
+      <span>Available balance</span><span class="fin-amt">${fmt(computedBalFinal)}</span>
     </div>`;
 
   // ── Claude pool ──
-  document.getElementById('ret-claude-rows').innerHTML = `
-    <div class="fin-row indent"><span>Claude retention collected (2.5%)</span><span class="fin-amt" style="color:var(--accent)">${fmt(claudePoolTotal)}</span></div>` +
-    CLAUDE_DEDUCTIONS.map(d => `
-    <div class="fin-row indent">
-      <span style="font-size:12px">${d.label}<span style="color:var(--text3);margin-left:6px;font-size:11px">${d.note}</span></span>
-      <span class="fin-amt fin-neg" style="font-size:12px">(${fmt(d.amount)})</span>
-    </div>`).join('') +
-    `<div class="fin-row total" style="color:var(--accent)">
+  document.getElementById('ret-claude-rows').innerHTML =
+    `<div class="fin-row indent"><span>Collected (2.5%)</span><span class="fin-amt" style="color:var(--accent)">${fmt(claudePoolTotal)}</span></div>
+    <div class="fin-row indent" style="font-size:12px">
+      <span>Claude subscription<span style="color:var(--text3);font-size:10px;margin-left:6px">GL 2026</span></span>
+      ${_editAmt('claude_sub', _claudeSubAmt)}
+    </div>
+    <div class="fin-row total" style="color:var(--accent)">
       <span>Balance remaining</span>
-      <span class="fin-amt">${fmt(claudeBalance)}</span>
+      <span class="fin-amt">${fmt(r2(claudePoolTotal - _claudeSubAmt))}</span>
+    </div>`;
+
+  // ── Net Cash Position ──
+  // Trade debtors: use amount_outstanding field (GSheets computed column)
+  const _debtors = r2((INVOICES||[]).reduce((s,inv) => {
+    const ao = inv.amount_outstanding;
+    // ao=0 means fully paid; ao=null/undefined means unknown — fall back to amount/gross_fee if truly missing
+    const v = (ao != null) ? parseFloat(ao)||0 : parseFloat(inv.amount||inv.gross_fee||0);
+    return s + Math.max(0, v);
+  }, 0));
+
+  // Due to individuals: unpaid wages from allocations
+  const _wpAll = getWagePaidMap ? getWagePaidMap() : {};
+  const _dueIndiv = r2((ALLOCATIONS||[]).reduce((s,a) => {
+    const hasPay = Object.keys(_wpAll).some(k => k === a.alloc_id || k.startsWith((a.alloc_id||'')+'|'));
+    if (hasPay) return s;
+    return s + parseFloat(a.preparer_amt||0) + parseFloat(a.reviewer_amt||0)
+             + parseFloat(a.kc_commission||0) + parseFloat(a.koay_commission||0);
+  }, 0));
+
+  // Bank balance from localStorage (user sets this; no auto-source yet)
+  const _bankBal = parseFloat(localStorage.getItem('ret_bank_bal') || 0);
+  const _netCash = r2(_bankBal + _debtors - _dueIndiv);
+  const _netVar  = r2(_netCash - computedBalFinal);
+
+  document.getElementById('ret-netcash-rows').innerHTML =
+    `<div class="fin-row indent">
+      <span>Bank balance (Maybank)<span style="color:var(--text3);font-size:10px;margin-left:6px">per GL</span></span>
+      <span id="ret-bank-display" style="font-family:'DM Mono',monospace;cursor:pointer;border-bottom:1px dashed var(--text3)" title="Click to update"
+        onclick="var v=prompt('Enter current Maybank balance (RM):',localStorage.getItem('ret_bank_bal')||'0');if(v!==null){localStorage.setItem('ret_bank_bal',parseFloat(v)||0);loadRetention();}"
+      >${fmt(_bankBal)} ✎</span>
+    </div>
+    <div class="fin-row indent">
+      <span>Trade debtors (outstanding invoices)<span style="color:var(--text3);font-size:10px;margin-left:6px">dashboard</span></span>
+      <span style="font-family:'DM Mono',monospace">${fmt(_debtors)}</span>
+    </div>
+    <div class="fin-row indent">
+      <span>Less: due to individuals (unpaid wages)<span style="color:var(--text3);font-size:10px;margin-left:6px">dashboard</span></span>
+      <span class="fin-amt fin-neg">(${fmt(_dueIndiv)})</span>
+    </div>
+    <div class="fin-row subtotal"><span>Net cash position</span><span class="fin-amt">${fmt(_netCash)}</span></div>
+    <div class="fin-row indent"><span>Available balance (per retention recon)</span><span class="fin-amt" style="color:var(--green)">${fmt(computedBalFinal)}</span></div>
+    <div class="fin-row total" style="color:${Math.abs(_netVar)<100?'var(--green)':'var(--amber)'}">
+      <span>Variance</span>
+      <span class="fin-amt">${_netVar===0?'Nil ✓':((_netVar>0?'+ ':'− ')+fmt(Math.abs(_netVar)))}</span>
     </div>`;
 }
 
