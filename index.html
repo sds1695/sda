@@ -16247,11 +16247,15 @@ function renderInvoiceBreakdown() {
         Object.keys(b).forEach(k => { if (agg.hasOwnProperty(k)) agg[k] += b[k]; });
       });
     } else {
-      allocs.forEach(a => {
-        const b = bucketAmts(a);
+      // Use only the most-recent active alloc row (newest = last in GAS append order).
+      // Guard against stale duplicate rows that slip through auto-dedupe — summing
+      // multiple active rows causes every bucket to double/triple.
+      const _canonAlloc = allocs.length > 0 ? allocs[allocs.length - 1] : null;
+      if (_canonAlloc) {
+        const b = bucketAmts(_canonAlloc);
         Object.keys(b).forEach(k => agg[k] += b[k]);
-        if (isNonStandard(a)) nonStd = true;
-      });
+        if (isNonStandard(_canonAlloc)) nonStd = true;
+      }
     }
     // Fallback only when there are NO allocation rows at all — otherwise trust
     // what the alloc says (disb-flagged lines routed to alloc=Koay/retain etc.
