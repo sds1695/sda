@@ -2687,7 +2687,33 @@ async function prefetchGlobals() {
 }
 
 // Retention Recon page
+function _seedClaudeRetain() {
+  // Seed localStorage with known 2026 claude_retain values (per Excel Due-To tab, 27 Jun 2026)
+  // Only writes if the key does not already exist (won't overwrite user-edited values)
+  const seeds = {
+    'INV260514': 44.74,
+    'INV260515': 36.10,
+    'INV260516': 42.50,
+    'INV260517': 47.50,
+    'INV260518': 28.50,
+    'INV260519': 19.00,
+    'INV260520': 48.6875,
+    'INV260601': 5.625,
+    'INV260602': 6.25,
+    'INV260603': 6.25,
+    'INV260604': 30.00,
+    'INV260605': 30.00,
+  };
+  try {
+    Object.entries(seeds).forEach(([inv, val]) => {
+      const k = 'claude_retain_' + inv;
+      if (!localStorage.getItem(k)) localStorage.setItem(k, val);
+    });
+  } catch(e) {}
+}
+
 async function loadRetention() {
+  _seedClaudeRetain();
   try { markPageSynced('retention'); } catch(e){}
   const fmt  = n => 'RM ' + parseFloat(Math.abs(n)||0).toLocaleString('en-MY',{minimumFractionDigits:2});
   const fmtS = (n, neg) => neg
@@ -2723,8 +2749,8 @@ async function loadRetention() {
     .filter(r => r.total > 0)
     .sort((a,b) => (a.inv_no||'').localeCompare(b.inv_no||''));
 
-  // ── Brought-forward retention (per Excel Due-To tab, as at 27 Jun 2026) ──
-  const BF_POOL = { admin: 2565.83, abot: 1650.13, claude: 333.27 };
+  // ── Brought-forward retention (pre-2026 invoices not in GAS) ──
+  const BF_POOL = { admin: 2565.83, abot: 1650.13, claude: 0 };
   const BF_POOL_TOTAL = r2(BF_POOL.admin + BF_POOL.abot + BF_POOL.claude);
 
   const poolTotal = r2(poolRows.reduce((s,r) => s + r.total, 0) + BF_POOL_TOTAL);
@@ -2767,10 +2793,10 @@ async function loadRetention() {
       <span style="display:inline-block;width:14%;text-align:right">Total</span>
     </div>` +
     `<div class="fin-row indent" style="font-size:12px;color:var(--text3);font-style:italic">
-      <span style="display:inline-block;width:38%">Brought forward (per Excel, 27 Jun 2026)</span>
+      <span style="display:inline-block;width:38%">Brought forward (prior to 1.1.2026)</span>
       <span style="display:inline-block;width:18%;text-align:right;font-family:'DM Mono',monospace">${fmt(BF_POOL.admin)}</span>
       <span style="display:inline-block;width:14%;text-align:right;font-family:'DM Mono',monospace">${fmt(BF_POOL.abot)}</span>
-      <span style="display:inline-block;width:14%;text-align:right;font-family:'DM Mono',monospace;color:var(--accent)">${fmt(BF_POOL.claude)}</span>
+      <span style="display:inline-block;width:14%;text-align:right;font-family:'DM Mono',monospace;color:var(--text3)">${BF_POOL.claude > 0 ? fmt(BF_POOL.claude) : '—'}</span>
       <span style="display:inline-block;width:14%;text-align:right;font-family:'DM Mono',monospace;font-weight:600">${fmt(BF_POOL_TOTAL)}</span>
     </div>` +
     poolRows.map(r => `
