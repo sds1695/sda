@@ -4029,13 +4029,32 @@ function _bucketForLine(l, inv) {
   const L = K * lineRetainPct;
   const O = K * 0.10;
   const P = K - L - O - claudeRetain;
-  // Preparer split — use saved prep_pct from allocation record when available
-  // (allows per-invoice 50/50 overrides on standard jobs like GREAT CFO).
-  // Falls back to job-type default: 50 for cosec, 70 for everything else.
+  // Preparer split — resolved in priority order:
+  //   1. _savedAlloc.prep_pct  (GAS-stored field; works once GAS column exists)
+  //   2. localStorage 'prep_pct_<inv_no>'  (set on save; no GAS change needed)
+  //   3. Derived from saved preparer_amt / reviewer_amt  (always available)
+  //   4. Job-type default: 50 for cosec, 70 for standard
   const _isCosecLine = /cosec/i.test(invJob);
-  const _linePrepPct = (_savedAlloc && _savedAlloc.prep_pct != null && +_savedAlloc.prep_pct > 0 && +_savedAlloc.prep_pct < 100)
-    ? +_savedAlloc.prep_pct / 100
-    : (_isCosecLine ? 0.50 : 0.70);
+  let _resolvedPrepPct = null;
+  // (1) explicit saved field
+  if (_savedAlloc && _savedAlloc.prep_pct != null && +_savedAlloc.prep_pct > 0 && +_savedAlloc.prep_pct < 100) {
+    _resolvedPrepPct = +_savedAlloc.prep_pct / 100;
+  }
+  // (2) localStorage fallback
+  if (_resolvedPrepPct === null) {
+    try {
+      const _lsP = parseFloat(localStorage.getItem('prep_pct_' + (inv && inv.inv_no)) || 0);
+      if (_lsP > 0 && _lsP < 100) _resolvedPrepPct = _lsP / 100;
+    } catch(e) {}
+  }
+  // (3) derive from saved amounts (no GAS changes needed; uses already-stored preparer_amt)
+  if (_resolvedPrepPct === null && _savedAlloc) {
+    const _sP = parseFloat(_savedAlloc.preparer_amt || 0);
+    const _sR = parseFloat(_savedAlloc.reviewer_amt  || 0);
+    if (_sP + _sR > 0.01) _resolvedPrepPct = _sP / (_sP + _sR);
+  }
+  // (4) job-type default
+  const _linePrepPct = _resolvedPrepPct !== null ? _resolvedPrepPct : (_isCosecLine ? 0.50 : 0.70);
   const prep = P * _linePrepPct;
   const rev  = P * (1 - _linePrepPct);
   if (out.hasOwnProperty(linePrep)) out[linePrep] += prep;
@@ -8884,6 +8903,13 @@ async function saveInvoice() {
     const _crVal = parseFloat(allocData.claude_retain || 0);
     if (_crVal > 0.005) localStorage.setItem('claude_retain_' + inv_no, _crVal.toFixed(2));
     else localStorage.removeItem('claude_retain_' + inv_no);
+  } catch(e) {}
+  // localStorage fallback for prep_pct — works even if GAS doesn't have the column yet.
+  // computeLineShares reads this as priority-2 source after _savedAlloc.prep_pct.
+  try {
+    const _ppSave = parseFloat(allocData.prep_pct || 0);
+    if (_ppSave > 0 && _ppSave < 100) localStorage.setItem('prep_pct_' + inv_no, _ppSave.toFixed(1));
+    else localStorage.removeItem('prep_pct_' + inv_no);
   } catch(e) {}
   const _allocRes = await api({ action: 'save_allocation', data: allocData });
   // Auto-dedupe: GAS backend appends rather than updates, so re-saving an
