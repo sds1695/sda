@@ -8783,16 +8783,17 @@ async function saveInvoice() {
   // ─── Honour manual preparer-split override (inv-prep-pct) ──────────────────
   // Allows non-standard splits (e.g. 50/50 on a standard MBRS job) set per-invoice.
   // Only fires when there are amounts to redistribute (skips disb-only invoices).
-  {
-    const _ppEl = document.getElementById('inv-prep-pct');
-    const _ppVal = _ppEl ? parseFloat(_ppEl.value) : NaN;
-    if (!isNaN(_ppVal) && _ppVal > 0 && _ppVal < 100 && (prepAmt + revAmt) > 0.005) {
-      const _total = prepAmt + revAmt;
-      prepAmt = r2(_total * _ppVal / 100);
-      revAmt  = r2(_total * (100 - _ppVal) / 100);
-      prepPct = _ppVal / 100;
-      revPct  = 1 - prepPct;
-    }
+  // _ppActive declared in outer scope so the per-line override block below can
+  // suppress stale horizontalAlloc aggregates that would otherwise double-count.
+  const _ppElOvr = document.getElementById('inv-prep-pct');
+  const _ppValOvr = _ppElOvr ? parseFloat(_ppElOvr.value) : NaN;
+  const _ppActive = !isNaN(_ppValOvr) && _ppValOvr > 0 && _ppValOvr < 100 && (prepAmt + revAmt) > 0.005;
+  if (_ppActive) {
+    const _total = prepAmt + revAmt;
+    prepAmt = r2(_total * _ppValOvr / 100);
+    revAmt  = r2(_total * (100 - _ppValOvr) / 100);
+    prepPct = _ppValOvr / 100;
+    revPct  = 1 - prepPct;
   }
 
   // ─── Add per-line allocation extras to standard formula result ──
@@ -8835,19 +8836,22 @@ async function saveInvoice() {
   const _ovrRetain = parseFloat((document.getElementById('inv-ovr-retain') || {}).value || 0);
   const _ovrAbot = parseFloat((document.getElementById('inv-ovr-abot') || {}).value || 0);
   const _normP = p => p === 'Koay PH' ? 'Koay' : p;
-  // Route each person's override total to the right field:
-  //   matches invoice preparer → preparer_amt; matches reviewer → reviewer_amt
-  //   KC → kc_commission; Koay (when not primary) → koay_commission; others → kc_commission fallback
-  Object.entries(_ovrPerPerson).forEach(([person, amt]) => {
-    if (amt <= 0) return;
-    if (_normP(_prepName) === person)      _prepFinal += amt;
-    else if (_normP(_revName) === person)  _revFinal  += amt;
-    else if (person === 'KC')              _kcCommFinal += amt;
-    else if (person === 'Koay')            _koayCommFinal += amt;
-    else                                   _kcCommFinal += amt;  // ET/Ivy/Cecilia fallback
-  });
-  const _adminRetainFinal = adminRetain + _retainExtra2 + _ovrRetain;
-  const _abotCostFinal = abotCost + _customRetainAbot + _ovrAbot;
+  // Route each person's override total to the right field.
+  // SKIP when _ppActive: the top-level Preparer Split % is the authoritative
+  // allocation; per-line aggregates from stale horizontalAlloc data would
+  // otherwise add a second copy of every amount on top of the formula result.
+  if (!_ppActive) {
+    Object.entries(_ovrPerPerson).forEach(([person, amt]) => {
+      if (amt <= 0) return;
+      if (_normP(_prepName) === person)      _prepFinal += amt;
+      else if (_normP(_revName) === person)  _revFinal  += amt;
+      else if (person === 'KC')              _kcCommFinal += amt;
+      else if (person === 'Koay')            _koayCommFinal += amt;
+      else                                   _kcCommFinal += amt;  // ET/Ivy/Cecilia fallback
+    });
+  }
+  const _adminRetainFinal = adminRetain + _retainExtra2 + (_ppActive ? 0 : _ovrRetain);
+  const _abotCostFinal = abotCost + _customRetainAbot + (_ppActive ? 0 : _ovrAbot);
   // Total invoice gross now includes ALL line items
   const _grossFinal = gross + disb + _retainExtra2 + Object.values(_reimburse2).reduce((s,n)=>s+n,0);
 
