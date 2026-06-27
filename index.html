@@ -1667,6 +1667,12 @@
             <option value="TKC">TKC</option>
           </select>
         </div>
+        <div class="form-field" id="alloc-split-wrap">
+          <label title="Preparer's share of the net-for-split amount. Default: 70 (standard jobs) or 50 (cosec). Override here for non-standard splits e.g. 50/50 on an MBRS job.">Preparer Split %</label>
+          <input type="number" id="inv-prep-pct" min="0" max="100" step="1" value="70"
+                 placeholder="70" oninput="recalcAllocation()"
+                 style="width:80px;text-align:right" />
+        </div>
         <div class="form-field" id="alloc-ssm-wrap" style="display:none">
           <label>SSM Filing Fee (RM)</label>
           <input type="number" id="inv-ssm-fee" step="0.01" placeholder="0.00" value="0" oninput="recalcAllocation()" />
@@ -4023,8 +4029,15 @@ function _bucketForLine(l, inv) {
   const L = K * lineRetainPct;
   const O = K * 0.10;
   const P = K - L - O - claudeRetain;
-  const prep = P * 0.7;
-  const rev = P * 0.3;
+  // Preparer split — use saved prep_pct from allocation record when available
+  // (allows per-invoice 50/50 overrides on standard jobs like GREAT CFO).
+  // Falls back to job-type default: 50 for cosec, 70 for everything else.
+  const _isCosecLine = /cosec/i.test(invJob);
+  const _linePrepPct = (_savedAlloc && _savedAlloc.prep_pct != null && +_savedAlloc.prep_pct > 0 && +_savedAlloc.prep_pct < 100)
+    ? +_savedAlloc.prep_pct / 100
+    : (_isCosecLine ? 0.50 : 0.70);
+  const prep = P * _linePrepPct;
+  const rev  = P * (1 - _linePrepPct);
   if (out.hasOwnProperty(linePrep)) out[linePrep] += prep;
   if (out.hasOwnProperty(lineRev))  out[lineRev]  += rev + top;
   out.KC     += O;
@@ -8289,6 +8302,18 @@ async function openInvoiceModal(id) {
       document.getElementById('inv-large-abot').value = (parseFloat(a.abot_cost||0) <= 0.005)
         ? 'zero'
         : (parseFloat(a.abot_cost||0) > 50 ? 'true' : 'false');
+      // Restore saved preparer split % (or fall back to job-type default)
+      {
+        const _ppElLoad = document.getElementById('inv-prep-pct');
+        if (_ppElLoad) {
+          const _sp = parseFloat(a.prep_pct || 0);
+          if (_sp > 0 && _sp < 100) {
+            _ppElLoad.value = _sp;
+          } else {
+            _ppElLoad.value = /cosec/i.test(a.job_type || '') ? '50' : '70';
+          }
+        }
+      }
     }
     recalcAllocation();
   } else {
@@ -8320,6 +8345,15 @@ function onJobTypeChange() {
   const isTypeA         = !isCosecRetainer && !isCosecOther;
   document.getElementById('alloc-ssm-wrap').style.display       = isCosecOther ? '' : 'none';
   document.getElementById('alloc-large-abot-wrap').style.display = isTypeA ? '' : 'none';
+  // Auto-reset split % to job-type default when job type changes,
+  // but only if current value is one of the two standard defaults (not a custom override).
+  const _ppElJT = document.getElementById('inv-prep-pct');
+  if (_ppElJT) {
+    const _curSplit = parseFloat(_ppElJT.value);
+    if (isNaN(_curSplit) || _curSplit === 70 || _curSplit === 50) {
+      _ppElJT.value = (isCosecRetainer || isCosecOther) ? '50' : '70';
+    }
+  }
   recalcAllocation();
 }
 
@@ -8727,6 +8761,21 @@ async function saveInvoice() {
     abotCost = 0;
   }
 
+  // ─── Honour manual preparer-split override (inv-prep-pct) ──────────────────
+  // Allows non-standard splits (e.g. 50/50 on a standard MBRS job) set per-invoice.
+  // Only fires when there are amounts to redistribute (skips disb-only invoices).
+  {
+    const _ppEl = document.getElementById('inv-prep-pct');
+    const _ppVal = _ppEl ? parseFloat(_ppEl.value) : NaN;
+    if (!isNaN(_ppVal) && _ppVal > 0 && _ppVal < 100 && (prepAmt + revAmt) > 0.005) {
+      const _total = prepAmt + revAmt;
+      prepAmt = r2(_total * _ppVal / 100);
+      revAmt  = r2(_total * (100 - _ppVal) / 100);
+      prepPct = _ppVal / 100;
+      revPct  = 1 - prepPct;
+    }
+  }
+
   // ─── Add per-line allocation extras to standard formula result ──
   const _retainExtra2 = parseFloat((document.getElementById('inv-retain-extra')||{}).value || 0);
   const _reimburse2 = {
@@ -8816,6 +8865,13 @@ async function saveInvoice() {
       && ((document.getElementById('inv-apply-top-up')||{checked:true}).checked !== false)
       && parseFloat(_abotCostFinal || 0) >= parseFloat(getSetting('abot_reviewer_top', 20))
     ) ? parseFloat(getSetting('abot_reviewer_top', 20)) : 0,
+    // Preparer split % — persists any manual override (e.g. 50/50 on standard MBRS).
+    // computeLineShares reads this from ALLOCATIONS to render the correct split in
+    // Invoice Breakdown without recomputing from the hardcoded default formula.
+    prep_pct: (function(){
+      const _v = parseFloat((document.getElementById('inv-prep-pct')||{}).value || 0);
+      return (_v > 0 && _v < 100) ? _v : null;
+    })(),
     // 2.5% Claude retention — flows through to its own bucket column on the
     // Invoice Breakdown + Retention Reconciliation. Read from the hidden
     // inv-claude-retain field populated by recalcAllocation.
