@@ -8317,10 +8317,18 @@ async function openInvoiceModal(id) {
       document.getElementById('inv-preparer').value   = a.preparer_name || 'ET';
       document.getElementById('inv-reviewer').value   = a.reviewer_name || 'KC';
       document.getElementById('inv-ssm-fee').value    = a.ssm_fee || 0;
-      // Map back stored abot_cost → dropdown value. 0 → zero, ≤50 → standard, >50 → large
-      document.getElementById('inv-large-abot').value = (parseFloat(a.abot_cost||0) <= 0.005)
-        ? 'zero'
-        : (parseFloat(a.abot_cost||0) > 50 ? 'true' : 'false');
+      // Map back stored abot_cost → dropdown value.
+      // For Type A jobs (MBRS/Tax/FS/Bookkeeping), abot_cost=0 means the old formula
+      // didn't deduct Abot — default to standard (RM50) so re-saves use the correct formula.
+      // Only use 'zero' when job type is NOT Type A (Cosec/Other don't use Abot).
+      {
+        const _abotCostSaved = parseFloat(a.abot_cost||0);
+        const _jt = (document.getElementById('inv-job-type')||{}).value || '';
+        const _isTypeA = ['MBRS','Tax','FS','Bookkeeping','Audit','Advisory','Personal_Tax','Other'].includes(_jt);
+        document.getElementById('inv-large-abot').value = (_abotCostSaved <= 0.005)
+          ? (_isTypeA ? 'false' : 'zero')   // Type A: default to standard Abot; others: zero
+          : (_abotCostSaved > 50 ? 'true' : 'false');
+      }
       // Restore saved preparer split % (or fall back to job-type default)
       {
         const _ppElLoad = document.getElementById('inv-prep-pct');
@@ -9981,7 +9989,7 @@ function printInvoice() {
           size: A4 portrait;
           margin: 0.7in 0.6in 0.55in 0.6in;
           @bottom-right {
-            content: "Page " counter(page) " of " counter(pages);
+            content: none;
             font-family: Arial, Helvetica, sans-serif;
             font-size: 10pt;
             color: #555;
