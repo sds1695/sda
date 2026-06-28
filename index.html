@@ -1623,7 +1623,7 @@
         </div>
         <div class="form-field">
           <label>Client (end client)</label>
-          <input type="text" id="inv-client-name" placeholder="Click or type to search clients…" oninput="clientAutocomplete()" onfocus="clientAutocomplete(true)" onblur="setTimeout(()=>document.getElementById('client-suggestions').innerHTML='',200)" autocomplete="off" />
+          <input type="text" id="inv-client-name" placeholder="Click or type to search clients…" oninput="clientAutocomplete();_syncClientNameInLineDescs()" onfocus="clientAutocomplete(true)" onblur="setTimeout(()=>document.getElementById('client-suggestions').innerHTML='',200)" autocomplete="off" />
           <div id="client-suggestions" style="position:relative"></div>
         </div>
         <div class="form-field form-full">
@@ -8980,9 +8980,9 @@ function escHtml(s) {
 // Each preset stores: label (dropdown text), desc (description text auto-filled),
 // type (revenue category that routes the line in the IS / Invoice Breakdown).
 const _INV_PRESETS_BUILTIN = [
-  { label: 'MBRS Fees',          desc: 'MBRS preparation fees for financial statement submission to Suruhanjaya Syarikat Malaysia', type: 'MBRS' },
+  { label: 'MBRS Fees',          desc: 'MBRS preparation fees for financial statement submission to Suruhanjaya Syarikat Malaysia – {{client}} – FY{{year_end}}', type: 'MBRS' },
   { label: 'Tax Computation',    desc: 'Sub work for preparation of tax return form and tax computation for {{client}} - YA{{year_end}}',  type: 'Tax' },
-  { label: 'Financial Statements', desc: 'Preparation of financial statements',     type: 'FS' },
+  { label: 'Financial Statements', desc: 'Preparation of financial statements for {{client}} – FY{{year_end}}', type: 'FS' },
   { label: 'Bookkeeping',        desc: 'Bookkeeping fees',                          type: 'Bookkeeping' },
   { label: 'Cosec Retainer',     desc: 'Secretarial retainer fees',                 type: 'Cosec_Retainer' },
   { label: 'Cosec Other',        desc: 'Company secretarial services',              type: 'Cosec_Other' },
@@ -9515,6 +9515,18 @@ function applyDescPreset(sel) {
       try { toast(`Preset applied · category set to ${preset.type}`, 'success'); } catch(e) {}
     }
   }
+}
+// When the end-client name field is edited after a preset was already applied,
+// replace the [client] placeholder (left when client was blank at preset time)
+// with the newly typed name across all line description fields.
+function _syncClientNameInLineDescs() {
+  const name = (document.getElementById('inv-client-name') || {}).value || '';
+  if (!name) return;
+  document.querySelectorAll('.inv-line-desc').forEach(function(ta) {
+    if (ta.value.includes('[client]')) {
+      ta.value = ta.value.replace(/\[client\]/g, name);
+    }
+  });
 }
 // ──────────────────────────────────────────────────────────────────────────
 
