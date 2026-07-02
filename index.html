@@ -8359,7 +8359,7 @@ async function openInvoiceModal(id) {
     clearInvLines();
     addInvLine();
     document.getElementById('inv-ssm-fee').value = '0';
-    document.getElementById('inv-large-abot').value = 'zero';
+    document.getElementById('inv-large-abot').value = 'false'; // default to standard RM50 abot for new Type A invoices
     document.getElementById('alloc-preview').style.display = 'none';
   }
   openModal('modal-invoice');
@@ -15990,7 +15990,9 @@ function selectClient(id) {
     Cosec_Other: 'Company secretarial services',
   };
   if (descMap[jt]) {
-    const presetDesc = descMap[jt] + '\n- ' + c.name;
+    const presetDesc = jt === 'MBRS'
+      ? descMap[jt] + '\n– ' + c.name + ' (FY )'
+      : descMap[jt] + '\n- ' + c.name;
     // Fill the first non-Disb line's description, or add a new line
     const firstFeeRow = [...document.querySelectorAll('#inv-lines-container .inv-line-row')]
       .find(row => !row.querySelector('.inv-line-isDisb').checked);
@@ -20377,10 +20379,12 @@ async function pullDeadlineStatusesFromSheet() {
         <span style="background:var(--surface2);padding:2px 8px;border-radius:4px">Auto-calculated</span>
         <span style="background:var(--surface);padding:2px 8px;border-radius:4px;border:1px solid var(--border)">You input</span>
         <span style="background:#FAEEDA;color:#854F0B;padding:2px 8px;border-radius:4px">Judgement field</span>
+        <span style="background:#FFFDE7;color:#7a5800;padding:2px 8px;border-radius:4px;border:1px dashed #c8b860">Override (Retain/Claude)</span>
         <span style="flex:1"></span>
         <button id="ha-toggle-disb" type="button" onclick="toggleHaCol('disb')" class="btn btn-ghost btn-sm" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:4px">+ Disb</button>
         <button id="ha-toggle-cecilia" type="button" onclick="toggleHaCol('cecilia')" class="btn btn-ghost btn-sm" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:4px">+ Cecilia</button>
         <button id="ha-toggle-comm" type="button" onclick="toggleHaCol('comm')" class="btn btn-ghost btn-sm" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:4px">+ Commission</button>
+        <button type="button" onclick="haZeroClaude()" class="btn btn-ghost btn-sm" style="font-size:11px;padding:3px 10px;border:1px solid #c8b860;border-radius:4px;background:#FFFDE7;color:#7a5800" title="Set Claude retention to 0 for all lines (clear to restore formula)">No Claude</button>
         <span id="ha-overall-status" style="font-family:'DM Mono',monospace;font-size:12px">Loading…</span>
       </div>
       <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
@@ -20592,10 +20596,12 @@ function renderHorizontalAlloc() {
         <option value="custom" ${r.koayPct==='custom'?'selected':''}>Custom</option>
       </select>`;
     const cellEdit = (val, field, w='52px') => `<input type="text" inputmode="decimal" value="${val}" data-cell-id="${i}:${field}" oninput="_haUpdate(${i},'${field}',this.value);renderHorizontalAlloc()" style="width:${w};text-align:right;border:1px solid var(--border);border-radius:3px;padding:1px 3px;font-family:inherit;font-size:10.5px" />`;
-    // Override cells — show current computed value as placeholder, editable
+    // Override cells — yellow background = judgement field (editable, clear to restore formula)
     const cellOverride = (computed, field, w='52px') => {
-      const cur = (r[field] != null && r[field] !== '') ? r[field] : '';
-      return `<input type="text" inputmode="decimal" value="${cur}" data-cell-id="${i}:${field}" placeholder="${computed.toFixed(2)}" oninput="_haUpdate(${i},'${field}',this.value);renderHorizontalAlloc()" title="Default: ${computed.toFixed(2)} — clear cell to restore formula" style="width:${w};text-align:right;border:1px dashed var(--border);border-radius:3px;padding:1px 3px;font-family:inherit;font-size:10.5px;background:#F1EFE8" />`;
+      const isSet = (r[field] != null && r[field] !== '');
+      const cur = isSet ? r[field] : computed.toFixed(2);
+      const titleHint = isSet ? `Overridden (formula default: ${computed.toFixed(2)}) — clear to restore` : `Auto-calculated: ${computed.toFixed(2)} — type to override`;
+      return `<input type="text" inputmode="decimal" value="${cur}" data-cell-id="${i}:${field}" oninput="_haUpdate(${i},'${field}',this.value);renderHorizontalAlloc()" title="${titleHint}" style="width:${w};text-align:right;border:${isSet ? '2px solid #e6a817' : '1px dashed #c8b860'};border-radius:3px;padding:1px 3px;font-family:inherit;font-size:10.5px;background:${isSet ? '#FFF9E6' : '#FFFDE7'};color:${isSet ? '#7a5800' : 'inherit'}" />`;
     };
     const prepPctCell = (() => {
       const cur = (r.prepPct != null && r.prepPct !== '') ? r.prepPct : 70;
@@ -20611,8 +20617,8 @@ function renderHorizontalAlloc() {
         <td style="padding:3px 4px;text-align:right">${cellEdit(r.abot, 'abot')}<div style="font-size:9.5px;color:var(--text3);margin-top:2px">${((+r.abot||0) >= 20 || (r.topUp||0) > 0) ? `<button type="button" onclick="haTopUp20(${i})" title="Redirect RM20 from Abot bucket to Reviewer payout (Retain/Claude/KC/Net stay unchanged)" style="font-size:9.5px;padding:1px 5px;border:1px solid var(--border);border-radius:3px;background:${(r.topUp||0)>0?'#EAF3DE':'var(--surface)'};cursor:pointer">${(r.topUp||0) > 0 ? '−RM20 ✓' : '+RM20→Rev'}</button>${(r.topUp||0) > 0 ? `<div style="font-size:9px;color:#0F6E56;margin-top:1px">firm: ${_haFmt((+r.abot||0) - (+r.topUp||0))}</div>` : ''}` : ''}</div></td>
         ${showCecilia ? `<td style="padding:3px 4px;text-align:right">${cellEdit(r.cecilia, 'cecilia')}</td>` : ''}
         <td style="padding:3px 4px;text-align:right;background:#F1EFE8;font-weight:500">${_haFmt(c.afterL1)}<div style="margin-top:2px"><button type="button" onclick="haRetainAll(${i})" title="Toggle: route entire AfterL1 amount to Retain (firm keeps all). Click again to restore formula split." style="font-size:9px;padding:1px 5px;border:1px solid var(--border);border-radius:3px;background:${((r.retainOvr!==null && r.retainOvr!==undefined) && r.claudeOvr===0 && r.kcOvr===0 && (+r.koayAmt||0)===0 && (+r.commission||0)===0) ? '#EAF3DE' : 'var(--surface)'};cursor:pointer;color:var(--brand-dark)">${((r.retainOvr!==null && r.retainOvr!==undefined) && r.claudeOvr===0 && r.kcOvr===0 && (+r.koayAmt||0)===0 && (+r.commission||0)===0) ? '✓ All-Retain' : '→ Retain'}</button></div></td>
-        <td style="padding:3px 4px;text-align:right;background:#F1EFE8">${cellOverride(c.retain, 'retainOvr')}</td>
-        <td style="padding:3px 4px;text-align:right;background:#F1EFE8">${cellOverride(c.claude, 'claudeOvr')}</td>
+        <td style="padding:3px 4px;text-align:right;background:#FFFDE7">${cellOverride(c.retain, 'retainOvr')}</td>
+        <td style="padding:3px 4px;text-align:right;background:#FFFDE7">${cellOverride(c.claude, 'claudeOvr')}</td>
         <td style="padding:3px 4px;text-align:right;background:#FAEEDA;color:#854F0B">
           ${koayOpts}
           ${r.koayPct==='custom' ? cellEdit(r.koayAmt, 'koayAmt', '60px') : `<div style="font-size:10px;margin-top:2px">${_haFmt(c.koayDeduct)}</div>`}
@@ -20750,6 +20756,17 @@ function haRetainAll(idx) {
     r.prepPct = 0;
     r.topUp = 0;
   }
+  renderHorizontalAlloc();
+}
+
+// Zero out Claude retention on ALL lines at once.
+// Toggle: clicking again restores formula defaults (clears claudeOvr).
+function haZeroClaude() {
+  if (!window._haLines || !window._haLines.length) return;
+  const allZero = window._haLines.every(r => r.claudeOvr === 0);
+  window._haLines.forEach(r => {
+    r.claudeOvr = allZero ? null : 0;  // toggle: restore formula if already all-zero
+  });
   renderHorizontalAlloc();
 }
 
