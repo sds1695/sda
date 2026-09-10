@@ -274,6 +274,7 @@
     --stmt-col-date: 17%;
     --stmt-col-os: 15%;
     --inv-footer-gap: 10pt;
+    --inv-item-row-gap: 10pt;
     --inv-col-item: 58%;
     --inv-col-amt: 42%;
     --inv-sig-left: 50px;
@@ -337,7 +338,7 @@
   .inv-items col.col-amt  { width: var(--inv-col-amt, 35%); }
   .inv-items th { text-align: left; font-size: 12pt; font-weight: bold; padding: 0 0 6pt 0; color: #000; border-bottom: 1px solid #000; line-height: 15pt; text-transform: none; letter-spacing: 0; }
   .inv-items th.amt { text-align: right; }
-  .inv-items td { padding: 10pt 8pt 4pt 0; font-size: 12pt; line-height: 15pt; vertical-align: top; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; color: #000; border: none; }
+  .inv-items td { padding: var(--inv-item-row-gap, 10pt) 8pt 4pt 0; font-size: 12pt; line-height: 15pt; vertical-align: top; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; color: #000; border: none; }
   .inv-items td.amt { text-align: right; font-variant-numeric: tabular-nums; padding-right: 0; }
   /* Total row: the ONE and ONLY border in the entire document */
   .inv-items tfoot td { padding: 0; border: none; }
@@ -1980,6 +1981,7 @@
       <div class="layout-group">
         <div class="layout-group-title">Items table</div>
         <div class="layout-row" data-var="--inv-col-item"  data-min="40" data-max="80" data-step="1"  data-unit="%"  data-default="58" data-label="Description column"></div>
+        <div class="layout-row" data-var="--inv-item-row-gap" data-min="0" data-max="24" data-step="1" data-unit="pt" data-default="10" data-label="Row spacing"></div>
       </div>
 
       <div class="layout-group">
@@ -2018,7 +2020,7 @@
 
       <div class="layout-group">
         <div class="layout-group-title">Footer (bank &amp; signature)</div>
-        <div class="layout-row" data-var="--inv-footer-gap" data-min="0" data-max="80" data-step="2"  data-unit="pt" data-default="10" data-label="Footer top spacing"></div>
+        <div class="layout-row" data-var="--inv-footer-gap" data-min="0" data-max="150" data-step="2"  data-unit="pt" data-default="10" data-label="Footer top spacing"></div>
       </div>
 
       <div class="layout-group">
@@ -10176,7 +10178,7 @@ function resetLayoutSettings() {
   if (!confirm('Reset all layout settings to defaults? Your current adjustments will be lost.')) return;
   localStorage.removeItem(LAYOUT_SETTINGS_KEY);
   ['--inv-padding-top','--inv-padding-side','--inv-padding-bottom','--inv-footer-gap',
-   '--inv-col-item','--inv-col-amt','--inv-sig-left','--inv-sig-bottom','--inv-sig-width',
+   '--inv-item-row-gap','--inv-col-item','--inv-col-amt','--inv-sig-left','--inv-sig-bottom','--inv-sig-width',
    '--inv-stamp-right','--inv-stamp-bottom','--inv-stamp-size'].forEach(v => document.documentElement.style.removeProperty(v));
   // Rebuild sliders to show defaults
   _layoutRowsBuilt = false;
@@ -10288,7 +10290,7 @@ function printInvoice() {
       * { box-sizing: border-box; margin: 0; padding: 0; }
       body { font-family: Arial, Helvetica, sans-serif; font-size: 12pt; padding: 0; background: #fff; color: #000; line-height: 15pt; }
       /* Defaults — declared first so user overrides below can override them */
-      :root { --inv-padding-top: 0.7in; --inv-padding-side: 0.6in; --inv-padding-bottom: 0.55in; --inv-footer-gap: 10pt; --inv-col-item: 58%; --inv-col-amt: 42%; --inv-sig-left: 50px; --inv-sig-bottom: -8px; --inv-sig-width: 175px; --inv-stamp-right: 90px; --inv-stamp-bottom: -4px; --inv-stamp-size: 100px; }
+      :root { --inv-padding-top: 0.7in; --inv-padding-side: 0.6in; --inv-padding-bottom: 0.55in; --inv-footer-gap: 10pt; --inv-item-row-gap: 10pt; --inv-col-item: 58%; --inv-col-amt: 42%; --inv-sig-left: 50px; --inv-sig-bottom: -8px; --inv-sig-width: 175px; --inv-stamp-right: 90px; --inv-stamp-bottom: -4px; --inv-stamp-size: 100px; }
       .inv-preview { width: 210mm; min-height: 297mm; margin: 0 auto; padding: var(--inv-padding-top) var(--inv-padding-side) var(--inv-padding-bottom) var(--inv-padding-side); border: none; background: #fff; display: flex; flex-direction: column; box-sizing: border-box; }
       /* Header — logo LEFT, INVOICE title RIGHT */
       .inv-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0; gap: 24px; min-height: 90px; }
@@ -10317,7 +10319,7 @@ function printInvoice() {
       .inv-items col.col-amt  { width: var(--inv-col-amt, 42%); }
       .inv-items th { text-align: left; font-size: 12pt; font-weight: bold; padding: 0 0 6pt 0; color: #000; border-bottom: 1px solid #000; line-height: 15pt; }
       .inv-items th.amt { text-align: right; }
-      .inv-items td { padding: 10pt 8pt 4pt 0; font-size: 12pt; line-height: 15pt; vertical-align: top; white-space: pre-wrap; overflow-wrap: break-word; color: #000; border: none; }
+      .inv-items td { padding: var(--inv-item-row-gap, 10pt) 8pt 4pt 0; font-size: 12pt; line-height: 15pt; vertical-align: top; white-space: pre-wrap; overflow-wrap: break-word; color: #000; border: none; }
       .inv-items td.amt, .amt { text-align: right; font-variant-numeric: tabular-nums; padding-right: 0; }
       .inv-items tfoot td { padding: 0; border: none; }
       .inv-items tfoot .total-row-cell { text-align: right; padding: 12pt 0 8pt 0; font-size: 12pt; font-weight: normal; }
