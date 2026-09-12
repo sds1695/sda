@@ -10486,6 +10486,107 @@ function renderReceiptPDF(r) {
     </div>`;
 }
 
+// Payment Voucher PDF — added 2026-09-12, mirrors renderReceiptPDF()'s template
+// (shared #modal-pdf / #printable-invoice / printInvoice() mechanism, no new
+// infrastructure). See 2026-09-12_PV-PDF-Generation-Design-Spec.md.
+function previewVoucherById(id) {
+  const v = (window.VOUCHERS_RAW||VOUCHERS||[]).find(x => String(x.voucher_id||x.id) === String(id));
+  if (!v) { toast('Voucher not found.', 'error'); return; }
+  renderVoucherPDF(v);
+  openModal('modal-pdf');
+}
+
+function renderVoucherPDF(v) {
+  const _titleEl = document.querySelector('#modal-pdf .modal-title');
+  if (_titleEl) _titleEl.textContent = 'Payment Voucher Preview';
+
+  const fmtDate = d => {
+    if (!d) return '—';
+    try {
+      const dt = new Date(d);
+      if (isNaN(dt.getTime())) return String(d);
+      return dt.toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' });
+    } catch(e) { return String(d); }
+  };
+  let _pvNoOvr = {};
+  try { _pvNoOvr = JSON.parse(localStorage.getItem('seraya_pvno_overrides') || '{}'); } catch(e) {}
+  const pvNo = _pvNoOvr[v.voucher_no] || v.voucher_no || v.voucher_id || '—';
+  const amt  = parseFloat(v.amount||0);
+  const amtStr = amt.toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const amtWords = _amountInWords(amt);
+  const paymentMode = v.payment_account === 'drawings' ? 'Direct (Drawings A/C)' : 'Bank Transfer';
+  const payeeName = v.payee_nominee && v.payee_nominee !== v.payee ? `${v.payee} (paid to ${v.payee_nominee})` : (v.payee || '');
+
+  document.getElementById('inv-preview-content').innerHTML = `
+    <div class="inv-preview" id="printable-invoice">
+      <!-- Header: logo LEFT, PAYMENT VOUCHER title RIGHT -->
+      <div class="inv-header">
+        <div class="inv-logo-block">
+          <img src="${LOGO}" alt="Seraya Data Solution" class="inv-logo">
+        </div>
+        <div class="inv-no-block">
+          <div class="inv-no-label">PAYMENT VOUCHER</div>
+          <div class="inv-no-num"># ${pvNo}</div>
+        </div>
+      </div>
+
+      <!-- Firm address block -->
+      <div class="inv-firm-block">
+        <div class="inv-firm-name">Seraya Data Solution</div>
+        <div style="white-space:pre-line">${(getDocContent().firm_addr || '').replace(/</g,'&lt;')}</div>
+      </div>
+
+      <!-- Paid To LEFT, Date/Payment Mode RIGHT -->
+      <div class="inv-meta">
+        <div class="inv-bill-block">
+          <div class="inv-bill-label">Paid To:</div>
+          <div class="inv-bill-name">${payeeName}</div>
+        </div>
+        <div class="inv-meta-right">
+          <div class="inv-date-row"><span class="inv-meta-key">Date:</span><span class="inv-meta-val">${fmtDate(v.date)}</span></div>
+          <div class="inv-date-row"><span class="inv-meta-key">Payment Mode:</span><span class="inv-meta-val">${paymentMode}</span></div>
+          ${v.category ? `<div class="inv-date-row"><span class="inv-meta-key">Category:</span><span class="inv-meta-val">${v.category}</span></div>` : ''}
+        </div>
+      </div>
+
+      <!-- Items table with accounting-style total row -->
+      <table class="inv-items">
+        <colgroup><col class="col-item"><col class="col-amt"></colgroup>
+        <thead><tr><th>Item</th><th class="amt">Amount (RM)</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>${(v.description||'Payment').replace(/</g,'&lt;')}${v.ref_inv_nos ? `<div style="font-size:9.5pt;color:#555;margin-top:4px">Re: ${v.ref_inv_nos}</div>` : ''}</td>
+            <td class="amt">${amtStr}</td>
+          </tr>
+        </tbody>
+        <tfoot>
+          <tr><td colspan="2" class="total-row-cell"><span class="total-label">Total Paid</span><span class="total-num">${amtStr}</span></td></tr>
+        </tfoot>
+      </table>
+
+      <div style="margin-top:14px;font-size:10pt;color:#000;font-style:italic">
+        Ringgit Malaysia: ${amtWords}
+      </div>
+
+      <!-- Footer: paid-from bank LEFT, signature RIGHT (reverse direction vs invoice/receipt — money going out) -->
+      <div class="inv-footer">
+        <div class="inv-bank">
+          <div class="inv-bank-title">Paid from:</div>
+          <div class="inv-bank-row"><span class="inv-bank-label">Account name:</span><span>${getDocContent().bank_account_name || ''}</span></div>
+          <div class="inv-bank-row"><span class="inv-bank-label">Account No.:</span><span>${getDocContent().bank_account_no || ''}</span></div>
+          <div class="inv-bank-row"><span class="inv-bank-label">Bank:</span><span>${getDocContent().bank_name || ''}</span></div>
+        </div>
+        <div class="inv-signatory">
+          <div class="inv-sig-images">
+            <img src="${SIG}" alt="Company chop" class="inv-stamp">
+            <img src="${STAMP}" alt="Authorised signature" class="inv-sig-img">
+          </div>
+          <div class="inv-sig-label">Authorised Signatory</div>
+        </div>
+      </div>
+    </div>`;
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // SALES ORDERS — pending invoice pipeline
 // ══════════════════════════════════════════════════════════════════════════
@@ -12938,6 +13039,26 @@ async function loadPayoutSummary() {
   }).join('');
 }
 
+// Payout Summary additions — client paid date + short invoice-content summary,
+// per 2026-09-12_Payout-Summary-Client-Paid-Date-and-Invoice-Content-Design-Spec.md.
+// Both read data already loaded on the page (RECEIPTS, invoice.desc1) — no new fetches.
+function invoicePaidDates(invNo) {
+  const receipts = (RECEIPTS || [])
+    .filter(r => (r.inv_no||'').toLowerCase().trim() === (invNo||'').toLowerCase().trim()
+              && !(r.notes||'').startsWith('__VOID__'))
+    .sort((a,b) => new Date(a.date) - new Date(b.date));
+  return receipts.map(r => formatDate(r.date));
+}
+function summarizeInvoiceContent(invObj, maxLen = 80) {
+  try {
+    const lines = JSON.parse(invObj.desc1 || '[]');
+    const descs = lines.map(l => l.desc).filter(Boolean);
+    let summary = descs.join(' + ');
+    if (summary.length > maxLen) summary = summary.slice(0, maxLen - 3) + '...';
+    return summary || '—';
+  } catch (e) { return '—'; }
+}
+
 function renderPayoutDetail() {
   const container = document.getElementById('payout-detail');
   if (!ALLOCATIONS.length) {
@@ -13033,6 +13154,13 @@ function renderPayoutDetail() {
   // ── Legacy path: single-line / no-line invoices via saved alloc rows ──
   ALLOCATIONS.forEach(a => {
     if (_liveProcessed.has(a.inv_no)) return; // skip — already computed live
+    // Skip cancelled/voided allocation rows (e.g. duplicate MBRS raises cleaned up
+    // via the sheet's own 'status' column, or the legacy client-side void lists) —
+    // fixed 2026-09-12, was causing cancelled duplicate allocations (e.g. Trillion
+    // Diamond INV260901's 17 cancelled dupes from the 3 Sept trigger-bug cleanup)
+    // to still render as live Reviewer/Preparer/Commission payout lines.
+    if ((a.status||'').toLowerCase() === 'cancelled') return;
+    if (typeof isVoided === 'function' && isVoided('allocations', a.alloc_id)) return;
     const inv    = INVOICES.find(i => i.inv_no === a.inv_no) || {};
     const status = inv.status || '—';
     const idate  = inv.inv_date || inv.date || '';
@@ -13364,6 +13492,11 @@ function renderPayoutDetail() {
       const _statusLine = `<div style="font-size:10px;color:var(--text3);margin-top:3px;font-family:'DM Mono',monospace">
         Invoice RM ${_invTotal.toFixed(2)} · Paid <span style="color:${_invPaid > 0.01 ? 'var(--green)' : 'var(--text3)'}">RM ${_invPaid.toFixed(2)}</span> · OS <span style="color:${_invOS > 0.01 ? 'var(--red)' : 'var(--green)'}">RM ${_invOS.toFixed(2)}</span> · <span style="color:${_statusColor};font-weight:600">${_statusLabel}</span>${_flag}
       </div>`;
+      // Client paid date + short invoice-content summary — added 2026-09-12
+      const _paidDatesList = invoicePaidDates(e.inv_no);
+      const _contentLine = `<div style="font-size:10px;color:var(--text3);margin-top:2px">
+        ${summarizeInvoiceContent(invObj)}${_paidDatesList.length ? ` · Client paid ${_paidDatesList.join(' + ')}` : ''}
+      </div>`;
       // Manual "already paid (no voucher)" toggle — for Ready/Await rows
       const markPaidBtn = (!isSettled) ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:10px;color:var(--green);border:1px solid var(--green);border-radius:4px" title="Mark as already paid (no new voucher will be created)" onclick="event.stopPropagation();markWagePaid('${allocId}', _localToday(), '${person}');renderPayoutView();">✓ paid</button>` : '';
       return `<div style="background:var(--surface);border-radius:6px;padding:10px 12px;border-left:3px solid ${dotColor};display:flex;align-items:center;gap:8px;opacity:${opacity}">
@@ -13373,6 +13506,7 @@ function renderPayoutDetail() {
           <div style="font-family:'DM Mono',monospace;font-size:12px;font-weight:600">${e.inv_no} <span style="font-size:10px;color:var(--text3);font-weight:400">· ${e.role}</span></div>
           <div style="font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.client} · ${e.date}</div>
           ${_statusLine}
+          ${_contentLine}
         </div>
         <div style="text-align:right;min-width:90px">
           <div style="font-family:'DM Mono',monospace;font-size:13px;font-weight:600;color:${amtColor}">RM ${e.amount.toFixed(2)}</div>
@@ -13916,6 +14050,7 @@ function openReceiptEdit(r) {
   openModal('modal-receipt');
 }
 
+let _voucherSaving = false;
 let _receiptSaving = false;
 // When a client payment is receipted, move the invoice(s) from the
 // "outstanding" list (awaiting client) to the "pending payout" list (ready to distribute).
@@ -14117,6 +14252,7 @@ function renderVoucherRows(rows) {
       <td>${acct}</td>
       <td style="font-size:12px;color:var(--text2)">${v.description||'—'}</td>
       <td style="white-space:nowrap">
+        <button class="btn btn-ghost btn-sm" onclick="previewVoucherById('${(v.voucher_id||v.id||'').toString().replace(/'/g,'')}')" title="Print voucher PDF">PDF</button>
         <button class="btn btn-ghost btn-sm" onclick="${_editClick}">Edit</button>
         <button class="btn btn-ghost btn-sm" style="color:var(--red);margin-left:4px" onclick="${_delClick}">Del</button>
       </td>
@@ -14566,7 +14702,7 @@ function populateVoucherCategoryDropdown(currentValue) {
   }
 }
 
-function openVoucherModal(isEdit) {
+async function openVoucherModal(isEdit) {
   // Populate Category dropdown from COA (single source of truth)
   populateVoucherCategoryDropdown();
 
@@ -14576,7 +14712,18 @@ function openVoucherModal(isEdit) {
   pvClearCustomItems();
   document.getElementById('pv-modal-title').textContent = isEdit ? 'Edit Payment Voucher' : 'Payment Voucher';
   if (!isEdit) {
-    document.getElementById('pv-no').value = pvNextVoucherNo();
+    // Server-side sequence — mirrors saveInvoice()'s next_invoice_no pattern.
+    // Added 2026-09-12 (see 2026-09-12_PV-Receipt-Numbering-Not-Server-Assigned.md)
+    // to fix PV numbers going out of sequence across browsers/tabs, since the old
+    // client-side guess (pvNextVoucherNo()) only knew about vouchers loaded into
+    // THIS tab. Falls back to the old client-side guess if the backend call fails
+    // or the action isn't deployed yet, so the field is never left blank.
+    document.getElementById('pv-no').value = pvNextVoucherNo(); // immediate placeholder
+    try {
+      const yr = new Date().getFullYear();
+      const nr = await api({ action: 'next_voucher_no', year: yr });
+      if (nr && nr.ok && nr.voucher_no) document.getElementById('pv-no').value = nr.voucher_no;
+    } catch(e) { console.warn('next_voucher_no failed, keeping client-side guess', e); }
   }
   document.getElementById('pv-id').value      = '';
   document.getElementById('pv-date').value    = _localToday();
@@ -15755,6 +15902,15 @@ function onPayeeChange() {
 }
 
 async function saveVoucher() {
+  // Double-submit guard — mirrors saveReceipt()/saveInvoice(). Added 2026-09-12
+  // after a double-click created two identical vouchers (PV26126/PV26127, Koay
+  // TXY RM1,195, voided 2026-09-12 — see 2026-09-12_Duplicate-Voucher-and-PV-Double-Submit-Bug.md).
+  if (_voucherSaving) return;
+  _voucherSaving = true;
+  const _saveBtn = document.querySelector('#modal-voucher .modal-footer .btn-primary');
+  const _origBtnText = _saveBtn ? _saveBtn.textContent : '';
+  if (_saveBtn) { _saveBtn.disabled = true; _saveBtn.textContent = 'Saving…'; }
+  try {
   const existingId = document.getElementById('pv-id').value;
   const pvNo       = (document.getElementById('pv-no')?.value || '').trim();
   const payee      = document.getElementById('pv-payee').value;
@@ -15905,6 +16061,10 @@ async function saveVoucher() {
       await loadVouchers(); // restore original
     }
     toast(res.error || 'Save failed', 'error');
+  }
+  } finally {
+    _voucherSaving = false;
+    if (_saveBtn) { _saveBtn.disabled = false; _saveBtn.textContent = _origBtnText; }
   }
 }
 
