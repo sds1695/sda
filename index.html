@@ -756,15 +756,19 @@
         <div class="page-actions">
           <button class="btn btn-primary" onclick="openNewJobModal()">+ New Job</button>
           <button class="btn btn-secondary" onclick="try{runSalesOrderAutoScansManual()}catch(e){};renderJobsBoard()" title="Re-scan retainers and deadlines, then refresh the board">⟳ Re-scan</button>
+          <button class="btn btn-secondary" id="jobs-trash-btn" onclick="openJobsTrash()" title="View cancelled jobs (nothing is deleted — restore anytime)" style="position:relative">🗑<span id="jobs-trash-badge" style="display:none;position:absolute;top:-6px;right:-6px;background:var(--red);color:#fff;border-radius:9px;font-size:10px;font-weight:700;line-height:1;padding:3px 5px;font-family:'DM Mono',monospace">0</span></button>
         </div>
       </div>
 
-      <div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:16px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:4px;border-bottom:1px solid var(--border);margin-bottom:16px;flex-wrap:wrap">
+        <div id="jobs-tabbar" style="display:flex;gap:4px;flex-wrap:wrap">
         <div class="jobs-tab" id="jobs-tabbtn-upcoming" onclick="switchJobsTab('upcoming')" style="padding:10px 16px;cursor:pointer;font-size:13px;font-weight:500;border-bottom:2px solid transparent;color:var(--text2)">Upcoming <span id="jobs-count-upcoming" style="margin-left:6px;color:var(--text3);font-family:'DM Mono',monospace;font-size:11px">(0)</span></div>
         <div class="jobs-tab" id="jobs-tabbtn-inprogress" onclick="switchJobsTab('inprogress')" style="padding:10px 16px;cursor:pointer;font-size:13px;font-weight:500;border-bottom:2px solid var(--brand);color:var(--text)">In Progress <span id="jobs-count-inprogress" style="margin-left:6px;color:var(--text3);font-family:'DM Mono',monospace;font-size:11px">(0)</span></div>
         <div class="jobs-tab" id="jobs-tabbtn-delivered" onclick="switchJobsTab('delivered')" style="padding:10px 16px;cursor:pointer;font-size:13px;font-weight:500;border-bottom:2px solid transparent;color:var(--text2)">Delivered <span id="jobs-count-delivered" style="margin-left:6px;color:var(--text3);font-family:'DM Mono',monospace;font-size:11px">(0)</span></div>
         <div class="jobs-tab" id="jobs-tabbtn-invoiced" onclick="switchJobsTab('invoiced')" style="padding:10px 16px;cursor:pointer;font-size:13px;font-weight:500;border-bottom:2px solid transparent;color:var(--text2)">Invoiced <span id="jobs-count-invoiced" style="margin-left:6px;color:var(--text3);font-family:'DM Mono',monospace;font-size:11px">(0)</span></div>
         <div class="jobs-tab" id="jobs-tabbtn-all" onclick="switchJobsTab('all')" style="padding:10px 16px;cursor:pointer;font-size:13px;font-weight:500;border-bottom:2px solid transparent;color:var(--text2)">All <span id="jobs-count-all" style="margin-left:6px;color:var(--text3);font-family:'DM Mono',monospace;font-size:11px">(0)</span></div>
+        </div>
+        <div id="jobs-trash-heading" style="display:none;padding:10px 16px;font-size:13px;font-weight:600;color:var(--text)">🗑 Trash <span id="jobs-count-cancelled" style="margin-left:6px;color:var(--text3);font-family:'DM Mono',monospace;font-size:11px">(0)</span> <button class="btn btn-ghost btn-sm" onclick="closeJobsTrash()" style="margin-left:10px;color:var(--brand);font-weight:600">← Back to board</button></div>
       </div>
 
       <div id="jobs-scroll-top" style="overflow-x:auto;overflow-y:hidden;height:16px;display:none"><div id="jobs-scroll-top-inner" style="height:1px"></div></div>
@@ -10606,7 +10610,8 @@ const SO_STATUS_LABELS = {
   pending: 'Pending Review',
   shortlisted: 'Shortlisted',
   converted: 'Converted',
-  rejected: 'Rejected'
+  rejected: 'Rejected',
+  cancelled: 'Cancelled'
 };
 
 const SO_SOURCE_LABELS = {
@@ -11518,6 +11523,7 @@ function soUpdateTracking(so_id, field, value) {
 // auto-scan will never duplicate it.
 // ════════════════════════════════════════════════════════════════════════
 let _jobsTab = 'inprogress';
+let _jobsPrevTab = 'inprogress'; // remembers where to go back to when closing the Trash view
 let _jobsSort = { col: 'due', dir: 'asc' };
 let _jobIssuingKey = null;  // job whose invoice is being created via the invoice modal
 function jobsSortBy(col){
@@ -11525,7 +11531,7 @@ function jobsSortBy(col){
   else { _jobsSort.col = col; _jobsSort.dir = 'asc'; }
   renderJobsBoard();
 }
-const JOB_STAGE_LABELS = { upcoming:'Upcoming', inprogress:'In Progress', delivered:'Delivered', invoiced:'Invoiced', all:'All' };
+const JOB_STAGE_LABELS = { upcoming:'Upcoming', inprogress:'In Progress', delivered:'Delivered', invoiced:'Invoiced', all:'All', cancelled:'Trash' };
 const JOB_TYPE_LABELS = {
   cosec_retainer:'Cosec Retainer', cosec_other:'Cosec Other', cosec:'Cosec',
   audit:'Audit/FS', fs:'FS (Audit Exemption)', tax:'Tax (Form C)',
@@ -11542,7 +11548,31 @@ function _jobClientBP(client_id){
   const c = (typeof CLIENTS !== 'undefined' ? CLIENTS : []).find(x => String(x.client_id) === String(client_id));
   return c ? (c.billing_party || '') : '';
 }
-function switchJobsTab(tab){ _jobsTab = tab; renderJobsBoard(); }
+function switchJobsTab(tab){ _jobsTab = tab; if (tab !== 'cancelled') _jobsPrevTab = tab; renderJobsBoard(); }
+
+// ── Cancel / Trash (non-destructive: never deletes the underlying Sales Order,
+// only flips its status to 'cancelled' — same convention already used for
+// cancelled invoices elsewhere in this file). Restore reverses it. ──────────
+function jobCancel(key){
+  const j = _jobByKey(key);
+  if (!j) { try { toast('Could not find that job.', 'error'); } catch(e){} return; }
+  if (!confirm('Move "' + (j.label||'this job') + '" for ' + (j.client_name||'') + ' to Trash?\n\nIt will be hidden from the board but nothing is deleted — you can restore it anytime from the Trash icon.')) return;
+  const so = _jobEnsureSO(key);
+  if (!so) { try { toast('Could not cancel — job not found.', 'error'); } catch(e){} return; }
+  updateSalesOrder(so.so_id, { status: 'cancelled', _pre_cancel_status: so.status === 'cancelled' ? (so._pre_cancel_status || 'pending') : (so.status || 'pending') });
+  renderJobsBoard();
+  try { toast('Job moved to Trash.', 'success'); } catch(e){}
+}
+function jobRestore(key){
+  const j = _jobByKey(key);
+  if (!j || !j.so) { try { toast('Could not find that job.', 'error'); } catch(e){} return; }
+  const prev = j.so._pre_cancel_status || 'pending';
+  updateSalesOrder(j.so.so_id, { status: prev });
+  renderJobsBoard();
+  try { toast('Job restored to the board.', 'success'); } catch(e){}
+}
+function openJobsTrash(){ _jobsPrevTab = (_jobsTab === 'cancelled') ? _jobsPrevTab : _jobsTab; _jobsTab = 'cancelled'; renderJobsBoard(); }
+function closeJobsTrash(){ _jobsTab = _jobsPrevTab || 'inprogress'; renderJobsBoard(); }
 
 // Map a deadline task → the SO job_type (mirrors jobTypeMap in scanDeadlinesDue)
 function _jobTaskToJobType(task){
@@ -11558,6 +11588,7 @@ function _jobClassOf(j){
 }
 function _jobStage(j){
   const so = j.so;
+  if (so && so.status === 'cancelled') return 'cancelled';
   if (j.invRef || (so && so.status === 'converted')) return 'invoiced';
   if (so && so.status === 'rejected') return 'na';
   if (so && (so.status === 'shortlisted' || so.fs_final_sent || so.tax_submitted)) return 'delivered';
@@ -11626,6 +11657,7 @@ function buildJobsModel(){
 function _jobWorkLabel(j, cls){
   const so = j.so;
   const pill = (txt,bg,fg) => `<span style="background:${bg};color:${fg};padding:2px 7px;border-radius:3px;font-size:10px;font-weight:600">${txt}</span>`;
+  if (j.stage === 'cancelled') return pill('Cancelled','var(--red-bg)','var(--red)');
   if (j.stage === 'invoiced') return pill('Done','var(--green-bg)','var(--green)');
   if (!so) return `<span style="color:var(--text3);font-size:11px">Not started</span>`;
   const finalDone = (cls==='fs' && so.fs_final_sent) || (cls==='tax' && so.tax_submitted) || so.status==='shortlisted';
@@ -11635,8 +11667,11 @@ function _jobWorkLabel(j, cls){
   return `<span style="color:var(--text3);font-size:11px">Pending</span>`;
 }
 
-function _jobRowHTML(j, today){
+function _jobRowHTML(j, today, inTrash){
   const stop = 'event.stopPropagation()';
+  const cancelC = inTrash
+    ? `<td style="padding:6px 8px;text-align:center"><button class="btn btn-ghost btn-sm" onclick="${stop};jobRestore('${j.key}')" style="color:var(--brand);font-size:11px;font-weight:600" title="Restore this job to the board">↩ Restore</button></td>`
+    : `<td style="padding:6px 8px;text-align:center"><button class="btn btn-ghost btn-sm" onclick="${stop};jobCancel('${j.key}')" style="color:var(--text3);font-size:13px" title="Move to Trash (not deleted — restore anytime)">🗑</button></td>`;
   const cls  = _jobClassOf(j);
   const so   = j.so;
   // Due cell — date on line 1, urgency badge on line 2 (saves width)
@@ -11695,7 +11730,8 @@ function _jobRowHTML(j, today){
   else if (so)       billing = `<span style="color:var(--text3);font-size:11px">${(typeof SO_STATUS_LABELS!=='undefined'&&SO_STATUS_LABELS[so.status])||so.status||''}</span>`;
   // Action cell
   let action;
-  if (j.stage === 'upcoming')      action = `<button class="btn btn-ghost btn-sm" onclick="${stop};jobStart('${j.key}')" style="color:var(--brand);font-size:11px;font-weight:600">Start</button>`;
+  if (inTrash)                     action = `<span style="color:var(--text3);font-size:11px">In Trash</span>`;
+  else if (j.stage === 'upcoming')  action = `<button class="btn btn-ghost btn-sm" onclick="${stop};jobStart('${j.key}')" style="color:var(--brand);font-size:11px;font-weight:600">Start</button>`;
   else if (j.stage === 'invoiced') action = (j.invId ? `<button class="btn btn-ghost btn-sm" onclick="${stop};previewInvoiceById('${j.invId}')" style="color:var(--blue);font-size:11px">View Invoice</button>` : `<span style="color:var(--text3);font-size:11px">Invoiced</span>`) + ` <button class="btn btn-ghost btn-sm" onclick="${stop};jobLinkInvoice('${j.key}')" style="color:var(--text2);font-size:11px" title="Change / clear the linked invoice">Re-link</button>`;
   else                             action = `<button class="btn btn-ghost btn-sm" onclick="${stop};jobIssueInvoice('${j.key}')" style="color:var(--brand);font-size:11px;font-weight:600">Issue Invoice</button> <button class="btn btn-ghost btn-sm" onclick="${stop};jobLinkInvoice('${j.key}')" style="color:var(--text2);font-size:11px" title="Link an invoice you already issued in the Invoices section">Link</button>`;
   const rowAttr = so ? `onclick="openSalesOrderModal('${so.so_id}')" style="cursor:pointer;border-top:1px solid var(--border)"` : `style="border-top:1px solid var(--border)"`;
@@ -11706,6 +11742,7 @@ function _jobRowHTML(j, today){
     <td style="padding:10px 12px;font-size:12px;color:var(--text2)">${j.period||'—'}</td>
     <td style="padding:10px 12px;font-size:12px;color:var(--text2);vertical-align:top">${dueCell}</td>
     <td style="padding:10px 8px;vertical-align:top">${_jobWorkLabel(j, cls)}</td>
+    ${cancelC}
     ${assignedC}
     ${draftC}${finalC}${pagesC}${setsC}${extC}
     ${feeC}
@@ -11716,15 +11753,23 @@ function _jobRowHTML(j, today){
 
 function renderJobsBoard(){
   const all = buildJobsModel();
-  const counts = { upcoming:0, inprogress:0, delivered:0, invoiced:0, all:0 };
-  all.forEach(j => { if (counts[j.stage] != null) counts[j.stage]++; if (j.stage !== 'na') counts.all++; });
+  const counts = { upcoming:0, inprogress:0, delivered:0, invoiced:0, cancelled:0, all:0 };
+  all.forEach(j => { if (counts[j.stage] != null) counts[j.stage]++; if (j.stage !== 'na' && j.stage !== 'cancelled') counts.all++; });
   ['upcoming','inprogress','delivered','invoiced','all'].forEach(s => {
     const el = document.getElementById('jobs-count-'+s); if (el) el.textContent = '('+counts[s]+')';
     const btn = document.getElementById('jobs-tabbtn-'+s);
     if (btn) { const active = (_jobsTab === s); btn.style.borderBottom = '2px solid ' + (active?'var(--brand)':'transparent'); btn.style.color = active?'var(--text)':'var(--text2)'; }
   });
+  // Trash badge (icon in the toolbar) + the Trash view's own heading/count
+  const trashBadge = document.getElementById('jobs-trash-badge');
+  if (trashBadge) { trashBadge.style.display = counts.cancelled > 0 ? '' : 'none'; trashBadge.textContent = counts.cancelled; }
+  const trashCountEl = document.getElementById('jobs-count-cancelled');
+  if (trashCountEl) trashCountEl.textContent = '('+counts.cancelled+')';
+  const inTrash = (_jobsTab === 'cancelled');
+  const tabbar = document.getElementById('jobs-tabbar'); if (tabbar) tabbar.style.display = inTrash ? 'none' : 'flex';
+  const trashHeading = document.getElementById('jobs-trash-heading'); if (trashHeading) trashHeading.style.display = inTrash ? '' : 'none';
   const tab = _jobsTab;
-  let rows = (tab === 'all') ? all.filter(j => j.stage !== 'na') : all.filter(j => j.stage === tab);
+  let rows = (tab === 'all') ? all.filter(j => j.stage !== 'na' && j.stage !== 'cancelled') : all.filter(j => j.stage === tab);
   // Sorting
   const _jv = (j, c) => {
     if (c === 'due')    return j.due ? j.due.getTime() : 8e15;
@@ -11744,7 +11789,9 @@ function renderJobsBoard(){
   const wrap = document.getElementById('jobs-table-wrap');
   if (!wrap) return;
   if (!rows.length) {
-    wrap.innerHTML = `<div style="padding:40px;text-align:center;color:var(--text3);font-size:13px">No jobs in “${JOB_STAGE_LABELS[tab]||'All'}”.</div>`;
+    wrap.innerHTML = inTrash
+      ? `<div style="padding:40px;text-align:center;color:var(--text3);font-size:13px">🗑 Trash is empty.</div>`
+      : `<div style="padding:40px;text-align:center;color:var(--text3);font-size:13px">No jobs in “${JOB_STAGE_LABELS[tab]||'All'}”.</div>`;
     _jobsSyncTopScroll();
     return;
   }
@@ -11761,6 +11808,7 @@ function renderJobsBoard(){
       ${sortable('period','FY / Period')}
       ${sortable('due','Due')}
       ${sortable('status','Status')}
+      <th style="padding:10px 8px;text-align:center;white-space:nowrap">${inTrash ? 'Restore' : 'Cancel'}</th>
       <th style="padding:10px 8px;text-align:left;white-space:nowrap">Assigned<br><span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text3)">Prep / Rev</span></th>
       <th style="padding:10px 8px;text-align:left;white-space:nowrap">Draft Sent</th>
       <th style="padding:10px 8px;text-align:left;white-space:nowrap">Final / Submitted</th>
@@ -11771,7 +11819,7 @@ function renderJobsBoard(){
       ${sortable('billing','Billing')}
       <th style="padding:10px 12px;text-align:right">Action</th>
     </tr></thead>
-    <tbody>${rows.map(j => _jobRowHTML(j, today)).join('')}</tbody>
+    <tbody>${rows.map(j => _jobRowHTML(j, today, inTrash)).join('')}</tbody>
   </table>`;
   _jobsSyncTopScroll();
 }
@@ -20936,7 +20984,7 @@ async function pullDeadlineStatusesFromSheet() {
   .le-suggestion:hover { background: var(--brand); color: #fff; border-color: var(--brand); }
 </style>
 
-<button id="lee-eng-fab" onclick="toggleLeeEng()" title="Ask Lee Eng — your firm's data assistant"></button>
+<button id="lee-eng-fab" title="Ask Lee Eng — your firm's data assistant. Drag to move."></button>
 
 <div id="lee-eng-panel">
   <div class="le-header">
@@ -20962,6 +21010,102 @@ async function pullDeadlineStatusesFromSheet() {
   </div>
 </div>
 
+<script>
+// ── Lee Eng fab: draggable so it can be moved off whatever it's blocking.
+// Position is remembered per-browser (localStorage) — purely cosmetic, no sync. ──
+(function(){
+  const FAB_POS_KEY = 'seraya_lee_eng_pos_v1';
+  function clampPos(left, top, el){
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const w = el.offsetWidth || 60, h = el.offsetHeight || 60;
+    left = Math.max(4, Math.min(left, vw - w - 4));
+    top  = Math.max(4, Math.min(top, vh - h - 4));
+    return { left: left, top: top };
+  }
+  function applySavedPos(){
+    const fab = document.getElementById('lee-eng-fab');
+    if (!fab) return;
+    let pos = null;
+    try { pos = JSON.parse(localStorage.getItem(FAB_POS_KEY) || 'null'); } catch(e){ pos = null; }
+    if (pos && typeof pos.left === 'number' && typeof pos.top === 'number') {
+      const c = clampPos(pos.left, pos.top, fab);
+      fab.style.left = c.left + 'px';
+      fab.style.top = c.top + 'px';
+      fab.style.right = 'auto';
+      fab.style.bottom = 'auto';
+    }
+  }
+  function initDrag(){
+    const fab = document.getElementById('lee-eng-fab');
+    if (!fab || fab._dragWired) return;
+    fab._dragWired = true;
+    let dragging = false, moved = false, startX = 0, startY = 0, origLeft = 0, origTop = 0;
+    function down(x, y){
+      const r = fab.getBoundingClientRect();
+      origLeft = r.left; origTop = r.top; startX = x; startY = y;
+      dragging = true; moved = false;
+    }
+    function move(x, y){
+      if (!dragging) return;
+      const dx = x - startX, dy = y - startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+      if (!moved) return;
+      const c = clampPos(origLeft + dx, origTop + dy, fab);
+      fab.style.left = c.left + 'px'; fab.style.top = c.top + 'px';
+      fab.style.right = 'auto'; fab.style.bottom = 'auto';
+    }
+    function up(){
+      if (!dragging) return;
+      dragging = false;
+      if (moved) {
+        const r = fab.getBoundingClientRect();
+        try { localStorage.setItem(FAB_POS_KEY, JSON.stringify({ left: r.left, top: r.top })); } catch(e){}
+      }
+    }
+    fab.addEventListener('mousedown', function(e){ if (e.button !== 0) return; down(e.clientX, e.clientY); e.preventDefault(); });
+    window.addEventListener('mousemove', function(e){ move(e.clientX, e.clientY); });
+    window.addEventListener('mouseup', function(){ up(); });
+    fab.addEventListener('touchstart', function(e){ const t = e.touches[0]; down(t.clientX, t.clientY); }, { passive: true });
+    window.addEventListener('touchmove', function(e){ if (!dragging) return; const t = e.touches[0]; move(t.clientX, t.clientY); if (moved) e.preventDefault(); }, { passive: false });
+    window.addEventListener('touchend', function(){ up(); });
+    // Click (not drag) opens/closes the chat — the button has no inline onclick,
+    // this is the only place that calls toggleLeeEng().
+    fab.addEventListener('click', function(){ if (moved) return; try { toggleLeeEng(); } catch(e){} });
+    window.addEventListener('resize', function(){
+      if (!fab.style.left) return; // still at default bottom/right — nothing to reclamp
+      const c = clampPos(parseFloat(fab.style.left), parseFloat(fab.style.top), fab);
+      fab.style.left = c.left + 'px'; fab.style.top = c.top + 'px';
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function(){ applySavedPos(); initDrag(); });
+  else { applySavedPos(); initDrag(); }
+})();
+
+// Position the chat panel next to wherever the fab currently is (it may have
+// been dragged), preferring above-right-aligned like the original default,
+// flipping to stay on screen.
+function _lePositionPanel(){
+  const fab = document.getElementById('lee-eng-fab');
+  const panel = document.getElementById('lee-eng-panel');
+  if (!fab || !panel) return;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const r = fab.getBoundingClientRect();
+  const gap = 12;
+  const panelW = Math.min(380, vw - 32);
+  const panelH = Math.min(540, vh - 140);
+  let top = r.top - gap - panelH;
+  if (top < 12) top = Math.min(r.bottom + gap, Math.max(12, vh - panelH - 12));
+  let left = r.right - panelW;
+  if (left < 12) left = Math.min(r.left, vw - panelW - 12);
+  if (left < 12) left = 12;
+  panel.style.width = panelW + 'px';
+  panel.style.height = panelH + 'px';
+  panel.style.top = top + 'px';
+  panel.style.left = left + 'px';
+  panel.style.right = 'auto';
+  panel.style.bottom = 'auto';
+}
+</script>
 
 <!-- == Bank Reconciliation Modal == -->
 <div class="modal-overlay" id="modal-bank-recon">
@@ -21652,6 +21796,7 @@ function toggleLeeEng() {
     panel.classList.remove('open');
     fab.classList.remove('open');
   } else {
+    try { _lePositionPanel(); } catch(e){}
     panel.classList.add('open');
     fab.classList.add('open');
     const msgs = document.getElementById('le-messages');
