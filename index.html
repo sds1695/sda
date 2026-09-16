@@ -4382,6 +4382,10 @@ async function voidCancelledAllocs() {
 // or Payout Tally health checks. Triggered from a button next to the chip.
 // P2 (12 Aug 2026): the P0 typed-SYNC fence is replaced by a DRY-RUN PREVIEW.
 // Nothing is written until the user clicks Apply on a specific invoice row.
+// 16 Sep 2026: Apply DISABLED until _liveResaveAlloc Bug 1 (always proposes blank
+// job_type) and Bug 2 (ignores line customSplit) are fixed -- see
+// LE\allocation-auto-sync-bugs.md. Dry-run preview stays available (read-only).
+const AUTOSYNC_APPLY_ENABLED = false;
 async function syncStaleAllocations() {
   const stale = (window.__STALE_INV_NOS || []);
   if (!stale.length) { try { toast('No stale invoices to sync.', 'info'); } catch(e){} return; }
@@ -4417,7 +4421,7 @@ async function syncStaleAllocations() {
       + cell(p.abot_cost, s.abot_cost)
       + cell(p.claude_retain, s.claude_retain)
       + cell(p.reviewer_top20, s.reviewer_top20)
-      + '<td style="padding:4px 6px;text-align:center"><button class="btn btn-primary" style="font-size:10.5px;padding:3px 10px" onclick="_applySyncOne(\'' + x.invNo + '\', this)">Apply</button></td>'
+      + '<td style="padding:4px 6px;text-align:center">' + (AUTOSYNC_APPLY_ENABLED ? '<button class="btn btn-primary" style="font-size:10.5px;padding:3px 10px" onclick="_applySyncOne(\'' + x.invNo + '\', this)">Apply</button>' : '<span style="font-size:10px;color:var(--text3)" title="Disabled 16 Sep 2026 until engine fix (allocation-auto-sync-bugs.md)">Apply disabled</span>') + '</td>'
       + '</tr>';
   }).join('');
   const overlayId = '_sync_preview_overlay';
@@ -4445,6 +4449,7 @@ async function syncStaleAllocations() {
 }
 
 async function _applySyncOne(invNo, btn) {
+  if (!AUTOSYNC_APPLY_ENABLED) { try { toast('Auto-sync Apply is disabled until the allocation-engine fix ships (allocation-auto-sync-bugs.md, 13 Sep 2026).', 'error'); } catch(e){} return; }
   if (!confirm('Save the re-computed allocation for ' + invNo + ' and void its old row(s)?')) return;
   if (btn) { btn.disabled = true; btn.textContent = 'saving…'; }
   let r;
@@ -5939,7 +5944,7 @@ function runAccountingHealth(receipts, vouchers) {
       if (stale.length) {
         _allocFreshOk = false;
         const top = stale.slice(0, 3).map(s => `${s.inv_no} (${s.client}, ${s.reason})`).join(' · ');
-        _allocFreshDetail = `${stale.length} invoice${stale.length>1?'s':''} need re-save: ${top}${stale.length>3?` + ${stale.length-3} more`:''} — <a href="javascript:syncStaleAllocations()" style="color:#0a7d3e;text-decoration:underline;font-weight:600">Auto-sync all</a>`;
+        _allocFreshDetail = `${stale.length} invoice${stale.length>1?'s':''} need re-save: ${top}${stale.length>3?` + ${stale.length-3} more`:''} — <a href="javascript:syncStaleAllocations()" style="color:#0a7d3e;text-decoration:underline;font-weight:600">${AUTOSYNC_APPLY_ENABLED ? 'Auto-sync all' : 'Preview (Apply disabled)'}</a>`;
       } else {
         window.__STALE_INV_NOS = [];
       }
