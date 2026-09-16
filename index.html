@@ -1621,6 +1621,8 @@
             <option value="Tax">Tax</option>
             <option value="FS">FS (Audit Exemption)</option>
             <option value="Cosec">Cosec</option>
+            <option value="Cosec_Retainer">Cosec Retainer (Type B — Cecilia cut, 50/50)</option>
+            <option value="Cosec_Other">Cosec Other (Type C — SSM fee, 50/50)</option>
             <option value="Audit">Audit</option>
             <option value="Personal_Tax">Personal Tax</option>
             <option value="Advisory">Advisory</option>
@@ -4022,6 +4024,69 @@ function _koayCommPctFor(jobType, reviewerName, koayTaxChecked) {
   return 0;
 }
 
+// ═══════════ P2b (16 Sep 2026): shared role / context resolvers ═══════════
+// The invoice modal (saveInvoice / recalcInvLines) now runs its lines through
+// _bucketForLine too. It passes a SYNTHETIC invoice object carrying
+//   inv.__modal = { preparer, reviewer, prepPct (0-1 or null), claudeOn,
+//                   koayTaxChecked, ssmFee }
+// so roles/flags come from the OPEN modal instead of the saved allocation row
+// (which may not exist yet, or be the very row we are about to replace).
+// Without __modal every branch behaves exactly as before (saved-row lookup).
+function _modalCtxOf(inv) {
+  return (inv && inv.__modal && typeof inv.__modal === 'object') ? inv.__modal : null;
+}
+function _savedAllocFor(inv) {
+  return ((typeof ALLOCATIONS !== 'undefined') ? ALLOCATIONS : []).find(a => a && a.inv_no === (inv && inv.inv_no) && (typeof isVoided !== 'function' || !isVoided('allocations', a.alloc_id))) || null;
+}
+// Resolve this line's preparer / reviewer: per-line override → modal → saved row.
+function _lineRolesFor(l, inv) {
+  const n = p => p === 'Koay PH' ? 'Koay' : (p || '');
+  const ctx = _modalCtxOf(inv);
+  const sa  = ctx ? null : _savedAllocFor(inv);
+  const invPrep = n(ctx ? ctx.preparer : (sa && sa.preparer_name));
+  const invRev  = n(ctx ? ctx.reviewer  : (sa && sa.reviewer_name));
+  return { prep: n(l.prepOvr) || invPrep, rev: n(l.revOvr) || invRev, saved: sa, ctx: ctx };
+}
+// Preparer share resolution (shared by the standard and cosec branches):
+//   modal prep % → saved prep_pct → localStorage → derived from saved amounts
+//   (only when the saved row's people match this line's) → job default.
+function _resolvePrepPctFor(inv, roles, linePrep, lineRev, defaultPct) {
+  const n = p => p === 'Koay PH' ? 'Koay' : (p || '');
+  const ctx = roles.ctx, sa = roles.saved;
+  if (ctx) return (ctx.prepPct != null && ctx.prepPct > 0 && ctx.prepPct < 1) ? +ctx.prepPct : defaultPct;
+  if (sa && sa.prep_pct != null && +sa.prep_pct > 0 && +sa.prep_pct < 100) return +sa.prep_pct / 100;
+  try {
+    const _lsP = parseFloat(localStorage.getItem('prep_pct_' + (inv && inv.inv_no)) || 0);
+    if (_lsP > 0 && _lsP < 100) return _lsP / 100;
+  } catch(e) {}
+  if (sa && n(sa.preparer_name) === linePrep && n(sa.reviewer_name) === lineRev) {
+    let _sP = parseFloat(sa.preparer_amt || 0), _sR = parseFloat(sa.reviewer_amt || 0);
+    // The saved slot totals also carry NON-formula credits (customSplit person
+    // keys / preparer / reviewer, and "Reimburse: X" lines). Strip those first so
+    // the derived ratio is the FORMULA split only — otherwise a mixed invoice
+    // like INV260905 (custom 1900 + standard 190) derives ~62% instead of 70%.
+    try {
+      const _raw = JSON.parse((inv && inv.desc1) || '');
+      if (Array.isArray(_raw)) _raw.forEach(x => {
+        if (!x) return;
+        if (x.customSplit && typeof x.customSplit === 'object') {
+          Object.entries(x.customSplit).forEach(([k, v]) => {
+            const nk = (k === 'preparer') ? linePrep : (k === 'reviewer') ? lineRev : n(k);
+            if (nk === linePrep) _sP -= (parseFloat(v) || 0); else if (nk === lineRev) _sR -= (parseFloat(v) || 0);
+          });
+        } else if (x.alloc && ['ET','Koay','Ivy','KC','Cecilia'].indexOf(x.alloc) !== -1) {
+          if (n(x.alloc) === linePrep) _sP -= (parseFloat(x.amt) || 0); else if (n(x.alloc) === lineRev) _sR -= (parseFloat(x.amt) || 0);
+        }
+      });
+    } catch(e) {}
+    if (_sP > 0.005 && _sR > 0.005) return _sP / (_sP + _sR);
+    // Stripping left nothing usable — fall back to the raw slot ratio (pre-16 Sep behaviour).
+    const _rP = parseFloat(sa.preparer_amt || 0), _rR = parseFloat(sa.reviewer_amt || 0);
+    if (_rP + _rR > 0.01) return _rP / (_rP + _rR);
+  }
+  return defaultPct;
+}
+
 function _bucketForLine(l, inv) {
   const out = { ET:0, Koay:0, Ivy:0, KC:0, Cecilia:0, retain:0, abot:0, disb:0, ceciliaFee:0, ssm:0, claude:0 };
   // P2 (12 Aug 2026): __d exposes per-line ROLE detail (who earned what, in which
@@ -4036,8 +4101,41 @@ function _bucketForLine(l, inv) {
     if (['ET','Koay','Ivy','KC','Cecilia'].indexOf(l.alloc) !== -1) out.__d.direct[l.alloc] = (out.__d.direct[l.alloc] || 0) + amt;
     return out;
   }
+  // customSplit is AUTHORITATIVE (author-specified split): it wins over the
+  // Disb flag and over any horizontalAlloc table data left on the same line.
+  // BUGFIX 16 Sep 2026 (Bug 2, INV260905/906/907): this block used to sit
+  // BELOW the isDisb and horizontalAlloc checks, so (a) a Disb-flagged line
+  // whose customSplit says {retainAbot:50} was booked as a disbursement and
+  // (b) a line carrying both customSplit and a stale horizontalAlloc was
+  // recomputed from the table (fabricating a 20% Koay commission).
+  // Routes even if l.alloc was saved as 'standard' (happens when the user opens
+  // Custom Split but doesn't flip the dropdown manually).
+  if (l.customSplit && typeof l.customSplit === 'object' && Object.keys(l.customSplit).length > 0) {
+    // Resolve actual preparer/reviewer names so 'preparer'/'reviewer' keys
+    // route to the right person bucket (not the legacy KC fallback).
+    const _rolesCS = _lineRolesFor(l, inv);
+    const _csLinePrep = _rolesCS.prep;
+    const _csLineRev  = _rolesCS.rev;
+    Object.entries(l.customSplit).forEach(([k, v]) => {
+      const x = parseFloat(v||0);
+      if (!(x > 0.001)) return;
+      if (k === 'preparer') {
+        if (_csLinePrep && out.hasOwnProperty(_csLinePrep)) { out[_csLinePrep] += x; out.__d.prepName = _csLinePrep; out.__d.prepAmt += x; }
+        else { out.KC += x; out.__d.direct.KC = (out.__d.direct.KC || 0) + x; }  // last-resort fallback
+      } else if (k === 'reviewer') {
+        if (_csLineRev && out.hasOwnProperty(_csLineRev)) { out[_csLineRev] += x; out.__d.revName = _csLineRev; out.__d.revAmt += x; }
+        else { out.KC += x; out.__d.direct.KC = (out.__d.direct.KC || 0) + x; }
+      } else if (out.hasOwnProperty(k)) {
+        out[k] += x;
+        if (['ET','Koay','Ivy','KC','Cecilia'].indexOf(k) !== -1) out.__d.direct[k] = (out.__d.direct[k] || 0) + x;
+      } else if (k === 'retain') out.retain += x;
+      else if (k === 'retainAbot') out.abot += x;
+      else if (k === 'disb') out.disb += x;
+    });
+    return out;
+  }
   if (l.isDisb) { out.disb += amt; return out; }
-  // horizontalAlloc takes priority — it's the per-line table editor data.
+  // horizontalAlloc — the per-line table editor data (second priority, after customSplit).
   if (l.horizontalAlloc && typeof l.horizontalAlloc === 'object') {
     const ha = l.horizontalAlloc;
     const bill = +ha.bill || 0;
@@ -4085,35 +4183,6 @@ function _bucketForLine(l, inv) {
     out.__d.ceciliaFee += cec;
     return out;
   }
-  // customSplit is authoritative: route via custom-split branch whenever
-  // it has entries, even if l.alloc was saved as 'standard' (happens when
-  // user opens Custom Split but doesn't flip the dropdown manually).
-  if (l.customSplit && Object.keys(l.customSplit).length > 0) {
-    // Resolve actual preparer/reviewer names so 'preparer'/'reviewer' keys
-    // route to the right person bucket (not the legacy KC fallback).
-    const _normPR = p => p === 'Koay PH' ? 'Koay' : p;
-    const _savedAllocCS = ((typeof ALLOCATIONS !== 'undefined') ? ALLOCATIONS : []).find(a => a && a.inv_no === (inv && inv.inv_no) && (typeof isVoided !== 'function' || !isVoided('allocations', a.alloc_id)));
-    const _csInvPrep = _normPR((l.prepOvr) || (_savedAllocCS && _savedAllocCS.preparer_name) || '');
-    const _csInvRev  = _normPR((l.revOvr)  || (_savedAllocCS && _savedAllocCS.reviewer_name) || '');
-    const _csLinePrep = _normPR(l.prepOvr || _csInvPrep);
-    const _csLineRev  = _normPR(l.revOvr  || _csInvRev);
-    Object.entries(l.customSplit).forEach(([k, v]) => {
-      const x = parseFloat(v||0);
-      if (k === 'preparer') {
-        if (_csLinePrep && out.hasOwnProperty(_csLinePrep)) { out[_csLinePrep] += x; out.__d.prepName = _csLinePrep; out.__d.prepAmt += x; }
-        else { out.KC += x; out.__d.direct.KC = (out.__d.direct.KC || 0) + x; }  // last-resort fallback
-      } else if (k === 'reviewer') {
-        if (_csLineRev && out.hasOwnProperty(_csLineRev)) { out[_csLineRev] += x; out.__d.revName = _csLineRev; out.__d.revAmt += x; }
-        else { out.KC += x; out.__d.direct.KC = (out.__d.direct.KC || 0) + x; }
-      } else if (out.hasOwnProperty(k)) {
-        out[k] += x;
-        if (['ET','Koay','Ivy','KC','Cecilia'].indexOf(k) !== -1) out.__d.direct[k] = (out.__d.direct[k] || 0) + x;
-      } else if (k === 'retain') out.retain += x;
-      else if (k === 'retainAbot') out.abot += x;
-      else if (k === 'disb') out.disb += x;
-    });
-    return out;
-  }
   // Cosec Retainer / Cosec Other — Cecilia takes a flat quarterly cut off
   // retainer lines (RM75 by default), split is 50/50 prep/rev (not 70/30),
   // and there's no abot deduction. This mirrors the modal's own allocation
@@ -4122,29 +4191,42 @@ function _bucketForLine(l, inv) {
   // the generic "standard formula" below, which has no Cecilia carve-out at
   // all, silently folding her RM75 cut into the preparer/reviewer shares.
   // Fixed 2026-08-10 (found via INV260702/703/704).
-  const _cosecLt = (l.lineType || (inv && inv.job_type) || '').trim();
+  // P2b (16 Sep 2026): the invoice's job_type falls back to the saved allocation
+  // row's job_type (what augmentInvoicesWithJobType copies in after every load).
+  // Without this the branch choice depended on WHEN the calc ran (blank right
+  // after loadInvoices(), filled after the next augment) — non-deterministic.
+  let _cosecLt = (l.lineType || (inv && inv.job_type) || '').trim();
+  if (!_cosecLt && !_modalCtxOf(inv)) { const _saJt = _savedAllocFor(inv); _cosecLt = String((_saJt && _saJt.job_type) || '').trim(); }
   if (_cosecLt === 'Cosec_Retainer' || _cosecLt === 'Cosec_Other') {
-    const _normCos = p => p === 'Koay PH' ? 'Koay' : p;
-    const _saCos = ((typeof ALLOCATIONS !== 'undefined') ? ALLOCATIONS : []).find(a => a && a.inv_no === (inv && inv.inv_no) && (typeof isVoided !== 'function' || !isVoided('allocations', a.alloc_id)));
-    const prepCos = _normCos(l.prepOvr || (_saCos && _saCos.preparer_name) || '');
-    const revCos  = _normCos(l.revOvr  || (_saCos && _saCos.reviewer_name) || '');
+    const _rolesCos = _lineRolesFor(l, inv);
+    const prepCos = _rolesCos.prep;
+    const revCos  = _rolesCos.rev;
     const cecRate  = (typeof getSetting === 'function') ? parseFloat(getSetting('cecilia_quarterly', 75)) : 75;
     const adminPctCos = (typeof getSetting === 'function') ? parseFloat(getSetting('admin_retain_pct', 0.15)) : 0.15;
     const kcPctCos = (typeof getSetting === 'function') ? parseFloat(getSetting('kc_commission_pct', 0.10)) : 0.10;
     const cecFee = (_cosecLt === 'Cosec_Retainer') ? cecRate : 0;
+    // SSM filing fee (Cosec_Other) is an invoice-level deduction. It is attached
+    // ONCE by _buildAllocRowFromLines (l.__ssmFee on the first Cosec_Other line)
+    // so the modal-save and the Auto-sync rebuild both carry it; other callers
+    // (Invoice Breakdown etc.) see no change.
+    const ssmCos = (_cosecLt === 'Cosec_Other' && l.__ssmFee > 0) ? +l.__ssmFee : 0;
+    // P2b (16 Sep 2026): prep % now resolved like the standard branch (modal →
+    // saved prep_pct → localStorage → derived), defaulting to the cosec 50/50.
+    const _prepPctCos = _resolvePrepPctFor(inv, _rolesCos, prepCos, revCos, 0.5);
     // P1 (12 Aug 2026): delegated to computeAllocCore. Claude 2.5% now
     // policy-gated (INV260516+ per Boss ruling) instead of unconditional;
     // KC base = net (this branch's legacy) until the kc_gross_from_inv cutover.
     const _cCos = computeAllocCore({
-      amt: amt, ceciliaFee: cecFee, claudeOn: _claudePolicyOn(inv && inv.inv_no),
+      amt: amt, ceciliaFee: cecFee, ssmFee: ssmCos, claudeOn: _claudePolicyOn(inv && inv.inv_no),
       retainPct: adminPctCos, kcPct: kcPctCos,
-      kcBase: _kcBaseFor(inv && inv.inv_no) || 'net', prepPct: 0.5,
+      kcBase: _kcBaseFor(inv && inv.inv_no) || 'net', prepPct: _prepPctCos,
     });
     const claudeCos = _cCos.claude;
     const retainCos = _cCos.retain;
     const kcCommCos = _cCos.kc;
     const prepAmtCos = _cCos.prep, revAmtCos = _cCos.rev;
     if (cecFee > 0) out.Cecilia += cecFee;
+    if (ssmCos > 0) out.ssm += ssmCos;
     out.retain += retainCos;
     out.claude += claudeCos;
     out.KC += kcCommCos;
@@ -4159,16 +4241,33 @@ function _bucketForLine(l, inv) {
   // Standard formula. Resolve invoice-level defaults from saved alloc row or
   // invoice job_type, NOT from modal DOM (which may not be open).
   const _norm = p => p === 'Koay PH' ? 'Koay' : p;
-  const _savedAlloc = ((typeof ALLOCATIONS !== 'undefined') ? ALLOCATIONS : []).find(a => a && a.inv_no === (inv && inv.inv_no) && (typeof isVoided !== 'function' || !isVoided('allocations', a.alloc_id)));
-  const invPrep = _norm((l.prepOvr) || (_savedAlloc && _savedAlloc.preparer_name) || '');
-  const invRev  = _norm((l.revOvr)  || (_savedAlloc && _savedAlloc.reviewer_name) || '');
+  // P2b (16 Sep 2026): roles via the shared resolver (per-line override → open
+  // modal → saved row). _rolesStd.ctx is non-null only when the invoice modal
+  // is driving the calc; _rolesStd.saved is the saved row otherwise.
+  const _rolesStd = _lineRolesFor(l, inv);
+  const _ctxStd = _rolesStd.ctx;
+  const _savedAlloc = _ctxStd ? null : _rolesStd.saved;
   const invJob  = (inv && inv.job_type) || (_savedAlloc && _savedAlloc.job_type) || '';
-  const linePrep = _norm(l.prepOvr || invPrep);
-  const lineRev  = _norm(l.revOvr  || invRev);
-  const lineAbot = (l.abotOvr !== '' && l.abotOvr !== undefined && l.abotOvr !== null) ? parseFloat(l.abotOvr || 0) : 0;
-  const lineRetainPct = (l.retainOvr !== '' && l.retainOvr !== undefined && l.retainOvr !== null) ? parseFloat(l.retainOvr || 0) / 100 : 0.15;
+  const linePrep = _rolesStd.prep;
+  const lineRev  = _rolesStd.rev;
   const lineType = l.lineType || invJob;
   const isMbrs = (lineType || '').toUpperCase() === 'MBRS';
+  const isAuditLt = (lineType || '').toUpperCase() === 'AUDIT';
+  // §6 item 3 (16 Sep handover, allocation-auto-sync-bugs.md): the headless
+  // engine (_bucketForLine, used by _liveResaveAlloc / Auto-sync rebuild) had
+  // no fallback when a line carries no abotOvr — it silently defaulted to 0,
+  // producing abot RM0 on rebuild for invoices whose Excel/original abot was
+  // RM50 (INV260805/806/807/808/716 etc.). The invoice-modal path already
+  // defaults via invAbot / 'abot_standard' setting (see ~line 9896) when the
+  // modal is open; this mirrors that default for the headless path so a
+  // rebuild doesn't drop a RM50 abot that was never meant to be overridden to
+  // zero. Job-type default: MBRS/Audit → 'abot_standard' setting (RM50);
+  // Cosec never reaches this branch (separate branch above) so stays RM0;
+  // any other job type also stays RM0 (no historical basis for a default).
+  const _abotStdSetting = (typeof getSetting === 'function') ? parseFloat(getSetting('abot_standard', 50)) : 50;
+  const _abotDefaultByJobType = (isMbrs || isAuditLt) ? _abotStdSetting : 0;
+  const lineAbot = (l.abotOvr !== '' && l.abotOvr !== undefined && l.abotOvr !== null) ? parseFloat(l.abotOvr || 0) : _abotDefaultByJobType;
+  const lineRetainPct = (l.retainOvr !== '' && l.retainOvr !== undefined && l.retainOvr !== null) ? parseFloat(l.retainOvr || 0) / 100 : 0.15;
   const abotTopUp = (typeof getSetting === 'function') ? parseFloat(getSetting('abot_reviewer_top', 20)) : 20;
   // Top-up checkbox is a modal-only control; default ON when modal isn't present.
   const _topEl = document.getElementById('inv-apply-top-up');
@@ -4178,12 +4277,17 @@ function _bucketForLine(l, inv) {
   // only consulted by recalcAllocation (the live preview while editing); here
   // we trust the persisted state.
   let _claudeOn = false;
+  if (_ctxStd) {
+    // Modal-driven: firm policy (INV260516+), same as recalcAllocation/saveInvoice.
+    _claudeOn = !!_ctxStd.claudeOn;
+  } else {
   try {
     const _lsClaude = parseFloat(localStorage.getItem('claude_retain_' + (inv && inv.inv_no)) || 0);
     if (_lsClaude > 0.005) _claudeOn = true;
   } catch(e) {}
-  if (!_claudeOn) {
-    const _sa = ((typeof ALLOCATIONS !== 'undefined') ? ALLOCATIONS : []).find(a => a && a.inv_no === (inv && inv.inv_no) && (typeof isVoided !== 'function' || !isVoided('allocations', a.alloc_id)));
+  }
+  if (!_claudeOn && !_ctxStd) {
+    const _sa = _savedAlloc;
     _claudeOn = !!(_sa && parseFloat(_sa.claude_retain||0) > 0.005);
     // P1 (12 Aug 2026): no persisted Claude signal at all (no saved alloc row,
     // no localStorage key — a brand-new/unsaved invoice) → firm policy applies
@@ -4204,41 +4308,34 @@ function _bucketForLine(l, inv) {
   //   3. Derived from saved preparer_amt / reviewer_amt  (always available)
   //   4. Job-type default: 50 for cosec, 70 for standard
   const _isCosecLine = /cosec/i.test(invJob);
-  let _resolvedPrepPct = null;
-  // (1) explicit saved field
-  if (_savedAlloc && _savedAlloc.prep_pct != null && +_savedAlloc.prep_pct > 0 && +_savedAlloc.prep_pct < 100) {
-    _resolvedPrepPct = +_savedAlloc.prep_pct / 100;
-  }
-  // (2) localStorage fallback
-  if (_resolvedPrepPct === null) {
-    try {
-      const _lsP = parseFloat(localStorage.getItem('prep_pct_' + (inv && inv.inv_no)) || 0);
-      if (_lsP > 0 && _lsP < 100) _resolvedPrepPct = _lsP / 100;
-    } catch(e) {}
-  }
-  // (3) derive from saved amounts (no GAS changes needed; uses already-stored preparer_amt).
-  // SAFETY: only trust this derived ratio when the saved allocation's preparer/reviewer
-  // names actually match THIS line's people. On multi-line invoices where different lines
-  // have different prepOvr/revOvr (e.g. one line prepared by KC, another by ET), the saved
-  // preparer_amt/reviewer_amt is an invoice-wide aggregate that does NOT correspond to this
-  // line's split — applying it here silently perpetuated stale/wrong splits indefinitely.
-  if (_resolvedPrepPct === null && _savedAlloc &&
-      _norm(_savedAlloc.preparer_name || '') === linePrep &&
-      _norm(_savedAlloc.reviewer_name  || '') === lineRev) {
-    const _sP = parseFloat(_savedAlloc.preparer_amt || 0);
-    const _sR = parseFloat(_savedAlloc.reviewer_amt  || 0);
-    if (_sP + _sR > 0.01) _resolvedPrepPct = _sP / (_sP + _sR);
-  }
-  // (4) job-type default
-  const _linePrepPct = _resolvedPrepPct !== null ? _resolvedPrepPct : (_isCosecLine ? 0.50 : 0.70);
+  // (3) "derive from saved amounts" SAFETY (kept inside _resolvePrepPctFor): only
+  // trust the derived ratio when the saved allocation's preparer/reviewer names
+  // actually match THIS line's people. On multi-line invoices where different
+  // lines have different prepOvr/revOvr, the saved preparer_amt/reviewer_amt is
+  // an invoice-wide aggregate that does NOT correspond to this line's split.
+  const _linePrepPct = _resolvePrepPctFor(inv, _rolesStd, linePrep, lineRev, _isCosecLine ? 0.50 : 0.70);
+  // Koay's conditional commission (Boss ruling 30 Aug 2026, see _koayCommPctFor):
+  // MBRS reviewed by Koay → 30% automatic; Tax/Personal_Tax → 20% only when the
+  // invoice's "Koay commission — Tax comp portion" box is ticked. The tick is
+  // persisted on each Tax line as l.koayTaxComm by the modal (saveInvoice) so the
+  // live engine can reproduce the saved row without the modal being open.
+  // GUARD: for an already-saved invoice whose row carries NO Koay commission,
+  // the MBRS auto-rule is NOT retro-applied (it would move live away from a row
+  // the Boss has already accepted); the modal and brand-new invoices follow the
+  // rule in full, exactly as saveInvoice always did.
+  const _koayChecked = _ctxStd ? !!_ctxStd.koayTaxChecked : !!l.koayTaxComm;
+  let _koayPctStd = _koayCommPctFor(lineType, lineRev, _koayChecked);
+  if (_koayPctStd > 0 && !_ctxStd && !_koayChecked && _savedAlloc && !(parseFloat(_savedAlloc.koay_commission||0) > 0.005)) _koayPctStd = 0;
+  const _koayDeductStd = _koayPctStd > 0 ? r2(Math.max(0, amt - lineAbot) * _koayPctStd) : 0;
   const _cStd = computeAllocCore({
     amt: amt, abot: lineAbot, claudeOn: _claudeOn, retainPct: lineRetainPct,
-    kcBase: 'gross', prepPct: _linePrepPct,
+    kcBase: _kcBaseFor(inv && inv.inv_no) || 'net', prepPct: _linePrepPct, koayDeduct: _koayDeductStd,
     topUpEligible: topUpEnabled && isMbrs, topUpAmt: abotTopUp,
   });
   if (out.hasOwnProperty(linePrep)) out[linePrep] += _cStd.prep;
   if (out.hasOwnProperty(lineRev))  out[lineRev]  += _cStd.rev;
   out.KC     += _cStd.kc;
+  if (_koayDeductStd > 0) out.Koay += _koayDeductStd;
   out.retain += _cStd.retain;
   out.claude += _cStd.claude;
   out.abot   += _cStd.abotFirm;
@@ -4246,6 +4343,7 @@ function _bucketForLine(l, inv) {
   if (out.hasOwnProperty(lineRev))  { out.__d.revName = lineRev;  out.__d.revAmt  += _cStd.rev - _cStd.top; }
   out.__d.top20 += _cStd.top;
   out.__d.kcComm += _cStd.kc;
+  out.__d.koayComm += _koayDeductStd;
   return out;
 }
 
@@ -4264,12 +4362,40 @@ function _bucketForLine(l, inv) {
 //   mixed per-line preparers/reviewers) are EXCLUDED for manual handling —
 //   Boss ruling 12 Aug 2026: no silent sweeps into kc_commission.
 // - opts.dryRun: returns { ok, proposed, warnings } without writing.
-async function _liveResaveAlloc(invNo, opts) {
-  opts = opts || {};
-  const inv = (INVOICES||[]).find(i => i.inv_no === invNo);
+// P2b (16 Sep 2026): the row-building half of _liveResaveAlloc is now the shared
+// _buildAllocRowFromLines(inv, lines) so the invoice modal (saveInvoice) saves
+// EXACTLY what the live engine / Auto-sync would rebuild — one engine, one
+// single-row-per-invoice schema. Fixes from allocation-auto-sync-bugs.md:
+//   Bug 1 — job_type is resolved (inv.job_type → saved row → getInvJobType →
+//           first fee line's lineType) instead of always ''.
+//   Bug 2 — customSplit is authoritative (see _bucketForLine reorder); gross_fee
+//           is the FEE portion (non-Disb lines) so a Disb-flagged abot line no
+//           longer inflates it, while the cast check still ties to ALL lines.
+function _buildAllocRowFromLines(inv, lines) {
   if (!inv) return { ok: false, error: 'invoice not found' };
-  const lines = _parseInvLines(inv);
+  const invNo = inv.inv_no;
+  lines = lines || [];
   if (!lines.length) return { ok: false, error: 'no lines' };
+  const ctx = _modalCtxOf(inv);
+  const savedRow = (ALLOCATIONS||[]).filter(a => a.inv_no === invNo && !isVoided('allocations', a.alloc_id)).slice(-1)[0] || null;
+  // Job type (Bug 1): invoice → saved row → resolver → first fee line's type.
+  let jobType = String(inv.job_type || '').trim();
+  if (!jobType && savedRow && String(savedRow.job_type||'').trim()) jobType = String(savedRow.job_type).trim();
+  if (!jobType && typeof getInvJobType === 'function') { try { jobType = getInvJobType(inv) || ''; } catch(e) {} }
+  if (!jobType) { const _fl = lines.find(l => !l.isDisb && l.lineType); if (_fl) jobType = String(_fl.lineType).trim(); }
+  // SSM filing fee (Cosec_Other only) is invoice-level: attach it once to the
+  // first plain Cosec_Other fee line so the cosec branch deducts it.
+  const ssmFee = ctx ? (parseFloat(ctx.ssmFee) || 0) : (savedRow ? (parseFloat(savedRow.ssm_fee) || 0) : 0);
+  if (ssmFee > 0.005) {
+    let done = false;
+    lines = lines.map(l => {
+      const lt = String(l.lineType || jobType || '').trim();
+      if (!done && lt === 'Cosec_Other' && !l.isDisb && (!l.alloc || l.alloc === 'standard') && !l.customSplit && !l.horizontalAlloc) {
+        done = true; return Object.assign({}, l, { __ssmFee: ssmFee });
+      }
+      return l;
+    });
+  }
   const agg = { ET:0, Koay:0, Ivy:0, KC:0, Cecilia:0, retain:0, abot:0, disb:0, ceciliaFee:0, ssm:0, claude:0 };
   const d = { prepNames:{}, revNames:{}, prepAmt:0, revAmt:0, top20:0, kcComm:0, koayComm:0, cecFee:0, direct:{} };
   lines.forEach(l => {
@@ -4312,11 +4438,14 @@ async function _liveResaveAlloc(invNo, opts) {
   const drift = ['ET','Koay','Ivy','KC','Cecilia'].filter(p => Math.abs(agg[p] - _cov[p]) > 0.02);
   if (drift.length) return { ok:false, excluded:true, error:'slot coverage drift on ' + drift.join('/') + ' — handle manually in the allocation editor' };
   const gross = lines.reduce((s,l) => s + parseFloat(l.amt||0), 0);
+  // gross_fee = fee portion only (Disb-flagged lines excluded) — matches the
+  // saveInvoice convention "invoice.amount minus disbursement portion".
+  const feeGross = lines.reduce((s,l) => s + (l.isDisb ? 0 : parseFloat(l.amt||0)), 0);
   const proposed = {
     inv_id:          inv.inv_id,
     inv_no:          invNo,
-    job_type:        inv.job_type || '',
-    gross_fee:       r2(gross),
+    job_type:        jobType || '',
+    gross_fee:       r2(feeGross),
     disbursements:   r2(agg.disb),
     disb_amount:     r2(agg.disb),
     abot_cost:       r2(agg.abot + d.top20),
@@ -4332,7 +4461,14 @@ async function _liveResaveAlloc(invNo, opts) {
     reviewer_name:   revName,
     reviewer_amt:    r2(revFinal),
     reviewer_top20:  r2(d.top20),
-    prep_pct:        (prepFinal + revFinal > 0.01) ? Math.round(prepFinal / (prepFinal + revFinal) * 100) : '',
+    // prep_pct = the ROLE split actually applied by the formula lines (d.prepAmt /
+    // d.revAmt), NOT the slot totals — slot totals also carry direct customSplit
+    // credits (e.g. INV260905's ET 964.25), and saving that blended ratio as the
+    // prep % would feed a different split back into the next live calc (a
+    // self-inflicted "stale" loop). Falls back to the slot ratio only when no
+    // formula/role share exists.
+    prep_pct:        (d.prepAmt + d.revAmt > 0.01) ? Math.round(d.prepAmt / (d.prepAmt + d.revAmt) * 100)
+                   : ((prepFinal + revFinal > 0.01) ? Math.round(prepFinal / (prepFinal + revFinal) * 100) : ''),
   };
   // Casting check (same formula as the Allocation Freshness health check).
   const castSum = proposed.preparer_amt + proposed.reviewer_amt + proposed.kc_commission
@@ -4342,15 +4478,26 @@ async function _liveResaveAlloc(invNo, opts) {
   const castDiff = r2(gross - castSum);
   const warnings = [];
   if (Math.abs(castDiff) > 0.05) warnings.push('cast off by RM' + castDiff.toFixed(2));
-  const savedRow = (ALLOCATIONS||[]).filter(a => a.inv_no === invNo && !isVoided('allocations', a.alloc_id)).slice(-1)[0] || null;
   if (savedRow) {
     const _n = p => p === 'Koay PH' ? 'Koay' : (p || '');
     if (_n(savedRow.preparer_name) !== prepName || _n(savedRow.reviewer_name) !== revName)
       warnings.push('role change: ' + _n(savedRow.preparer_name) + '/' + _n(savedRow.reviewer_name) + ' → ' + (prepName||'—') + '/' + (revName||'—'));
     if (Math.abs(parseFloat(savedRow.reviewer_top20||0) - proposed.reviewer_top20) > 0.01)
       warnings.push('RM20 top-up: ' + parseFloat(savedRow.reviewer_top20||0).toFixed(0) + ' → ' + proposed.reviewer_top20.toFixed(0));
+    if (String(savedRow.job_type||'').trim() && String(savedRow.job_type).trim() !== proposed.job_type)
+      warnings.push('job type: ' + savedRow.job_type + ' → ' + (proposed.job_type||'—'));
   }
-  if (opts.dryRun) return { ok: true, proposed: proposed, warnings: warnings, castDiff: castDiff, saved: savedRow };
+  return { ok: true, proposed: proposed, warnings: warnings, castDiff: castDiff, saved: savedRow, gross: r2(gross) };
+}
+
+async function _liveResaveAlloc(invNo, opts) {
+  opts = opts || {};
+  const inv = (INVOICES||[]).find(i => i.inv_no === invNo);
+  if (!inv) return { ok: false, error: 'invoice not found' };
+  const built = _buildAllocRowFromLines(inv, _parseInvLines(inv));
+  if (!built.ok) return built;
+  const proposed = built.proposed, castDiff = built.castDiff;
+  if (opts.dryRun) return built;
   if (Math.abs(castDiff) > 0.05) return { ok:false, excluded:true, error:'proposed row does not cast to gross (off RM' + castDiff.toFixed(2) + ') — not saved' };
   const res = await api({ action: 'save_allocation', data: proposed });
   try {
@@ -4408,8 +4555,9 @@ async function syncStaleAllocations() {
     }
     const p = x.r.proposed, s = x.r.saved || {};
     const warn = (x.r.warnings && x.r.warnings.length) ? '<div style="font-size:9.5px;color:#b45309;margin-top:2px">⚠ ' + x.r.warnings.join(' · ') + '</div>' : '';
+    const jt = '<div style="font-size:9.5px;color:var(--text3)">' + (p.job_type || '<span style="color:#b91c1c">no job type</span>') + (s.job_type && s.job_type !== p.job_type ? ' <span style="color:#b45309">(was ' + s.job_type + ')</span>' : '') + '</div>';
     return '<tr style="border-bottom:1px solid var(--border)">'
-      + '<td style="padding:4px 6px;font-size:11px">' + x.invNo + warn + '</td>'
+      + '<td style="padding:4px 6px;font-size:11px">' + x.invNo + jt + warn + '</td>'
       + '<td style="padding:4px 6px;font-size:11px">' + x.client + '</td>'
       + '<td style="padding:4px 6px;font-size:11px">' + (p.preparer_name||'—') + (s.preparer_name && s.preparer_name !== p.preparer_name ? '<div style="font-size:9px;color:var(--text3)">was ' + s.preparer_name + '</div>' : '') + '</td>'
       + cell(p.preparer_amt, s.preparer_amt)
@@ -8630,6 +8778,8 @@ async function openInvoiceModal(id) {
         addInvLine('Disbursements', _legacyDisb, true);
     }
     onJobTypeChange();
+    // P2b (16 Sep 2026): restore the Koay-Tax tick from the persisted line flag.
+    try { const _kt = document.getElementById('inv-koay-tax-comm'); if (_kt) _kt.checked = !!(_parsedLines || []).some(l => l && l.koayTaxComm); } catch(e) {}
     // Compute totals from the just-loaded lines so inv-amount / inv-disb are populated
     try { recalcInvLines(); } catch(e) {}
     try { _refreshAllLineTypeBadges(); } catch(e) {}
@@ -8640,6 +8790,13 @@ async function openInvoiceModal(id) {
       document.getElementById('inv-preparer').value   = a.preparer_name || 'ET';
       document.getElementById('inv-reviewer').value   = a.reviewer_name || 'KC';
       document.getElementById('inv-ssm-fee').value    = a.ssm_fee || 0;
+      // P2b (16 Sep 2026): invoices saved BEFORE the line flag existed — infer the
+      // Koay-Tax tick from the saved row so a re-save doesn't silently drop it.
+      try {
+        const _ktEl = document.getElementById('inv-koay-tax-comm');
+        const _jtK = (document.getElementById('inv-job-type')||{}).value || '';
+        if (_ktEl && !_ktEl.checked && (_jtK === 'Tax' || _jtK === 'Personal_Tax') && parseFloat(a.koay_commission||0) > 0.005) _ktEl.checked = true;
+      } catch(e) {}
       // Map back stored abot_cost → dropdown value.
       // For Type A jobs (MBRS/Tax/FS/Bookkeeping), abot_cost=0 means the old formula
       // didn't deduct Abot — default to standard (RM50) so re-saves use the correct formula.
@@ -8681,6 +8838,7 @@ async function openInvoiceModal(id) {
     ['inv-client-name','inv-billing-party','inv-billing-addr'].forEach(f => document.getElementById(f).value = '');
     clearInvLines();
     addInvLine();
+    try { const _ktN = document.getElementById('inv-koay-tax-comm'); if (_ktN) _ktN.checked = false; } catch(e) {}
     document.getElementById('inv-ssm-fee').value = '0';
     document.getElementById('inv-large-abot').value = 'false'; // default to standard RM50 abot for new Type A invoices
     document.getElementById('alloc-preview').style.display = 'none';
@@ -8718,7 +8876,20 @@ function recalcAllocation() {
   const preparer = document.getElementById('inv-preparer').value;
   const reviewer = document.getElementById('inv-reviewer').value;
 
-  if (!gross) { document.getElementById('alloc-preview').style.display = 'none'; return; }
+  if (!gross) {
+    // P2b (16 Sep 2026): no pooled standard fee (e.g. every line is a custom
+    // split / reimbursement) — still show what the per-line engine will save.
+    let _canon0 = null;
+    try { _canon0 = (typeof _modalCanonicalAlloc === 'function') ? _modalCanonicalAlloc() : null; } catch(e) {}
+    if (_canon0 && _canon0.ok) {
+      document.getElementById('alloc-preview-rows').innerHTML = '';
+      _renderCanonAllocPreview(_canon0);
+      document.getElementById('alloc-preview').style.display = '';
+    } else {
+      document.getElementById('alloc-preview').style.display = 'none';
+    }
+    return;
+  }
 
   const adminPct = parseFloat(getSetting('admin_retain_pct', 0.15));
   const kcPct    = parseFloat(getSetting('kc_commission_pct', 0.10));
@@ -8840,6 +9011,8 @@ function recalcAllocation() {
     extraHtml += '</div>';
     document.getElementById('alloc-preview-rows').insertAdjacentHTML('beforeend', extraHtml);
   }
+  // P2b (16 Sep 2026): show the row the canonical per-line engine will SAVE.
+  try { if (typeof _modalCanonicalAlloc === 'function') _renderCanonAllocPreview(_modalCanonicalAlloc()); } catch(e) {}
   document.getElementById('alloc-preview').style.display = '';
 }
 
@@ -8964,12 +9137,38 @@ async function saveInvoice() {
     : amount;
   if (_allLinesTotal <= 0) { toast('Please add at least one line with an amount.', 'error'); return; }
 
+  // §6 item 4 (16 Sep handover; 12-Aug "no silent sweeps" ruling; flagged by
+  // the Step 1 session in allocation-auto-sync-bugs.md). Previously, when the
+  // per-line engine (_buildAllocRowFromLines) could not represent an invoice
+  // in the single-allocation-row schema — mixed preparers or reviewers across
+  // lines, a customSplit/direct credit paying someone the 4 slots can't hold,
+  // or slot-coverage drift (collectively its `excluded` cases) — saveInvoice
+  // still wrote the invoice AND a legacy pooled-formula allocation row to the
+  // Sheet, only showing an error toast afterward. The wrong-formula row was
+  // saved either way; the toast is easy to miss. Now the WHOLE save (invoice
+  // + allocation) is refused up front so nothing is written — the user must
+  // fix the lines (e.g. split into separate invoices, or use Custom Split)
+  // before anything saves. This check is scoped to `excluded` only — it does
+  // NOT block legacy no-JSON-lines invoices or pure cast-diff drift, which
+  // keep the existing (unchanged) legacy-formula-with-toast fallback below.
+  try {
+    const _preGateInv = _modalInvForEngine();
+    const _preGate = _buildAllocRowFromLines(_preGateInv, _parseInvLines(_preGateInv));
+    if (_preGate && _preGate.excluded) {
+      toast('Not saved — ' + (_preGate.error || 'per-line engine cannot build a single allocation row') + '.', 'error');
+      return;
+    }
+  } catch(e) { console.warn('pre-save mixed-preparer gate failed', e); }
+
   _savingInvoice = true;
   const btn = document.querySelector('#modal-invoice .btn-primary');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   try {
 
   const _invLines = getInvLines();
+  // P2b (16 Sep 2026): persist the Koay-Tax tick on the Tax lines themselves so
+  // the live engine (Invoice Breakdown / Freshness / Auto-sync) reproduces it.
+  try { _stampKoayTaxOnLines(_invLines, !!(document.getElementById('inv-koay-tax-comm')||{}).checked, document.getElementById('inv-job-type').value); } catch(e) {}
   const data = {
     inv_id:       editingInvId,
     inv_no,
@@ -9255,6 +9454,33 @@ async function saveInvoice() {
     // inv-claude-retain field populated by recalcAllocation.
     claude_retain: parseFloat((document.getElementById('inv-claude-retain')||{}).value || 0),
   };
+  // ═══ P2b (16 Sep 2026): CANONICAL ENGINE ═══
+  // The row actually saved comes from _buildAllocRowFromLines(_bucketForLine) —
+  // the same per-line engine the Invoice Breakdown, Allocation Freshness check
+  // and Auto-sync rebuild use — so a freshly saved invoice can never be "stale"
+  // by construction. The legacy pooled formula above is kept ONLY as a fallback
+  // for invoices the single-row schema cannot represent (mixed preparers /
+  // reviewers across lines, 3+ beneficiaries, coverage drift); in that case the
+  // user is told explicitly. Schema is unchanged: still one row per invoice.
+  try {
+    const _canonInv = _modalInvForEngine();
+    _canonInv.inv_id = res.inv_id || editingInvId;
+    const _canon = _buildAllocRowFromLines(_canonInv, _parseInvLines(_canonInv));
+    if (_canon && _canon.ok && Math.abs(_canon.castDiff || 0) <= 0.05) {
+      const p = _canon.proposed;
+      ['gross_fee','disbursements','abot_cost','cecilia_fee','ssm_fee','admin_retain','kc_commission','koay_commission',
+       'net_for_split','preparer_name','preparer_amt','reviewer_name','reviewer_amt','reviewer_top20','claude_retain']
+        .forEach(k => { allocData[k] = p[k]; });
+      allocData.prep_pct = (p.prep_pct !== '' && p.prep_pct > 0 && p.prep_pct < 100) ? p.prep_pct : null;
+      allocData.job_type = jobType || p.job_type || '';
+      // Keep the hidden Claude field in step (Retention Reconciliation reads it via localStorage below).
+      const _crElC = document.getElementById('inv-claude-retain'); if (_crElC) _crElC.value = (+p.claude_retain || 0).toFixed(2);
+    } else {
+      const _why = (_canon && (_canon.error || (Math.abs(_canon.castDiff||0) > 0.05 ? 'proposed row does not cast to gross (off RM' + (+_canon.castDiff).toFixed(2) + ')' : ''))) || 'engine error';
+      console.warn('saveInvoice: per-line engine could not build the row (' + _why + ') — legacy formula saved for ' + inv_no);
+      try { toast('Allocation saved with the LEGACY formula — per-line engine: ' + _why + '. Review it in the allocation editor.', 'error'); } catch(e) {}
+    }
+  } catch(e) { console.warn('saveInvoice: canonical engine failed, legacy formula saved', e); }
   // localStorage fallback — backend may not have a claude_retain column yet.
   // Persist the value (or '0' when disabled) so Invoice Breakdown +
   // Retention Reconciliation can read it after a page refresh.
@@ -9553,6 +9779,85 @@ function getInvLines() {
     retainOvr: (row.querySelector('.inv-line-retain-ovr') || { value: '' }).value,
     lineType:  (row.querySelector('.inv-line-type')       || { value: '' }).value,
   }));
+}
+
+// ── P2b (16 Sep 2026): canonical per-line engine for the invoice modal ──────
+// Builds a SYNTHETIC invoice object from the open modal (lines + roles + flags)
+// so _bucketForLine / _buildAllocRowFromLines can compute the allocation row the
+// same way the live Invoice Breakdown, the Allocation Freshness check and the
+// Auto-sync rebuild do. saveInvoice() saves this row; recalcInvLines() previews it.
+function _stampKoayTaxOnLines(lines, koayTaxOn, invJobType) {
+  // Persist the "Koay commission — Tax comp portion (20%)" tick on each Tax /
+  // Personal_Tax fee line (l.koayTaxComm) so the live engine can reproduce the
+  // saved row later without the modal being open. Cleared when unticked.
+  (lines || []).forEach(l => {
+    if (!l) return;
+    const lt = String(l.lineType || invJobType || '').trim();
+    const isTax = (lt === 'Tax' || lt === 'Personal_Tax');
+    if (koayTaxOn && isTax && !l.isDisb && (!l.alloc || l.alloc === 'standard')) l.koayTaxComm = true;
+    else delete l.koayTaxComm;
+  });
+  return lines;
+}
+function _modalInvForEngine() {
+  const g = id => document.getElementById(id) || {};
+  const inv_no = String(g('inv-no').value || '').trim();
+  const jobType = String(g('inv-job-type').value || '').trim();
+  const lines = (typeof getInvLines === 'function') ? getInvLines() : [];
+  _stampKoayTaxOnLines(lines, !!g('inv-koay-tax-comm').checked, jobType);
+  const _pp = parseFloat(g('inv-prep-pct').value);
+  return {
+    inv_id:   (typeof editingInvId !== 'undefined') ? editingInvId : null,
+    inv_no:   inv_no,
+    job_type: jobType,
+    desc1:    JSON.stringify(lines),
+    __modal: {
+      preparer:       String(g('inv-preparer').value || ''),
+      reviewer:       String(g('inv-reviewer').value || ''),
+      prepPct:        (!isNaN(_pp) && _pp > 0 && _pp < 100) ? _pp / 100 : null,
+      claudeOn:       _claudePolicyOn(inv_no),
+      koayTaxChecked: !!g('inv-koay-tax-comm').checked,
+      ssmFee:         parseFloat(g('inv-ssm-fee').value || 0) || 0,
+    },
+  };
+}
+// Returns _buildAllocRowFromLines() result for the open modal (or null on error).
+function _modalCanonicalAlloc() {
+  try {
+    const inv = _modalInvForEngine();
+    return _buildAllocRowFromLines(inv, _parseInvLines(inv));
+  } catch(e) { console.warn('canonical alloc preview failed', e); return null; }
+}
+// Renders the canonical row under the legacy formula preview so the user sees
+// exactly what will be SAVED (per-line engine), not just the pooled formula.
+function _renderCanonAllocPreview(res) {
+  const host = document.getElementById('alloc-preview-rows');
+  if (!host) return;
+  host.querySelector('#alloc-canon-block')?.remove();
+  if (!res) return;
+  const fmt = n => 'RM ' + (parseFloat(n) || 0).toFixed(2);
+  let html = '<div id="alloc-canon-block" style="margin-top:8px;padding:8px;border-top:1px dashed var(--border);font-size:11px;color:var(--text2)">';
+  if (!res.ok) {
+    html += '<strong style="color:#b45309">Per-line engine:</strong> ' + (res.error || 'cannot build a single allocation row') + ' — the legacy formula above will be saved.';
+  } else {
+    const p = res.proposed;
+    html += '<strong>Will save (per-line engine):</strong>'
+      + ' · ' + (p.preparer_name || '—') + ' (prep) <strong style="color:var(--text)">' + fmt(p.preparer_amt) + '</strong>'
+      + ' · ' + (p.reviewer_name || '—') + ' (rev) <strong style="color:var(--text)">' + fmt(p.reviewer_amt) + '</strong>'
+      + ' · KC comm ' + fmt(p.kc_commission)
+      + (p.koay_commission > 0.005 ? ' · Koay comm ' + fmt(p.koay_commission) : '')
+      + ' · Retain ' + fmt(p.admin_retain)
+      + (p.claude_retain > 0.005 ? ' · Claude ' + fmt(p.claude_retain) : '')
+      + (p.abot_cost > 0.005 ? ' · Abot ' + fmt(p.abot_cost) : '')
+      + (p.cecilia_fee > 0.005 ? ' · Cecilia ' + fmt(p.cecilia_fee) : '')
+      + (p.ssm_fee > 0.005 ? ' · SSM ' + fmt(p.ssm_fee) : '')
+      + (p.disbursements > 0.005 ? ' · Disb ' + fmt(p.disbursements) : '')
+      + (p.reviewer_top20 > 0.005 ? ' · RM20 top-up ' + fmt(p.reviewer_top20) : '');
+    if (Math.abs(res.castDiff || 0) > 0.05) html += ' · <span style="color:#b91c1c">cast off by ' + fmt(res.castDiff) + '</span>';
+    if (res.warnings && res.warnings.length) html += '<div style="font-size:10px;color:#b45309;margin-top:2px">⚠ ' + res.warnings.filter(w => !/^cast off/.test(w)).join(' · ') + '</div>';
+  }
+  html += '</div>';
+  host.insertAdjacentHTML('beforeend', html);
 }
 
 function toggleLineAdv(btn) {
