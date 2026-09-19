@@ -4531,8 +4531,15 @@ async function voidCancelledAllocs() {
 // Nothing is written until the user clicks Apply on a specific invoice row.
 // 16 Sep 2026: Apply DISABLED until _liveResaveAlloc Bug 1 (always proposes blank
 // job_type) and Bug 2 (ignores line customSplit) are fixed -- see
-// LE\allocation-auto-sync-bugs.md. Dry-run preview stays available (read-only).
-const AUTOSYNC_APPLY_ENABLED = false;
+// LE\allocation-auto-sync-bugs.md.
+// 19 Sep 2026: RE-ENABLED. _buildAllocRowFromLines rewrite (P2b, 16 Sep) fixes
+// both bugs. Verified via live dry-run sweep of all 95 structured-line invoices:
+// 0 blank job_types, 0 cast mismatches, 0 unexpected job_type changes across the
+// 86 that propose cleanly. INV260905/906/907 (the Bug 2 repro cases) no longer
+// fabricate a Koay commission -- they now correctly EXCLUDE as "pays people the
+// 4 slots cannot represent," same as the other 6 legitimate mixed-preparer/
+// mixed-reviewer/multi-party exclusions. No silent sweeps observed.
+const AUTOSYNC_APPLY_ENABLED = true;
 async function syncStaleAllocations() {
   const stale = (window.__STALE_INV_NOS || []);
   if (!stale.length) { try { toast('No stale invoices to sync.', 'info'); } catch(e){} return; }
