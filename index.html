@@ -13051,7 +13051,21 @@ function navigateAllocEdit(dir) {
   openAllocEdit(list[next].alloc);
 }
 
-async function saveAllocEdit() {
+function ibGetLinedefs(invNo) {
+  try {
+  const raw = localStorage.getItem(`ib_linedefs_${invNo}`);
+  if (!raw) return [];
+  const lds = JSON.parse(raw);
+  return Array.isArray(lds) ? lds : [];
+  } catch (e) { return []; }
+  }
+  function ibSetLinedefs(invNo, arr) {
+  try {
+  localStorage.setItem(`ib_linedefs_${invNo}`, JSON.stringify(arr || []));
+  } catch (e) {}
+  }
+  
+  async function saveAllocEdit() {
   const inv_no     = document.getElementById('ae-inv-no').value;
   const inv        = INVOICES.find(i => i.inv_no === inv_no) || {};
   const oldAllocId = document.getElementById('ae-alloc-id').value;
