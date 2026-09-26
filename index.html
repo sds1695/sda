@@ -2293,8 +2293,8 @@
         <div class="form-field"><label>Category (driven by Chart of Accounts)</label>
           <select id="pv-category" onchange="pvAutoDesc()"><option value="">— pick category —</option></select>
         </div>
-        <div class="form-field"><label title="Optional — tags this voucher to a client so it shows up under Unbilled Disbursements until you bill it back.">Client <span style="font-weight:400;color:var(--text3);font-size:11px">(optional)</span></label>
-          <select id="pv-client" style="min-width:0;max-width:100%"><option value="">— none —</option></select>
+        <div class="form-field" style="min-width:0"><label title="Optional — tags this voucher to a client so it shows up under Unbilled Disbursements until you bill it back.">Client <span style="font-weight:400;color:var(--text3);font-size:11px">(optional)</span></label>
+          <select id="pv-client" style="min-width:0;max-width:100%;width:100%;text-overflow:ellipsis"><option value="">— none —</option></select>
         </div>
         <div class="form-field form-full"><label>Paid From Account</label>
           <select id="pv-account">
