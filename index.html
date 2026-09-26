@@ -7099,6 +7099,22 @@ async function loadClients() {
     const withSvc = CLIENTS.filter(c => c.services).length;
     const withYE  = CLIENTS.filter(c => c.year_end).length;
     _setClientsSyncStatus && _setClientsSyncStatus(`${CLIENTS.length} clients loaded from sheet · ${withYE} year-end · ${withSvc} services`);
+    // Re-populate the voucher modal's Client dropdown if it's open right now —
+    // covers the case where "+ New Voucher" is clicked before this initial
+    // CLIENTS fetch finishes (added 2026-09-27, fixes empty dropdown race).
+    try {
+      const pvCliSel = document.getElementById('pv-client');
+      const pvModalOpen = document.getElementById('modal-voucher')?.classList.contains('open');
+      if (pvCliSel && pvModalOpen) {
+        const _prevVal = pvCliSel.value;
+        pvCliSel.innerHTML = '<option value="">— none —</option>' + (CLIENTS||[])
+          .filter(c => !((typeof getDeletedClients==='function'?getDeletedClients():[]).map(String).includes(String(c.client_id))))
+          .sort((a,b) => (a.name||'').localeCompare(b.name||''))
+          .map(c => `<option value="${c.client_id}">${c.name}${c.reg_no?' ('+c.reg_no+')':''}</option>`)
+          .join('');
+        pvCliSel.value = _prevVal;
+      }
+    } catch(e) { console.warn('pv-client re-populate on loadClients failed', e); }
   } else {
     _setClientsSyncStatus && _setClientsSyncStatus('Could not load from sheet — using cache', true);
   }
