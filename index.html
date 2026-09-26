@@ -1167,6 +1167,7 @@
             <option value="category-asc">Category A→Z</option>
             <option value="ref-desc">Voucher No ↓</option>
           </select>
+          <button class="btn btn-secondary" onclick="openUnbilledDisbModal()">Unbilled Disbursements</button>
           <button class="btn btn-primary" onclick="openVoucherModal()">+ New Voucher</button>
         </div>
       </div>
@@ -2292,6 +2293,9 @@
         <div class="form-field"><label>Category (driven by Chart of Accounts)</label>
           <select id="pv-category" onchange="pvAutoDesc()"><option value="">— pick category —</option></select>
         </div>
+        <div class="form-field"><label>Client <span style="font-weight:400;color:var(--text3);font-size:11px">— optional, for unbilled disbursement tracking</span></label>
+          <select id="pv-client"><option value="">— none —</option></select>
+        </div>
         <div class="form-field form-full"><label>Paid From Account</label>
           <select id="pv-account">
             <option value="bank">Bank — CIMB 8606183963</option>
@@ -2327,6 +2331,23 @@
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-voucher')">Cancel</button>
       <button class="btn btn-primary" onclick="saveVoucher()">Save Voucher</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL: UNBILLED DISBURSEMENTS ══ -->
+<div class="modal-overlay" id="modal-unbilled-disb">
+  <div class="modal" style="max-width:640px">
+    <div class="modal-header">
+      <div class="modal-title">Unbilled Disbursements</div>
+      <button class="modal-close" onclick="closeModal('modal-unbilled-disb')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:12px;color:var(--text3);margin-bottom:10px">Payment vouchers tagged to a client that aren't yet linked to any invoice — pull these up when preparing the next bill.</div>
+      <div id="unbilled-disb-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-unbilled-disb')">Close</button>
     </div>
   </div>
 </div>
@@ -13051,21 +13072,7 @@ function navigateAllocEdit(dir) {
   openAllocEdit(list[next].alloc);
 }
 
-function ibGetLinedefs(invNo) {
-  try {
-  const raw = localStorage.getItem(`ib_linedefs_${invNo}`);
-  if (!raw) return [];
-  const lds = JSON.parse(raw);
-  return Array.isArray(lds) ? lds : [];
-  } catch (e) { return []; }
-  }
-  function ibSetLinedefs(invNo, arr) {
-  try {
-  localStorage.setItem(`ib_linedefs_${invNo}`, JSON.stringify(arr || []));
-  } catch (e) {}
-  }
-  
-  async function saveAllocEdit() {
+async function saveAllocEdit() {
   const inv_no     = document.getElementById('ae-inv-no').value;
   const inv        = INVOICES.find(i => i.inv_no === inv_no) || {};
   const oldAllocId = document.getElementById('ae-alloc-id').value;
@@ -15113,6 +15120,16 @@ async function openVoucherModal(isEdit) {
   document.getElementById('pv-account').value = 'bank';
   document.getElementById('pv-sel-count').textContent = '— none selected';
   document.getElementById('pv-inv-list').innerHTML = '<div style="padding:12px;color:var(--text3);font-size:13px">Select a payee to load invoices…</div>';
+  // Populate optional Client dropdown (for unbilled disbursement tracking) — same pattern as so-client
+  const pvCliSel = document.getElementById('pv-client');
+  if (pvCliSel) {
+    pvCliSel.innerHTML = '<option value="">— none —</option>' + (CLIENTS||[])
+      .filter(c => !((typeof getDeletedClients==='function'?getDeletedClients():[]).map(String).includes(String(c.client_id))))
+      .sort((a,b) => (a.name||'').localeCompare(b.name||''))
+      .map(c => `<option value="${c.client_id}">${c.name}${c.reg_no?' ('+c.reg_no+')':''}</option>`)
+      .join('');
+    pvCliSel.value = '';
+  }
   onPayeeChange();
   openModal('modal-voucher');
 }
@@ -15131,6 +15148,7 @@ function openVoucherEdit(v) {
   document.getElementById('pv-amount').value   = v.amount || '';
   document.getElementById('pv-desc').value     = v.description || '';
   document.getElementById('pv-account').value  = v.payment_account || 'bank';
+  if (document.getElementById('pv-client')) document.getElementById('pv-client').value = v.client_id || '';
   if (v.payee) {
     document.getElementById('pv-payee').value = v.payee;
     // Restore ALL previously selected invoices from ref_inv_nos (comma-separated inv nos)
@@ -15152,6 +15170,64 @@ function openVoucherEditById(id) {
   const v = VOUCHERS.find(x => (x.voucher_id||x.id||'').toString() === id.toString());
   if (!v) { toast('Voucher not found — please reload the page.', 'error'); return; }
   openVoucherEdit(v);
+}
+
+// ── Unbilled Disbursements (added 2026-09-26) ────────────────────────────
+// Lists payment vouchers tagged with a client (pv-client / client_id) that
+// are NOT yet linked to any invoice (ref_inv_id and ref_inv_nos both blank).
+// Purely additive — reads existing VOUCHERS/CLIENTS, writes nothing.
+function openUnbilledDisbModal() {
+  const list = document.getElementById('unbilled-disb-list');
+  const unbilled = (VOUCHERS||[]).filter(v => {
+    if (!v || !v.client_id) return false;
+    if ((v.description||'').startsWith('__VOID__')) return false;
+    if (v.ref_inv_id || v.ref_inv_nos) return false;
+    return true;
+  });
+  if (!unbilled.length) {
+    list.innerHTML = '<div style="padding:16px;color:var(--text3);font-size:13px;text-align:center">No unbilled disbursements — every client-tagged voucher is already linked to an invoice.</div>';
+    openModal('modal-unbilled-disb');
+    return;
+  }
+  // Group by client
+  const byClient = {};
+  unbilled.forEach(v => {
+    const cid = v.client_id;
+    if (!byClient[cid]) byClient[cid] = [];
+    byClient[cid].push(v);
+  });
+  const clientName = cid => {
+    const c = (CLIENTS||[]).find(x => String(x.client_id) === String(cid));
+    return c ? c.name : `(client ${cid})`;
+  };
+  let grandTotal = 0;
+  const blocks = Object.keys(byClient)
+    .sort((a,b) => clientName(a).localeCompare(clientName(b)))
+    .map(cid => {
+      const rows = byClient[cid].slice().sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
+      const subtotal = rows.reduce((s,v) => s + parseFloat(v.amount||0), 0);
+      grandTotal += subtotal;
+      const rowsHtml = rows.map(v => `
+        <tr>
+          <td style="font-size:12px;color:var(--text2)">${formatDate(v.date)}</td>
+          <td style="font-family:'DM Mono',monospace;font-size:12px">${v.voucher_no||'—'}</td>
+          <td style="font-size:12px;color:var(--text2)">${v.description||'—'}</td>
+          <td style="font-family:'DM Mono',monospace;font-weight:600;text-align:right">RM ${parseFloat(v.amount||0).toLocaleString('en-MY',{minimumFractionDigits:2})}</td>
+        </tr>`).join('');
+      return `
+        <div style="margin-bottom:14px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+          <div style="padding:8px 12px;background:var(--bg);font-weight:600;font-size:13px;display:flex;justify-content:space-between">
+            <span>${clientName(cid)}</span>
+            <span>RM ${subtotal.toLocaleString('en-MY',{minimumFractionDigits:2})}</span>
+          </div>
+          <table style="width:100%"><tbody>${rowsHtml}</tbody></table>
+        </div>`;
+    }).join('');
+  list.innerHTML = blocks + `
+    <div style="display:flex;justify-content:space-between;padding:10px 12px;font-weight:700;font-size:14px;border-top:2px solid var(--border);margin-top:4px">
+      <span>Grand Total</span><span>RM ${grandTotal.toLocaleString('en-MY',{minimumFractionDigits:2})}</span>
+    </div>`;
+  openModal('modal-unbilled-disb');
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -16365,6 +16441,7 @@ async function saveVoucher() {
     payee_nominee:   nomineeMap[payee] || payee,
     amount,
     category:        document.getElementById('pv-category').value,
+    client_id:       document.getElementById('pv-client')?.value || '',
     description:     desc || autoDesc,
     ref_inv_id:      refInvId,
     ref_inv_nos:     refInvNos.join(', '),
