@@ -1605,6 +1605,7 @@
     </div>
     <div class="modal-body">
       <div id="inv-modal-drafts-banner" style="display:none;margin-bottom:14px"></div>
+      <div id="inv-unbilled-disb-banner" style="display:none;margin-bottom:14px"></div>
       <div class="form-grid">
         <div class="form-field">
           <label>Invoice No.</label>
@@ -8721,11 +8722,13 @@ async function openInvoiceModal(id) {
   _populateAllocDropdowns();
   // Hide draft banner by default — it only shows on fresh New Invoice opens
   try { const _db = document.getElementById('inv-modal-drafts-banner'); if (_db) { _db.style.display = 'none'; _db.innerHTML = ''; } } catch(e) {}
+  try { const _ub = document.getElementById('inv-unbilled-disb-banner'); if (_ub) { _ub.style.display = 'none'; _ub.innerHTML = ''; } } catch(e) {}
   onJobTypeChange();
 
   if (id) {
     const inv = INVOICES.find(x => String(x.inv_id) === String(id));
     if (!inv) return;
+    try { _showUnbilledDisbReminder(inv.client_id); } catch(e) {}
     document.getElementById('inv-modal-title').textContent = 'Edit Invoice — ' + inv.inv_no;
     document.getElementById('inv-no').value            = inv.inv_no;
     // Parse date robustly — backend returns "Sun Jan 04 2026 00:00:00 GMT+0800..." which slice(0,10) breaks
@@ -13176,7 +13179,7 @@ async function saveAllocEdit() {
       _newAlloc = (ALLOCATIONS||[]).find(a => a.inv_no === inv_no && !_preAllocIds.has(String(a.alloc_id||'')));
       const _newAllocId = _newAlloc ? (_newAlloc.alloc_id || '') : '';
       if (_newAllocId) _allocCacheSave(_newAlloc); // write-ahead: survive full page refresh if GAS cache stale
-      if (_newAllocId) {
+      if (_newAllocId && typeof ibGetLinedefs === 'function') {
         const _ibInvNo = window._ae_ib_inv_no || inv_no;
         const _ldi     = window._ae_ib_ldi;   // hint — position of ghost row clicked; not always reliable
         const _ldArr   = ibGetLinedefs(_ibInvNo);
@@ -15229,6 +15232,10 @@ function openUnbilledDisbModal() {
           <td style="font-family:'DM Mono',monospace;font-size:12px">${v.voucher_no||'—'}</td>
           <td style="font-size:12px;color:var(--text2)">${v.description||'—'}</td>
           <td style="font-family:'DM Mono',monospace;font-weight:600;text-align:right">RM ${parseFloat(v.amount||0).toLocaleString('en-MY',{minimumFractionDigits:2})}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 6px" onclick="closeModal('modal-unbilled-disb');openVoucherEditById('${v.voucher_id||v.id}')">Edit</button>
+            <button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 6px;color:var(--danger,#c0392b)" onclick="_deleteVoucherAndRefreshUnbilled('${v.voucher_id||v.id}','${(v.voucher_no||'').replace(/'/g,"\\'")}')">Delete</button>
+          </td>
         </tr>`).join('');
       return `
         <div style="margin-bottom:14px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
@@ -15244,6 +15251,27 @@ function openUnbilledDisbModal() {
       <span>Grand Total</span><span>RM ${grandTotal.toLocaleString('en-MY',{minimumFractionDigits:2})}</span>
     </div>`;
   openModal('modal-unbilled-disb');
+}
+
+// Delete a voucher from within the Unbilled Disbursements modal, then
+// re-render the list in place so it stays in sync (deleteVoucher() itself
+// only refreshes the main Payment Vouchers table, not this modal).
+async function _deleteVoucherAndRefreshUnbilled(id, label) {
+  await deleteVoucher(id, label);
+  openUnbilledDisbModal();
+}
+
+// Returns unbilled (client-tagged, not void, not yet linked to an invoice)
+// vouchers for one client — same test as openUnbilledDisbModal, factored
+// out so the New Invoice modal can reuse it for the reminder banner.
+function _getUnbilledDisbForClient(clientId) {
+  if (!clientId) return [];
+  return (VOUCHERS||[]).filter(v => {
+    if (!v || String(v.client_id) !== String(clientId)) return false;
+    if ((v.description||'').startsWith('__VOID__')) return false;
+    if (v.ref_inv_id || v.ref_inv_nos) return false;
+    return true;
+  });
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -16990,6 +17018,7 @@ function selectClient(id) {
   document.getElementById('inv-billing-party').value = c.billing_party;
   document.getElementById('inv-billing-addr').value  = stripPartyFromAddr(c.billing_party, c.billing_addr);
   document.getElementById('client-suggestions').innerHTML = '';
+  _showUnbilledDisbReminder(id);
   // Auto-fill description based on job type
   const jt = document.getElementById('inv-job-type').value;
   const descMap = {
@@ -17014,6 +17043,24 @@ function selectClient(id) {
       addInvLine(presetDesc);
     }
   }
+}
+
+// Shows a reminder banner in the New/Edit Invoice modal when the selected
+// client has payment vouchers tagged to them that aren't yet on any invoice.
+// Read-only nudge — does not modify any voucher or add invoice lines itself.
+function _showUnbilledDisbReminder(clientId) {
+  const host = document.getElementById('inv-unbilled-disb-banner');
+  if (!host) return;
+  const unbilled = _getUnbilledDisbForClient(clientId);
+  if (!unbilled.length) { host.style.display = 'none'; host.innerHTML = ''; return; }
+  const total = unbilled.reduce((s,v) => s + parseFloat(v.amount||0), 0);
+  host.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--warn-bg,#fff8e1);border:1px solid var(--warn-border,#f0d878);border-radius:6px;font-size:12.5px">
+      <span>⚠️</span>
+      <span style="flex:1">This client has <strong>${unbilled.length}</strong> unbilled disbursement voucher${unbilled.length>1?'s':''} totalling <strong>RM ${total.toLocaleString('en-MY',{minimumFractionDigits:2})}</strong> not yet on an invoice.</span>
+      <button type="button" class="btn btn-ghost btn-sm" style="font-size:11px;padding:3px 8px" onclick="openUnbilledDisbModal()">View</button>
+    </div>`;
+  host.style.display = 'block';
 }
 
 function stripPartyFromAddr(party, addr) {
