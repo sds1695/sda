@@ -4156,7 +4156,14 @@ function _bucketForLine(l, inv) {
     });
     return out;
   }
-  if (l.isDisb) { out.disb += amt; return out; }
+  // BUGFIX 28 Sep 2026 (INV260706): a line flagged isDisb used to short-circuit
+  // straight to out.disb, discarding any horizontalAlloc split (e.g. a Cecilia
+  // fee cut) recorded on that same line — RM20 of Cecilia's RM310 due on
+  // INV260706 was silently dropped this way. Only take the pure-disbursement
+  // shortcut when the line carries no horizontalAlloc breakdown; otherwise let
+  // it fall through so the split (including its own disb/abot/cecilia/retain
+  // portions) is honoured.
+  if (l.isDisb && !(l.horizontalAlloc && typeof l.horizontalAlloc === 'object')) { out.disb += amt; return out; }
   // horizontalAlloc — the per-line table editor data (second priority, after customSplit).
   if (l.horizontalAlloc && typeof l.horizontalAlloc === 'object') {
     const ha = l.horizontalAlloc;
