@@ -18307,11 +18307,54 @@ function autoPopulateCeciliaRetainer() {
     }
   });
 
+  // ── Also trace from allocations genuinely marked paid-to-Cecilia ──
+  // BUGFIX 28 Sep 2026: the two passes above only find a client if its name
+  // or first word (4+ letters) appears in a voucher's free-text description.
+  // Short/abbreviated names never clear that bar — "H & B" (for "H & B Wealth
+  // Empire Sdn. Bhd.") and "Lao" (for "Lao Huo Guo (Pg) Sdn. Bhd.") both fail,
+  // so those two clients silently never get marked no matter how many times
+  // Auto-detect runs, even when Cecilia has genuinely been paid. This pass is
+  // data-driven instead of text-matched: it reads the same wpMap flag the
+  // Payment Voucher screen itself uses to decide "already paid to Cecilia" on
+  // a given allocation, so it's correct regardless of voucher wording.
+  let wpMatched = 0;
+  const wpMap = (typeof getWagePaidMap === 'function') ? getWagePaidMap() : {};
+  clients.forEach(c => {
+    // Invoices here often have no client_id FK populated (blank), only the
+    // free-text client_name copied in at creation — match on that instead,
+    // exact (trimmed) rather than fuzzy, since it's reliably copied verbatim
+    // from the same client registry these `clients` rows come from.
+    const cName = (c.name||'').trim();
+    const cInvoices = (INVOICES||[]).filter(i => (i.client_id && String(i.client_id) === String(c.client_id)) || (i.client_name||'').trim() === cName);
+    cInvoices.forEach(inv => {
+      const allocs = (ALLOCATIONS||[]).filter(a => a.inv_no === inv.inv_no);
+      const paidAlloc = allocs.find(a => {
+        const ck = a.alloc_id + '|Cecilia';
+        return wpMap[ck] !== undefined && wpMap[ck] !== null;
+      });
+      if (!paidAlloc) return;
+      const idate = inv.date || inv.inv_date || '';
+      let iy = null, im = null;
+      const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(idate);
+      if (iso) { iy = parseInt(iso[1], 10); im = parseInt(iso[2], 10); }
+      else {
+        try { const dt = new Date(idate); if (!isNaN(dt.getTime()) && dt.getFullYear() >= 2020) { iy = dt.getFullYear(); im = dt.getMonth()+1; } } catch(e) {}
+      }
+      if (iy !== yr || !im) return;
+      const iq = Math.ceil(im/3);
+      const k = _cecRetKey(c.client_id, yr, iq);
+      if (!state[k]) {
+        state[k] = wpMap[paidAlloc.alloc_id + '|Cecilia'] || (idate||'').slice(0,10) || (yr + '-01-01');
+        wpMatched++;
+      }
+    });
+  });
+
   _cecRetSet(state);
   renderCeciliaRetainer();
-  const total = matched + invMatched;
+  const total = matched + invMatched + wpMatched;
   const msg = (total > 0)
-    ? `Auto-detected ${total} retainer payment${total===1?'':'s'} (${matched} from vouchers + ${invMatched} from paid invoices).`
+    ? `Auto-detected ${total} retainer payment${total===1?'':'s'} (${matched} from vouchers + ${invMatched} from paid invoices + ${wpMatched} from paid-allocation records).`
     : `No retainer payments detected. Checked ${cecVouchers.length} Cecilia/Prestige voucher${cecVouchers.length===1?'':'s'} and ${(INVOICES||[]).filter(i=>(i.status||'')==='paid').length} paid invoice${(INVOICES||[]).filter(i=>(i.status||'')==='paid').length===1?'':'s'}.`;
   toast(msg, total > 0 ? 'success' : 'info');
 }
