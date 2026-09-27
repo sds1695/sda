@@ -18070,6 +18070,29 @@ function openCeciliaRetainer() {
   renderCeciliaRetainer();
 }
 
+// BUGFIX 28 Sep 2026: stored paid-dates come from several different sources —
+// toggleCeciliaCell writes a proper "YYYY-MM-DD", but a voucher's or invoice's
+// raw .date field is a full JS Date toString ("Mon Sep 28 2026 00:00:00
+// GMT+0800 ...") and wpMap entries are already ISO. Blindly slicing the first
+// 10 characters of each gives inconsistent, sometimes-unreadable results
+// ("Mon Sep 28" vs "2026-09-28") for what may be the exact same real day, and
+// splits one payment batch into two colors/legend entries. Normalize any of
+// these shapes to a single "YYYY-MM-DD" before using it as a display value or
+// a de-dup/color key.
+function _cecRetNormDate(v) {
+  if (!v) return '';
+  const s = String(v).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  try {
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) {
+      const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+      return `${y}-${m}-${dd}`;
+    }
+  } catch(e) {}
+  return s.slice(0, 10);
+}
+
 function renderCeciliaRetainer() {
   const yr = parseInt(document.getElementById('cec-ret-year').value, 10) || new Date().getFullYear();
   const rate = parseFloat(document.getElementById('cec-ret-rate').value || 75);
@@ -18087,7 +18110,7 @@ function renderCeciliaRetainer() {
   clients.forEach(c => {
     [1,2,3,4].forEach(q => {
       const v = state[_cecRetKey(c.client_id, yr, q)];
-      if (v) datesUsed.add(v.slice(0,10));
+      if (v) datesUsed.add(_cecRetNormDate(v));
     });
   });
   const dateList = Array.from(datesUsed).sort();
@@ -18114,10 +18137,14 @@ function renderCeciliaRetainer() {
       const k = _cecRetKey(c.client_id, yr, q);
       const v = state[k];
       const paid = !!v;
-      const dateStr = v ? v.slice(0,10) : '';
+      const dateStr = paid ? _cecRetNormDate(v) : '';
       const color = paid ? (dateColor[dateStr] || '#10b981') : '';
       const bg = paid ? color + '33' : '';
-      const fg = paid ? color : 'var(--text3)';
+      // Text is always the app's normal dark/black color for legibility —
+      // only the cell BACKGROUND is tinted per payment batch. Tinting the
+      // text itself to match a pale background (the old behavior) made some
+      // of the lighter greens hard to read.
+      const fg = paid ? 'var(--text)' : 'var(--text3)';
       const label = paid ? `RM ${rate.toFixed(2)}<br><span style="font-size:9px;font-weight:400">${dateStr}</span>` : '·';
       html += `<td onclick="toggleCeciliaCell('${c.client_id}',${yr},${q})" title="${paid?'Paid '+dateStr+' — click to unmark':'Click to mark paid today'}" style="text-align:center;padding:6px 10px;cursor:pointer;background:${bg};color:${fg};font-family:'DM Mono',monospace;font-weight:${paid?'600':'400'};user-select:none">${label}</td>`;
       if (paid) { rowPaid += rate; rowQuarters++; colTotals[qi] += rate; }
@@ -18176,7 +18203,7 @@ function exportCeciliaRetainer() {
     const paid = cells.filter(Boolean).length;
     const tot = paid * rate;
     gt += tot; gp += paid;
-    lines.push([c.name, ...cells.map(v => v ? `${rate.toFixed(2)} (${v.slice(0,10)})` : '·'), tot.toFixed(2), `${paid}/4`].join('\t'));
+    lines.push([c.name, ...cells.map(v => v ? `${rate.toFixed(2)} (${_cecRetNormDate(v)})` : '·'), tot.toFixed(2), `${paid}/4`].join('\t'));
   });
   lines.push('');
   lines.push(`TOTAL: RM ${gt.toFixed(2)} across ${gp}/${clients.length*4} quarters paid`);
@@ -18264,7 +18291,7 @@ function autoPopulateCeciliaRetainer() {
         qs.forEach(q => {
           const k = _cecRetKey(c.client_id, yr, q);
           if (!state[k]) {
-            const d = (raw || '').slice(0,10) || (yr + '-01-01');
+            const d = _cecRetNormDate(raw) || (yr + '-01-01');
             state[k] = d;
             matched++;
           }
@@ -18302,7 +18329,7 @@ function autoPopulateCeciliaRetainer() {
     if (!hasRetainer) return;
     const k = _cecRetKey(client.client_id, yr, iq);
     if (!state[k]) {
-      state[k] = (idate || '').slice(0,10) || (yr + '-01-01');
+      state[k] = _cecRetNormDate(idate) || (yr + '-01-01');
       invMatched++;
     }
   });
@@ -18344,7 +18371,7 @@ function autoPopulateCeciliaRetainer() {
       const iq = Math.ceil(im/3);
       const k = _cecRetKey(c.client_id, yr, iq);
       if (!state[k]) {
-        state[k] = wpMap[paidAlloc.alloc_id + '|Cecilia'] || (idate||'').slice(0,10) || (yr + '-01-01');
+        state[k] = _cecRetNormDate(wpMap[paidAlloc.alloc_id + '|Cecilia']) || _cecRetNormDate(idate) || (yr + '-01-01');
         wpMatched++;
       }
     });
