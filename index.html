@@ -592,6 +592,9 @@
       <div class="nav-item" onclick="showPage('team-members')">
         <span class="icon">◑</span><span>Team Members</span>
       </div>
+      <div class="nav-item" onclick="showPage('price-list')">
+        <span class="icon">🏷</span><span>Price List</span>
+      </div>
       <div class="nav-section">Allocations</div>
       <div class="nav-item" onclick="showPage('invoice-allocations')">
         <span class="icon">⊟</span><span>Invoice Breakdown</span>
@@ -1068,6 +1071,32 @@
       </div>
       <div style="margin-top:14px;padding:10px 12px;background:var(--surface2);border-radius:6px;font-size:11px;color:var(--text2)">
         <strong>Note:</strong> Adding a member here registers their profile. To make them available in the Preparer/Reviewer/Voucher Payee dropdowns, the person\'s code must also be added to the dashboard\'s hardcoded options (this is a future enhancement). For now, this page tracks bank/IC/notes for the existing team. Member data is saved to your browser\'s localStorage.
+      </div>
+    </div>
+
+    <div class="page" id="page-price-list">
+      <div class="page-header">
+        <div class="page-title">Price List</div>
+        <div class="page-sub">Historical service charges, as a reference — built live from every past invoice line, grouped by service. Click a column heading to sort.</div>
+      </div>
+      <div style="background:var(--surface2);padding:8px 14px;font-size:12px;color:var(--text2);margin-bottom:14px;border-radius:var(--radius-sm)">
+        <strong>Latest</strong> is the price on the most recently dated invoice for that service. <strong>Range</strong> is the lowest–highest ever charged. This is reference only — nothing here changes what a new invoice line defaults to.
+      </div>
+      <div class="card card-scroll" style="padding:0">
+        <div style="overflow-x:auto;border-radius:var(--radius)">
+        <table style="width:100%;font-size:12px">
+          <thead><tr style="background:var(--surface2)">
+            <th style="text-align:left;padding:8px 10px;cursor:pointer" onclick="_priceListSort('service')">Service ⇅</th>
+            <th style="text-align:right;padding:8px 10px;cursor:pointer" onclick="_priceListSort('count')"># Charged ⇅</th>
+            <th style="text-align:right;padding:8px 10px;cursor:pointer" onclick="_priceListSort('latest')">Latest ⇅</th>
+            <th style="text-align:left;padding:8px 10px;cursor:pointer" onclick="_priceListSort('latestDate')">Latest Date ⇅</th>
+            <th style="text-align:right;padding:8px 10px;cursor:pointer" onclick="_priceListSort('min')">Min ⇅</th>
+            <th style="text-align:right;padding:8px 10px;cursor:pointer" onclick="_priceListSort('max')">Max ⇅</th>
+            <th style="text-align:right;padding:8px 10px;cursor:pointer" onclick="_priceListSort('avg')">Average ⇅</th>
+          </tr></thead>
+          <tbody id="price-list-tbody"></tbody>
+        </table>
+        </div>
       </div>
     </div>
 
@@ -3275,6 +3304,7 @@ function showPage(id) {
   if (id === 'reminders')         { (async () => { await loadClients(); renderReminders(); })(); }
   if (id === 'invoice-allocations') loadInvoiceBreakdown();
   if (id === 'team-members')        renderTeamMembers();
+  if (id === 'price-list')          renderPriceList();
   if (id === 'sales-orders')        renderSalesOrders();
   if (id === 'jobs')                { (async () => { try { await loadClients(); } catch(e){} try { renderJobsBoard(); } catch(e){ console.warn('renderJobsBoard', e); } })(); }
   if (id === 'notes')               loadNotesPage();
@@ -9761,6 +9791,86 @@ function applyInvLineHistoryDesc(sel) {
     recalcInvLines();
   }
   sel.value = '';
+}
+
+// ══════════════════════════════════════════════════
+// PRICE LIST — sortable reference of historical service charges.
+// Built live from every invoice's saved line items, grouped by lineType
+// (the same category each line already carries for the preset dropdown).
+// Reference only: nothing here feeds back into what a new line defaults to.
+// ══════════════════════════════════════════════════
+let _priceListSortKey = 'service';
+let _priceListSortDir = 1; // 1 = asc, -1 = desc
+
+function _priceListBuild() {
+  const groups = {}; // key = lineType (or '(blank)') -> { amounts:[{amt,date}], }
+  (INVOICES || []).forEach(inv => {
+    let lines = [];
+    try { lines = JSON.parse(inv.desc1 || '[]'); } catch(e) { return; }
+    const invDate = inv.date || inv.inv_date || '';
+    lines.forEach(l => {
+      const amt = parseFloat(l.amt || 0);
+      if (!(amt > 0)) return; // skip zero/blank-amount lines — not a real charge
+      const key = (l.lineType || '').trim() || '(blank)';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push({ amt, date: invDate });
+    });
+  });
+  return Object.keys(groups).map(key => {
+    const rows = groups[key];
+    const amounts = rows.map(r => r.amt);
+    // "Latest" = amount on the most recently dated invoice line in this group.
+    let latest = null, latestDate = '';
+    rows.forEach(r => {
+      const d = String(r.date || '');
+      if (!latestDate || new Date(d) > new Date(latestDate)) { latestDate = d; latest = r.amt; }
+    });
+    return {
+      service: key === '(blank)' ? 'Uncategorized' : (_LINE_TYPE_LABELS[key] || key.replace(/_/g, ' ')),
+      count: rows.length,
+      latest: latest,
+      latestDate: latestDate,
+      min: Math.min(...amounts),
+      max: Math.max(...amounts),
+      avg: amounts.reduce((s, a) => s + a, 0) / amounts.length,
+    };
+  });
+}
+
+function _priceListSort(key) {
+  if (_priceListSortKey === key) { _priceListSortDir *= -1; }
+  else { _priceListSortKey = key; _priceListSortDir = (key === 'service') ? 1 : -1; } // numeric cols default to highest-first
+  renderPriceList();
+}
+
+function renderPriceList() {
+  const tbody = document.getElementById('price-list-tbody');
+  if (!tbody) return;
+  const rows = _priceListBuild();
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text3)">No priced invoice lines found yet.</td></tr>';
+    return;
+  }
+  const key = _priceListSortKey, dir = _priceListSortDir;
+  rows.sort((a, b) => {
+    let av = a[key], bv = b[key];
+    if (key === 'service' || key === 'latestDate') {
+      av = String(av || ''); bv = String(bv || '');
+      return dir * av.localeCompare(bv);
+    }
+    return dir * ((av || 0) - (bv || 0));
+  });
+  const fmt = n => 'RM ' + (n || 0).toFixed(2);
+  tbody.innerHTML = rows.map(r => `
+    <tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:6px 10px;font-weight:500">${r.service}</td>
+      <td style="padding:6px 10px;text-align:right;font-family:'DM Mono',monospace">${r.count}</td>
+      <td style="padding:6px 10px;text-align:right;font-family:'DM Mono',monospace;font-weight:600">${fmt(r.latest)}</td>
+      <td style="padding:6px 10px;color:var(--text2)">${r.latestDate ? formatDate(r.latestDate) : '—'}</td>
+      <td style="padding:6px 10px;text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(r.min)}</td>
+      <td style="padding:6px 10px;text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(r.max)}</td>
+      <td style="padding:6px 10px;text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(r.avg)}</td>
+    </tr>`).join('');
 }
 
 function addInvLine(desc, amt, isDisb, alloc) {
