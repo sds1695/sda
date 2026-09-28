@@ -9671,7 +9671,7 @@ function _refreshLineTypeBadge(typeSelEl) {
   if (!badge) return;
   const val = typeSelEl.value || '';
   // Show badge only when a specific type is picked (not "(invoice)")
-  if (!val) { badge.style.display = 'none'; badge.textContent = ''; return; }
+  if (!val) { badge.style.display = 'none'; badge.textContent = ''; _refreshLineHistoryDropdown(row, ''); return; }
   // Color palette per category — soft tinted background + dark text
   const palette = {
     MBRS:           { bg: '#EEEDFE', fg: '#3C3489' }, // purple
@@ -9691,11 +9691,74 @@ function _refreshLineTypeBadge(typeSelEl) {
   badge.style.color = p.fg;
   badge.style.display = 'inline-block';
   badge.textContent = val.replace(/_/g, ' ');
+  _refreshLineHistoryDropdown(row, val);
 }
 
 // Refresh every line's badge — called after lines load or restore.
 function _refreshAllLineTypeBadges() {
   document.querySelectorAll('.inv-line-row .inv-line-type').forEach(sel => _refreshLineTypeBadge(sel));
+}
+
+// ── "Previously used" per-category description list ────────────────────────
+// Scans every past invoice's saved lines (desc1) and groups the unique
+// descriptions actually used, by lineType — so the New Invoice preset
+// dropdown doesn't have to jam every service ever billed into one flat list.
+// Kept as a live scan (not cached) — invoice count is small enough that this
+// costs nothing noticeable, and it always reflects the latest saved invoices.
+function _getUsedDescsForType(lineType) {
+  const key = (lineType || '').trim();
+  const counts = {};
+  (INVOICES || []).forEach(inv => {
+    let lines = [];
+    try { lines = JSON.parse(inv.desc1 || '[]'); } catch(e) { return; }
+    lines.forEach(l => {
+      const lt = (l.lineType || '').trim();
+      const d = (l.desc || '').trim();
+      if (!d) return;
+      if (lt !== key) return;
+      counts[d] = (counts[d] || 0) + 1;
+    });
+  });
+  return Object.keys(counts)
+    .map(d => ({ desc: d, count: counts[d] }))
+    .sort((a, b) => b.count - a.count || a.desc.localeCompare(b.desc));
+}
+const _LINE_TYPE_LABELS = {
+  MBRS: 'MBRS', FS: 'Financial Statements', Tax: 'Tax', Bookkeeping: 'Bookkeeping',
+  Cosec_Retainer: 'Cosec Retainer', Cosec_Other: 'Cosec Other', Audit: 'Audit',
+  Personal_Tax: 'Personal Tax', Advisory: 'Advisory', Disbursement: 'Disbursement', Other: 'Other',
+};
+function _buildInvLineHistoryOptions(lineType) {
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const key = (lineType || '').trim();
+  if (!key) return '<option value="">— pick a category preset first —</option>';
+  const used = _getUsedDescsForType(key);
+  const label = _LINE_TYPE_LABELS[key] || key.replace(/_/g, ' ');
+  if (!used.length) return `<option value="">— no past ${esc(label)} lines yet —</option>`;
+  let html = `<option value="">— used before (${esc(label)}) —</option>`;
+  used.forEach(u => { html += `<option value="${esc(u.desc)}">${esc(u.desc)}${u.count > 1 ? ' (' + u.count + 'x)' : ''}</option>`; });
+  return html;
+}
+// Keep a line's "previously used" dropdown in sync with its current category —
+// called whenever the badge/type changes, and once when the line is first added.
+function _refreshLineHistoryDropdown(row, lineType) {
+  if (!row) return;
+  const histSel = row.querySelector('.inv-line-history');
+  if (!histSel) return;
+  histSel.innerHTML = _buildInvLineHistoryOptions(lineType);
+  histSel.disabled = !lineType;
+}
+// User picked a previously-used description — apply it like a preset, but
+// leave the line's category/type untouched (it's already set).
+function applyInvLineHistoryDesc(sel) {
+  const val = sel.value;
+  if (!val) return;
+  const row = sel.closest('.inv-line-row');
+  if (row) {
+    row.querySelector('.inv-line-desc').value = val;
+    recalcInvLines();
+  }
+  sel.value = '';
 }
 
 function addInvLine(desc, amt, isDisb, alloc) {
@@ -9711,6 +9774,9 @@ function addInvLine(desc, amt, isDisb, alloc) {
           ${_buildInvLinePresetOptions()}
         </select>
       </div>
+      <select class="inv-line-history" title="Descriptions actually used before on invoices with this line's category — keeps the main preset list short" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text2)" onchange="applyInvLineHistoryDesc(this)" disabled>
+        <option value="">— pick a category preset first —</option>
+      </select>
       <textarea class="inv-line-desc" rows="2" placeholder="Description..." style="font-size:12px;padding:6px;border:1px solid var(--border);border-radius:4px;width:100%;resize:vertical;background:var(--surface);color:var(--text1)" oninput="recalcInvLines()"></textarea>
     </div>
     <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;min-width:140px">
@@ -13386,7 +13452,9 @@ async function loadPayoutSummary() {
   const PAYEE_MAP = {
     'KC':['KC','Ho','W','ho','w','kc'], 'Koay':['Koay','TXY','Koay PH','koay','txy','koay ph'],
     'ET':['ET','QET','et','qet'], 'Ivy':['Ivy','ivy'],
-    'Cecilia':['Cecilia','cecilia'], 'TKC':['TKC','tkc'],
+    // Cecilia is paid out through Prestige E-Biz Sdn. Bhd. — alias so vouchers
+    // recorded under that company name still count as paid to her.
+    'Cecilia':['Cecilia','cecilia','Prestige E-Biz','prestige e-biz','Prestige E-Biz Sdn. Bhd.','prestige e-biz sdn. bhd.','Prestige E-Biz Sdn Bhd','prestige e-biz sdn bhd'], 'TKC':['TKC','tkc'],
   };
   const PERSON_LABEL = {
     'KC':'KC / Ho','Koay':'Koay / TXY','ET':'ET','Ivy':'Ivy','Cecilia':'Cecilia','TKC':'TKC',
@@ -13493,7 +13561,9 @@ function renderPayoutDetail() {
     'Koay':    ['Koay','TXY','Koay PH','koay','txy','koay ph'],
     'ET':      ['ET','QET','et','qet'],
     'Ivy':     ['Ivy','ivy'],
-    'Cecilia': ['Cecilia','cecilia'],
+    // Cecilia is paid out through Prestige E-Biz Sdn. Bhd. — alias so vouchers
+    // recorded under that company name still count as paid to her.
+    'Cecilia': ['Cecilia','cecilia','Prestige E-Biz','prestige e-biz','Prestige E-Biz Sdn. Bhd.','prestige e-biz sdn. bhd.','Prestige E-Biz Sdn Bhd','prestige e-biz sdn bhd'],
     'TKC':     ['TKC','tkc'],
   };
   const PERSON_LABEL = {
@@ -14696,6 +14766,20 @@ let pvNoEdited     = false;
 
 // ── PV number sequencing: format PVxxx.yy ──
 // Scans existing VOUCHERS + localStorage to find next available sequence for this year.
+// Returns true if `no` matches any voucher already loaded — either as its real
+// stored voucher_no, OR as a locally-remembered display override (see
+// seraya_pvno_overrides — the backend doesn't always keep a user-typed PV
+// number as-is, so the app remembers the override in this browser only).
+function _pvNoInUse(no) {
+  if (!no) return false;
+  const target = String(no).trim().toLowerCase();
+  if ((VOUCHERS||[]).some(v => String(v.voucher_no||'').trim().toLowerCase() === target)) return true;
+  try {
+    const ovr = JSON.parse(localStorage.getItem('seraya_pvno_overrides') || '{}');
+    if (Object.values(ovr).some(v => String(v||'').trim().toLowerCase() === target)) return true;
+  } catch(e) {}
+  return false;
+}
 function pvNextVoucherNo() {
   const yy = String(new Date().getFullYear()).slice(-2); // e.g. '26'
   const re  = new RegExp(`^PV(\\d+)\\.${yy}$`, 'i');
@@ -14708,8 +14792,25 @@ function pvNextVoucherNo() {
   // Also check localStorage override (user may have manually set a higher number)
   const stored = parseInt(localStorage.getItem(`seraya_pv_seq_${yy}`) || '0', 10);
   maxSeq = Math.max(maxSeq, stored);
-  const next = maxSeq + 1;
-  return `PV${String(next).padStart(3, '0')}.${yy}`;
+  // FLOOR (28 Sep 2026): most existing vouchers were saved under the older
+  // "PV26147"-style packed numbering, so scanning for "PVnnn.26" alone finds
+  // almost none of them (only 1 of 90 at the time of this fix). The master
+  // Excel ledger was already up to PV040.26 as of its last save (10 Aug 2026)
+  // — floor here so we never re-offer a number that may already be written
+  // down by hand since then. Only applied for 2026; later years start clean.
+  if (yy === '26') maxSeq = Math.max(maxSeq, 40);
+  let next = maxSeq + 1;
+  let candidate = `PV${String(next).padStart(3, '0')}.${yy}`;
+  // Defensive loop: keep bumping past anything already in use. This is what
+  // actually closes the bug — the backend's own next_voucher_no can suggest
+  // an already-used number (it has the same blind spot this function used
+  // to have), so every caller must still run its answer through this check.
+  let guard = 0;
+  while (_pvNoInUse(candidate) && guard++ < 500) {
+    next++;
+    candidate = `PV${String(next).padStart(3, '0')}.${yy}`;
+  }
+  return candidate;
 }
 
 // Call after a voucher is saved to persist the sequence
@@ -15136,7 +15237,18 @@ async function openVoucherModal(isEdit) {
     try {
       const yr = new Date().getFullYear();
       const nr = await api({ action: 'next_voucher_no', year: yr });
-      if (nr && nr.ok && nr.voucher_no) document.getElementById('pv-no').value = nr.voucher_no;
+      // The backend generator has the same blind spot pvNextVoucherNo() used
+      // to have (doesn't know about the older packed-format vouchers), so it
+      // can suggest an already-used number. Never trust it blindly — re-check
+      // against everything actually loaded, and bump forward if it collides.
+      if (nr && nr.ok && nr.voucher_no) {
+        let safeNo = nr.voucher_no;
+        if (_pvNoInUse(safeNo)) {
+          console.warn(`next_voucher_no suggested ${safeNo}, which is already in use — falling back to client-side sequence.`);
+          safeNo = pvNextVoucherNo();
+        }
+        document.getElementById('pv-no').value = safeNo;
+      }
     } catch(e) { console.warn('next_voucher_no failed, keeping client-side guess', e); }
   }
   document.getElementById('pv-id').value      = '';
@@ -16429,6 +16541,26 @@ async function saveVoucher() {
   const desc       = document.getElementById('pv-desc').value.trim();
 
   if (!date || !amount || !payee) { toast('Please fill in date, payee and amount.', 'error'); return; }
+
+  // ─── PV NUMBER COLLISION CHECK (added 28 Sep 2026 — see the numbering-
+  //     format fix in pvNextVoucherNo()/_pvNoInUse()). Catches a typed-in or
+  //     auto-suggested PV number that's already used by a DIFFERENT voucher,
+  //     separate from the date+payee+amount duplicate check below. ───
+  if (pvNo) {
+    try {
+      const _sameNo = (VOUCHERS||[]).find(v => {
+        const vid = (v.voucher_id||v.id||'').toString();
+        if (existingId && vid === existingId.toString()) return false; // editing this one — fine
+        return String(v.voucher_no||'').trim().toLowerCase() === pvNo.toLowerCase();
+      });
+      if (_sameNo) {
+        if (!confirm(`PV number "${pvNo}" is already used by another voucher (${String(_sameNo.date||'').slice(0,10)}, ${_sameNo.payee||''}, RM ${parseFloat(_sameNo.amount||0).toFixed(2)}).\n\nClick OK to save anyway with this duplicate number, or Cancel to pick a different one.`)) {
+          toast('Save cancelled — pick a different PV number.', 'info');
+          return;
+        }
+      }
+    } catch(_e) { console.warn('PV number collision check failed', _e); }
+  }
 
   // ─── DUPLICATE VOUCHER DETECTION (added 2026-06-02 to prevent the kind of
   //     duplicates that produced the RM 1,749.98 bank variance: PV26068
@@ -18226,7 +18358,10 @@ function autoPopulateCeciliaRetainer() {
     if (isVoided('vouchers', vid)) return false;
     if ((v.description||'').startsWith('__VOID__')) return false;
     const p = (v.payee_name || v.payee || '').toLowerCase();
-    return /cecilia/i.test(p);
+    // Cecilia is paid out through Prestige E-Biz Sdn. Bhd. — recognise that
+    // company name as her too (narrow match so it doesn't also catch the
+    // unrelated "Prestige Taxation Services Sdn. Bhd." billing party).
+    return /cecilia/i.test(p) || /prestige\s*e[\s-]*biz/i.test(p);
   });
   if (!cecVouchers.length) {
     if (!confirm('No vouchers to Cecilia found. Continue anyway (will just open the empty matrix)?')) return;
@@ -18643,6 +18778,8 @@ function setExcelVoucherText(t) {
 const EXCEL_VOUCHER_PERSON_ALIASES = {
   'et': 'ET', 'koay': 'Koay', 'ivy': 'Ivy', 'kc': 'KC', 'cecilia': 'Cecilia',
   'txy': 'Koay', 'ho': 'KC', 'w': 'KC', 'wan': 'KC',
+  // Cecilia is paid out through Prestige E-Biz Sdn. Bhd.
+  'prestige e-biz': 'Cecilia', 'prestige e biz': 'Cecilia',
 };
 
 // Parses free-text voucher description lines. Each line just needs to
@@ -18834,7 +18971,12 @@ function reconcileWagePaidFromVouchers() {
         if (m2) refNos = m2;
       }
       if (!refNos.length) return;
-      const payee = v.payee || '';
+      // Cecilia is paid out through Prestige E-Biz Sdn. Bhd. — PV_PAYEE_ALLOC
+      // is keyed by role code ("Cecilia"), so normalise that company name
+      // back to the role before the lookup (narrow match so it doesn't also
+      // catch the unrelated "Prestige Taxation Services Sdn. Bhd.").
+      let payee = v.payee || '';
+      if (/prestige\s*e[\s-]*biz/i.test(payee)) payee = 'Cecilia';
       const allocFn = (typeof PV_PAYEE_ALLOC !== 'undefined') ? PV_PAYEE_ALLOC[payee] : null;
       const dt = v.date || '';
       refNos.forEach(invNo => {
@@ -18998,7 +19140,7 @@ const TEAM_DEFAULTS = [
   {code:'Koay',name:'Ms Koay',role:'both',aliases:'Koay, TXY, Koay PH',bank:'',ic:'',phone:'',notes:''},
   {code:'Ivy',name:'Ivy',role:'preparer',aliases:'Ivy',bank:'',ic:'',phone:'',notes:''},
   {code:'KC',name:'KC (Ho)',role:'reviewer',aliases:'KC, Ho, W',bank:'',ic:'',phone:'',notes:''},
-  {code:'Cecilia',name:'Cecilia',role:'commission',aliases:'Cecilia',bank:'',ic:'',phone:'',notes:''},
+  {code:'Cecilia',name:'Cecilia',role:'commission',aliases:'Cecilia, Prestige E-Biz, Prestige E-Biz Sdn. Bhd.',bank:'',ic:'',phone:'',notes:'Paid out via Prestige E-Biz Sdn. Bhd.'},
   {code:'Quah',name:'Quah',role:'other',aliases:'Quah',bank:'',ic:'',phone:'',notes:''},
 ];
 function getTeamMembers(){ try { const s = JSON.parse(localStorage.getItem(TEAM_KEY) || 'null'); if (Array.isArray(s) && s.length) return s; } catch(e){} return TEAM_DEFAULTS; }
