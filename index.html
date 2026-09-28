@@ -9806,7 +9806,7 @@ let _priceListSortDir = 1; // 1 = asc, -1 = desc
 let _priceListExpanded = {}; // service key -> true when its detail rows are shown
 
 function _priceListBuild() {
-  const groups = {}; // key = lineType (or '(blank)') -> [{amt,date,client,invNo}]
+  const groups = {}; // key = lineType (or '(blank)') -> [{amt,date,client,invNo,desc}]
   (INVOICES || []).forEach(inv => {
     let lines = [];
     try { lines = JSON.parse(inv.desc1 || '[]'); } catch(e) { return; }
@@ -9818,7 +9818,7 @@ function _priceListBuild() {
       if (!(amt > 0)) return; // skip zero/blank-amount lines — not a real charge
       const key = (l.lineType || '').trim() || '(blank)';
       if (!groups[key]) groups[key] = [];
-      groups[key].push({ amt, date: invDate, client, invNo });
+      groups[key].push({ amt, date: invDate, client, invNo, desc: l.desc || '' });
     });
   });
   return Object.keys(groups).map(key => {
@@ -9830,6 +9830,20 @@ function _priceListBuild() {
       const d = String(r.date || '');
       if (!latestDate || new Date(d) > new Date(latestDate)) { latestDate = d; latest = r.amt; }
     });
+    // Group the underlying lines by invoice — a single invoice can carry
+    // several lines in the same category (e.g. a few separate disbursement
+    // charges), which should show as ONE invoice with its charges nested
+    // underneath, not as that invoice number repeated on its own row.
+    const byInvoice = {};
+    rows.forEach(r => {
+      const ik = r.invNo || (r.client + '|' + r.date); // fallback groups by client+date if no inv_no
+      if (!byInvoice[ik]) byInvoice[ik] = { client: r.client, invNo: r.invNo, date: r.date, lines: [] };
+      byInvoice[ik].lines.push({ amt: r.amt, desc: r.desc });
+    });
+    const invoices = Object.values(byInvoice).map(g => ({
+      ...g,
+      total: g.lines.reduce((s, l) => s + l.amt, 0),
+    })).sort((a, b) => new Date(b.date) - new Date(a.date)); // newest first
     return {
       key,
       service: key === '(blank)' ? 'Uncategorized' : (_LINE_TYPE_LABELS[key] || key.replace(/_/g, ' ')),
@@ -9839,7 +9853,7 @@ function _priceListBuild() {
       min: Math.min(...amounts),
       max: Math.max(...amounts),
       avg: amounts.reduce((s, a) => s + a, 0) / amounts.length,
-      details: rows.slice().sort((a, b) => new Date(b.date) - new Date(a.date)), // newest first
+      invoices,
     };
   });
 }
@@ -9896,13 +9910,37 @@ async function renderPriceList() {
       <td style="padding:6px 10px;text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(r.avg)}</td>
     </tr>`;
     if (!isOpen) return mainRow;
-    const detailRows = r.details.map(d => `
-      <tr style="border-bottom:1px solid var(--border);background:var(--surface2)">
-        <td></td>
-        <td style="padding:5px 10px 5px 24px;color:var(--text2)" colspan="2">${escHtml(d.client)}${d.invNo ? ' <span style="color:var(--text3)">· ' + escHtml(d.invNo) + '</span>' : ''}</td>
-        <td style="padding:5px 10px;text-align:right;font-family:'DM Mono',monospace">${fmt(d.amt)}</td>
-        <td style="padding:5px 10px;color:var(--text3)" colspan="4">${d.date ? formatDate(d.date) : '—'}</td>
-      </tr>`).join('');
+    const detailRows = r.invoices.map(inv => {
+      const label = escHtml(inv.client) + (inv.invNo ? ' <span style="color:var(--text3)">· ' + escHtml(inv.invNo) + '</span>' : '');
+      const dateStr = inv.date ? formatDate(inv.date) : '—';
+      if (inv.lines.length === 1) {
+        // Single charge on this invoice for this service — one row, same as before.
+        return `
+        <tr style="border-bottom:1px solid var(--border);background:var(--surface2)">
+          <td></td>
+          <td style="padding:5px 10px 5px 24px;color:var(--text2)" colspan="2">${label}</td>
+          <td style="padding:5px 10px;text-align:right;font-family:'DM Mono',monospace">${fmt(inv.lines[0].amt)}</td>
+          <td style="padding:5px 10px;color:var(--text3)" colspan="4">${dateStr}</td>
+        </tr>`;
+      }
+      // Several charges on the same invoice — show the invoice once (with its
+      // total), then each individual charge nested underneath.
+      const header = `
+        <tr style="border-bottom:1px solid var(--border);background:var(--surface2)">
+          <td></td>
+          <td style="padding:5px 10px 5px 24px;color:var(--text2);font-weight:500" colspan="2">${label} <span style="color:var(--text3);font-weight:400">(${inv.lines.length} charges)</span></td>
+          <td style="padding:5px 10px;text-align:right;font-family:'DM Mono',monospace;font-weight:600">${fmt(inv.total)}</td>
+          <td style="padding:5px 10px;color:var(--text3)" colspan="4">${dateStr}</td>
+        </tr>`;
+      const subRows = inv.lines.map(l => `
+        <tr style="border-bottom:1px solid var(--border);background:var(--surface2)">
+          <td></td>
+          <td style="padding:3px 10px 3px 44px;color:var(--text3);font-size:11px" colspan="2">${escHtml((l.desc || '').slice(0, 70)) || '—'}</td>
+          <td style="padding:3px 10px;text-align:right;font-family:'DM Mono',monospace;color:var(--text3);font-size:11px">${fmt(l.amt)}</td>
+          <td colspan="4"></td>
+        </tr>`).join('');
+      return header + subRows;
+    }).join('');
     return mainRow + detailRows;
   }).join('');
 }
