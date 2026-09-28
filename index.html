@@ -1666,12 +1666,13 @@
         </div>
         <div class="form-field">
           <label>Client (end client)</label>
-          <input type="text" id="inv-client-name" placeholder="Click or type to search clients…" oninput="clientAutocomplete();_syncClientNameInLineDescs()" onfocus="clientAutocomplete(true)" onblur="setTimeout(()=>document.getElementById('client-suggestions').innerHTML='',200)" autocomplete="off" />
+          <input type="hidden" id="inv-client-id" />
+          <input type="text" id="inv-client-name" placeholder="Click or type to search clients…" oninput="clientAutocomplete();_syncClientNameInLineDescs();document.getElementById('inv-client-id').value='';_refreshUnbilledDisbFromForm()" onfocus="clientAutocomplete(true)" onblur="setTimeout(()=>document.getElementById('client-suggestions').innerHTML='',200);_refreshUnbilledDisbFromForm()" autocomplete="off" />
           <div id="client-suggestions" style="position:relative"></div>
         </div>
         <div class="form-field form-full">
           <label>Bill To (invoice recipient)</label>
-          <input type="text" id="inv-billing-party" placeholder="Click or type to search recipients…" oninput="billingAutocomplete()" onfocus="billingAutocomplete(true)" onblur="setTimeout(()=>{var el=document.getElementById('billing-suggestions'); if(el) el.innerHTML='';},200)" autocomplete="off" />
+          <input type="text" id="inv-billing-party" placeholder="Click or type to search recipients…" oninput="billingAutocomplete()" onfocus="billingAutocomplete(true)" onblur="setTimeout(()=>{var el=document.getElementById('billing-suggestions'); if(el) el.innerHTML='';},200);_refreshUnbilledDisbFromForm()" autocomplete="off" />
           <div id="billing-suggestions" style="position:relative"></div>
         </div>
         <div class="form-field form-full">
@@ -8613,6 +8614,7 @@ function _captureInvoiceFormState() {
     inv_no:        (document.getElementById('inv-no')||{}).value || '',
     date:          (document.getElementById('inv-date')||{}).value || '',
     job_type:      (document.getElementById('inv-job-type')||{}).value || '',
+    client_id:     (document.getElementById('inv-client-id')||{}).value || '',
     client_name:   (document.getElementById('inv-client-name')||{}).value || '',
     billing_party: (document.getElementById('inv-billing-party')||{}).value || '',
     billing_addr: (document.getElementById('inv-billing-addr')||{}).value || '',
@@ -8657,8 +8659,12 @@ function _applyDraftStateToModal(state) {
   if (state.inv_no)        document.getElementById('inv-no').value           = state.inv_no;
   if (state.date)          document.getElementById('inv-date').value         = state.date;
   if (state.job_type)      document.getElementById('inv-job-type').value     = state.job_type;
+  if (state.client_id)     document.getElementById('inv-client-id').value    = state.client_id;
   if (state.client_name)   document.getElementById('inv-client-name').value  = state.client_name;
   if (state.billing_party) document.getElementById('inv-billing-party').value= state.billing_party;
+  // Older drafts saved before client_id was tracked won't have one — fall
+  // back to a name match so the unbilled-disbursement reminder still fires.
+  try { _showUnbilledDisbReminder(_resolveClientIdForReminder(state.client_id, state.client_name)); } catch(e) {}
   if (state.billing_addr)  document.getElementById('inv-billing-addr').value = state.billing_addr;
   if (state.disb_amount)   document.getElementById('inv-disb').value         = state.disb_amount;
   if (state.preparer && document.getElementById('inv-preparer'))   document.getElementById('inv-preparer').value   = state.preparer;
@@ -8769,7 +8775,9 @@ async function openInvoiceModal(id) {
   if (id) {
     const inv = INVOICES.find(x => String(x.inv_id) === String(id));
     if (!inv) return;
-    try { _showUnbilledDisbReminder(inv.client_id); } catch(e) {}
+    const _resolvedClientId = _resolveClientIdForReminder(inv.client_id, inv.client_name);
+    try { document.getElementById('inv-client-id').value = _resolvedClientId || ''; } catch(e) {}
+    try { _showUnbilledDisbReminder(_resolvedClientId); } catch(e) {}
     document.getElementById('inv-modal-title').textContent = 'Edit Invoice — ' + inv.inv_no;
     document.getElementById('inv-no').value            = inv.inv_no;
     // Parse date robustly — backend returns "Sun Jan 04 2026 00:00:00 GMT+0800..." which slice(0,10) breaks
@@ -8951,6 +8959,7 @@ function onJobTypeChange() {
     }
   }
   recalcAllocation();
+  try { _refreshUnbilledDisbFromForm(); } catch(e) {}
 }
 
 function recalcAllocation() {
@@ -9193,6 +9202,23 @@ function _detectMultiServiceDesc(text) {
   return found.length >= 2 ? found : [];
 }
 
+// Re-fetches invoices straight from Google Sheets (bypassing the cached
+// INVOICES array) and confirms invNo is actually there — used right after
+// save_invoice returns ok, since a JSONP response can be a false positive
+// on a flaky connection. Retries a few times with a short pause in case
+// Sheets just needs a moment to reflect the write.
+async function _verifyInvoiceSaved(invNo, attempts) {
+  attempts = attempts || 3;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const r = await api({ action: 'get_invoices' });
+      if (r && r.ok && (r.data || []).some(x => (x.inv_no || '') === invNo)) return true;
+    } catch (e) { /* ignore, retry */ }
+    if (i < attempts - 1) await new Promise(res => setTimeout(res, 1500));
+  }
+  return false;
+}
+
 async function saveInvoice() {
   if (_savingInvoice) return;
   // Force a fresh recalc so inv-amount / inv-disb / override hidden fields are populated.
@@ -9263,6 +9289,7 @@ async function saveInvoice() {
     date,
     job_type:     document.getElementById('inv-job-type').value,
     client_name:  client,
+    client_id:    _resolveClientIdForReminder((document.getElementById('inv-client-id')||{}).value || '', client) || '',
     billing_party: document.getElementById('inv-billing-party').value.trim(),
     billing_addr: document.getElementById('inv-billing-addr').value.trim(),
     desc1:        JSON.stringify(_invLines),
@@ -9279,6 +9306,18 @@ async function saveInvoice() {
 
   const res = await api({ action: 'save_invoice', data });
   if (!res.ok) { toast(res.error || 'Save failed', 'error'); return; }  // finally still runs
+
+  // Verify the write actually landed in Google Sheets before declaring success.
+  // A JSONP round-trip can come back ok:true over a flaky connection without
+  // the row having really persisted server-side (seen live: 28 Sep 2026 — an
+  // invoice "saved" successfully on-screen but never appeared in the Sheet).
+  // If we can't confirm it within a few retries, stop here: don't clear the
+  // draft and don't close the modal, so nothing typed is lost silently.
+  const _verified = await _verifyInvoiceSaved(inv_no);
+  if (!_verified) {
+    toast(`Could not confirm ${inv_no} actually reached Google Sheets — check your connection and click Save Invoice again. Your entry has not been cleared.`, 'error');
+    return;
+  }
 
   // Clear any matching draft now that we've saved a real invoice
   try {
@@ -15569,8 +15608,26 @@ async function _deleteVoucherAndRefreshUnbilled(id, label) {
 // out so the New Invoice modal can reuse it for the reminder banner.
 function _getUnbilledDisbForClient(clientId) {
   if (!clientId) return [];
+  // The client registry has known duplicate records for the same real
+  // client under different spellings (e.g. "H & B Wealth Empire Sdn. Bhd."
+  // vs "H&B Wealth Empire Sdn Bhd" — confirmed live 28 Sep 2026, where an
+  // unbilled voucher was tagged to the *other* duplicate id than the one
+  // the invoice resolved to, so the reminder missed it entirely). Expand
+  // the lookup to every client_id sharing this client's normalized name so
+  // a voucher tagged to any duplicate still surfaces.
+  // Strip ALL non-alphanumerics (not just dots/commas) — real variants also
+  // differ in ampersand spacing, e.g. "H & B..." vs "H&B..." (confirmed live).
+  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const self = (CLIENTS || []).find(c => String(c.client_id) === String(clientId));
+  const selfName = norm(self ? (self.name || self.client_name || '') : '');
+  const idSet = new Set([String(clientId)]);
+  if (selfName) {
+    (CLIENTS || []).forEach(c => {
+      if (norm(c.name || c.client_name || '') === selfName) idSet.add(String(c.client_id));
+    });
+  }
   return (VOUCHERS||[]).filter(v => {
-    if (!v || String(v.client_id) !== String(clientId)) return false;
+    if (!v || !idSet.has(String(v.client_id))) return false;
     if ((v.description||'').startsWith('__VOID__')) return false;
     if (v.ref_inv_id || v.ref_inv_nos) return false;
     return true;
@@ -17337,6 +17394,7 @@ function clientAutocomplete(showAll) {
 function selectClient(id) {
   const c = CLIENTS.find(x => x.client_id === id);
   if (!c) return;
+  document.getElementById('inv-client-id').value     = id;
   document.getElementById('inv-client-name').value   = c.name;
   document.getElementById('inv-billing-party').value = c.billing_party;
   document.getElementById('inv-billing-addr').value  = stripPartyFromAddr(c.billing_party, c.billing_addr);
@@ -17366,6 +17424,48 @@ function selectClient(id) {
       addInvLine(presetDesc);
     }
   }
+}
+
+// Some invoices/drafts only ever recorded the client's NAME, not their id
+// (the New Invoice form itself had no id field until this fix, and some
+// older invoice rows have a genuinely blank client_id). Fall back to an
+// exact name match against CLIENTS so the reminder still works for those.
+function _resolveClientIdForReminder(id, name) {
+  if (id) return id;
+  if (!name) return null;
+  // Strip ALL non-alphanumerics — real data has spelling variants like
+  // "H & B Wealth Empire Sdn. Bhd." (registry) vs "H&B Wealth Empire Sdn Bhd"
+  // (some invoices; differs in ampersand spacing too), which even the
+  // dots/commas-only normalizer elsewhere in this file would miss.
+  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const n = norm(name);
+  if (!n) return null;
+  const match = (CLIENTS || []).find(c => norm(c.name || c.client_name || '') === n);
+  return match ? match.client_id : null;
+}
+
+// Re-checks the unbilled-disbursement reminder against whatever client
+// context the New/Edit Invoice form currently has — called live as the user
+// types/leaves the End Client or Bill To fields, not just on an explicit
+// dropdown pick. This closes the gap where Bill To gets filled (e.g. for a
+// retainer) but the End Client search box is never touched, so the banner
+// previously never appeared at all for that invoice.
+function _refreshUnbilledDisbFromForm() {
+  try {
+    const idField = document.getElementById('inv-client-id');
+    const nameField = document.getElementById('inv-client-name');
+    const bpField = document.getElementById('inv-billing-party');
+    let resolvedId = _resolveClientIdForReminder((idField||{}).value || '', (nameField||{}).value || '');
+    // Fall back to matching the Bill To text against the client registry —
+    // for most retainer/direct-billed clients, Bill To IS the end client.
+    if (!resolvedId && bpField && bpField.value) {
+      resolvedId = _resolveClientIdForReminder('', bpField.value);
+    }
+    // Only write the resolved id back into the hidden field if the user
+    // hasn't picked one explicitly yet — never overwrite an existing pick.
+    if (resolvedId && idField && !idField.value) idField.value = resolvedId;
+    _showUnbilledDisbReminder(resolvedId);
+  } catch(e) { console.warn('_refreshUnbilledDisbFromForm failed', e); }
 }
 
 // Shows a reminder banner in the New/Edit Invoice modal when the selected
