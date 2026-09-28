@@ -1086,6 +1086,7 @@
         <div style="overflow-x:auto;border-radius:var(--radius)">
         <table style="width:100%;font-size:12px">
           <thead><tr style="background:var(--surface2)">
+            <th style="width:24px"></th>
             <th style="text-align:left;padding:8px 10px;cursor:pointer" onclick="_priceListSort('service')">Service ⇅</th>
             <th style="text-align:right;padding:8px 10px;cursor:pointer" onclick="_priceListSort('count')"># Charged ⇅</th>
             <th style="text-align:right;padding:8px 10px;cursor:pointer" onclick="_priceListSort('latest')">Latest ⇅</th>
@@ -1098,6 +1099,7 @@
         </table>
         </div>
       </div>
+      <div style="margin-top:8px;font-size:11px;color:var(--text3)">Click a service row to see every invoice it was charged on — company, invoice no. and date.</div>
     </div>
 
     <!-- ══ MODAL: TEAM MEMBER ══ -->
@@ -9801,19 +9803,22 @@ function applyInvLineHistoryDesc(sel) {
 // ══════════════════════════════════════════════════
 let _priceListSortKey = 'service';
 let _priceListSortDir = 1; // 1 = asc, -1 = desc
+let _priceListExpanded = {}; // service key -> true when its detail rows are shown
 
 function _priceListBuild() {
-  const groups = {}; // key = lineType (or '(blank)') -> { amounts:[{amt,date}], }
+  const groups = {}; // key = lineType (or '(blank)') -> [{amt,date,client,invNo}]
   (INVOICES || []).forEach(inv => {
     let lines = [];
     try { lines = JSON.parse(inv.desc1 || '[]'); } catch(e) { return; }
     const invDate = inv.date || inv.inv_date || '';
+    const client = inv.client_name || '(no client on invoice)';
+    const invNo = inv.inv_no || '';
     lines.forEach(l => {
       const amt = parseFloat(l.amt || 0);
       if (!(amt > 0)) return; // skip zero/blank-amount lines — not a real charge
       const key = (l.lineType || '').trim() || '(blank)';
       if (!groups[key]) groups[key] = [];
-      groups[key].push({ amt, date: invDate });
+      groups[key].push({ amt, date: invDate, client, invNo });
     });
   });
   return Object.keys(groups).map(key => {
@@ -9826,6 +9831,7 @@ function _priceListBuild() {
       if (!latestDate || new Date(d) > new Date(latestDate)) { latestDate = d; latest = r.amt; }
     });
     return {
+      key,
       service: key === '(blank)' ? 'Uncategorized' : (_LINE_TYPE_LABELS[key] || key.replace(/_/g, ' ')),
       count: rows.length,
       latest: latest,
@@ -9833,6 +9839,7 @@ function _priceListBuild() {
       min: Math.min(...amounts),
       max: Math.max(...amounts),
       avg: amounts.reduce((s, a) => s + a, 0) / amounts.length,
+      details: rows.slice().sort((a, b) => new Date(b.date) - new Date(a.date)), // newest first
     };
   });
 }
@@ -9843,12 +9850,26 @@ function _priceListSort(key) {
   renderPriceList();
 }
 
-function renderPriceList() {
+function _priceListToggle(key) {
+  _priceListExpanded[key] = !_priceListExpanded[key];
+  renderPriceList();
+}
+
+async function renderPriceList() {
   const tbody = document.getElementById('price-list-tbody');
   if (!tbody) return;
+  // Data may not have finished loading yet (e.g. tab clicked right after page
+  // load) — try once to fetch it rather than showing a false "no data" state.
+  if (!(INVOICES || []).length) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text3)">Loading invoices…</td></tr>';
+    try { if (typeof loadInvoices === 'function') await loadInvoices(); } catch(e) { console.warn('renderPriceList: loadInvoices failed', e); }
+  }
   const rows = _priceListBuild();
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text3)">No priced invoice lines found yet.</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text3)">
+      No priced invoice lines found yet.<br>
+      <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="(async()=>{await loadInvoices();renderPriceList();})()">↻ Reload from Google Sheets</button>
+    </td></tr>`;
     return;
   }
   const key = _priceListSortKey, dir = _priceListSortDir;
@@ -9861,8 +9882,11 @@ function renderPriceList() {
     return dir * ((av || 0) - (bv || 0));
   });
   const fmt = n => 'RM ' + (n || 0).toFixed(2);
-  tbody.innerHTML = rows.map(r => `
-    <tr style="border-bottom:1px solid var(--border)">
+  tbody.innerHTML = rows.map(r => {
+    const isOpen = !!_priceListExpanded[r.key];
+    const mainRow = `
+    <tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="_priceListToggle('${r.key}')">
+      <td style="padding:6px 10px;text-align:center;color:var(--text3)">${isOpen ? '▾' : '▸'}</td>
       <td style="padding:6px 10px;font-weight:500">${r.service}</td>
       <td style="padding:6px 10px;text-align:right;font-family:'DM Mono',monospace">${r.count}</td>
       <td style="padding:6px 10px;text-align:right;font-family:'DM Mono',monospace;font-weight:600">${fmt(r.latest)}</td>
@@ -9870,7 +9894,17 @@ function renderPriceList() {
       <td style="padding:6px 10px;text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(r.min)}</td>
       <td style="padding:6px 10px;text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(r.max)}</td>
       <td style="padding:6px 10px;text-align:right;font-family:'DM Mono',monospace;color:var(--text2)">${fmt(r.avg)}</td>
-    </tr>`).join('');
+    </tr>`;
+    if (!isOpen) return mainRow;
+    const detailRows = r.details.map(d => `
+      <tr style="border-bottom:1px solid var(--border);background:var(--surface2)">
+        <td></td>
+        <td style="padding:5px 10px 5px 24px;color:var(--text2)" colspan="2">${escHtml(d.client)}${d.invNo ? ' <span style="color:var(--text3)">· ' + escHtml(d.invNo) + '</span>' : ''}</td>
+        <td style="padding:5px 10px;text-align:right;font-family:'DM Mono',monospace">${fmt(d.amt)}</td>
+        <td style="padding:5px 10px;color:var(--text3)" colspan="4">${d.date ? formatDate(d.date) : '—'}</td>
+      </tr>`).join('');
+    return mainRow + detailRows;
+  }).join('');
 }
 
 function addInvLine(desc, amt, isDisb, alloc) {
