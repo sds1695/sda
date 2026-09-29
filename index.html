@@ -2559,7 +2559,31 @@ window.VOUCHER_VOID_IDS = [
   // dividend), but per the reconciliation against Excel the consolidated PV26027
   // (RM 415.76, wages_et) is the correct posting. PV26048 + PV26049 have been
   // __VOID__'d at the description level instead.
+  // 2026-09-29: these were hidden ONLY by one browser's localStorage, so other devices
+  // showed them (bank ~RM3,970 lower). Each has a live twin (same amount/date) that ties
+  // to master S 21.9.26 — see LE_private\recon\C_gl_pl_bs_pv.md. Hardcoded so every device agrees.
+  'PV1782499522868',  // PV26081 2026-06-27 TXY RM769.50 (superseded by PV26087)
+  'PV1787650819846',  // PV26114 2026-08-07 KC RM1,743.96 (twin PV26115 = master PV038.26)
+  'PV1789192040047',  // PV26125 2026-09-12 KC RM2,008.10 (twin PV26141)
+  'PV1789209094496',  // PV26130 2026-09-12 Other RM30.00 (twin PV26138)
+  'PV1789312793900',  // PV26132 2026-09-12 ET RM220.00 (twin = master PV052.26)
+  'PV1790432601686',  // PV26135 2026-09-25 Other RM50.00 (twin PV26137)
+  'PV1790434927395',  // PV26136 2026-09-25 Other RM50.00 (twin PV26137)
+  'PV1790440337592',  // PV26140 2026-09-25 Other RM14.70 (twin PV26139)
+  'PV1790516825917',  // PV26142 2026-09-19 Other RM33.20 (twin PV26144)
+  'PV1790516871976',  // PV26143 2026-09-19 Other RM20.10 (twin PV26146)
+  'PV1790518041884',  // PV26145 2026-09-19 Other RM20.10 (twin PV26146)
 ];
+
+// Does this voucher settle a person's wage/commission balance? (29 Sep 2026)
+// Only wage categories count. Expense reimbursements paid to a person — software,
+// SSM fees, meals, Claude subscriptions, travel — and dividends do NOT reduce what
+// they're owed. Matches master S 21.9.26 Due (to): LE_private\recon\B_allocations_payouts.md (V1).
+// cosec_exp counts because Cecilia's retainer is paid under it (master PV056.26).
+function _isPersonPayoutVoucher(v) {
+  const c = String((v && v.category) || '').toLowerCase().trim();
+  return c.startsWith('wages_') || c === 'commission' || c === 'cosec_exp';
+}
 
 // Allocation IDs to treat as voided (since save_allocation API also creates new rows
 // instead of updating). Add the OLD alloc_id when you've replaced an allocation.
@@ -13757,6 +13781,7 @@ async function loadPayoutSummary() {
   // Paid per person from VOUCHERS
   const paid = {};
   (VOUCHERS||[]).forEach(v => {
+    if (!_isPersonPayoutVoucher(v)) return;
     const payee = (v.payee||'').toLowerCase().trim();
     for (const [key, aliases] of Object.entries(PAYEE_MAP)) {
       if (aliases.some(a => a.toLowerCase() === payee)) {
@@ -14075,7 +14100,7 @@ function renderPayoutDetail() {
   // Skip 'dividend' category — those are incentive payments, NOT wage settlement
   const paidMap = {}; // person key → {total, vouchers[]}
   (VOUCHERS || []).forEach(v => {
-    if ((v.category || '').toLowerCase() === 'dividend') return;  // dividends don't reduce wage balance
+    if (!_isPersonPayoutVoucher(v)) return;  // wages/commission only — see helper
     const payee = (v.payee || '').toLowerCase().trim();
     for (const [key, aliases] of Object.entries(PAYEE_MAP)) {
       if (aliases.some(a => a.toLowerCase() === payee)) {
