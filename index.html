@@ -4527,7 +4527,7 @@ function _bucketForLine(l, inv) {
 //   Bug 2 — customSplit is authoritative (see _bucketForLine reorder); gross_fee
 //           is the FEE portion (non-Disb lines) so a Disb-flagged abot line no
 //           longer inflates it, while the cast check still ties to ALL lines.
-function _buildAllocRowFromLines(inv, lines) {
+function _buildAllocRowFromLines(inv, lines, opts) {
   if (!inv) return { ok: false, error: 'invoice not found' };
   const invNo = inv.inv_no;
   lines = lines || [];
@@ -4541,7 +4541,7 @@ function _buildAllocRowFromLines(inv, lines) {
   if (!jobType) { const _fl = lines.find(l => !l.isDisb && l.lineType); if (_fl) jobType = String(_fl.lineType).trim(); }
   // SSM filing fee (Cosec_Other only) is invoice-level: attach it once to the
   // first plain Cosec_Other fee line so the cosec branch deducts it.
-  const ssmFee = ctx ? (parseFloat(ctx.ssmFee) || 0) : (savedRow ? (parseFloat(savedRow.ssm_fee) || 0) : 0);
+  const ssmFee = (opts && opts.noSsm) ? 0 : (ctx ? (parseFloat(ctx.ssmFee) || 0) : (savedRow ? (parseFloat(savedRow.ssm_fee) || 0) : 0));
   if (ssmFee > 0.005) {
     let done = false;
     lines = lines.map(l => {
@@ -4696,6 +4696,40 @@ async function voidCancelledAllocs() {
 // 4 slots cannot represent," same as the other 6 legitimate mixed-preparer/
 // mixed-reviewer/multi-party exclusions. No silent sweeps observed.
 const AUTOSYNC_APPLY_ENABLED = true;
+// 29 Sep 2026 (Peter): invoices whose lines have DIFFERENT preparers or reviewers
+// (e.g. main fee KC/KC + an MBRS add-on reviewed by Koay) used to be refused,
+// because one allocation row holds only one preparer + one reviewer. They are now
+// saved as ONE ROW PER GROUP of lines sharing the same preparer+reviewer — the
+// multi-row shape INV260416 already uses. Person totals across the rows equal the
+// per-line engine exactly; Payout Summary (live per-line path) is unaffected.
+function _buildAllocRowsFromLines(inv, lines) {
+  lines = lines || [];
+  const one = _buildAllocRowFromLines(inv, lines);
+  if (!one || one.ok || !one.excluded || !/^mixed (preparers|reviewers)/.test(one.error || '')) {
+    return Object.assign({}, one, { rows: (one && one.ok) ? [one.proposed] : [], multi: false });
+  }
+  const groups = [], byKey = {}, neutral = [];
+  lines.forEach(l => {
+    const d = ((_bucketForLine(l, inv) || {}).__d) || {};
+    const p = (d.prepName && d.prepAmt > 0.005) ? d.prepName : '';
+    const r = (d.revName  && d.revAmt  > 0.005) ? d.revName  : '';
+    if (!p && !r) { neutral.push(l); return; }       // disbursement / retain / direct-credit-only lines
+    const k = p + '|' + r;
+    if (!byKey[k]) { byKey[k] = []; groups.push(byKey[k]); }
+    byKey[k].push(l);
+  });
+  if (groups.length < 2) return Object.assign({}, one, { rows: [], multi: false });
+  groups[0].push(...neutral);
+  const built = groups.map((g, i) => _buildAllocRowFromLines(inv, g, { noSsm: i > 0 }));
+  const bad = built.find(b => !b || !b.ok);
+  if (bad) return { ok: false, excluded: true, multi: true, rows: [], error: 'lines split into ' + built.length + ' groups, but one group cannot be represented: ' + ((bad && bad.error) || 'error') };
+  return {
+    ok: true, multi: true, rows: built.map(b => b.proposed), proposed: built[0].proposed,
+    castDiff: built.reduce((s, b) => s + (+b.castDiff || 0), 0),
+    warnings: [].concat(...built.map(b => b.warnings || [])),
+  };
+}
+
 async function syncStaleAllocations() {
   const stale = (window.__STALE_INV_NOS || []).filter(no => ((INVOICES||[]).find(i => i.inv_no === no) || {}).status !== 'paid');
   if (!stale.length) { try { toast('No stale invoices to sync.', 'info'); } catch(e){} return; }
@@ -9377,7 +9411,7 @@ async function saveInvoice() {
   // keep the existing (unchanged) legacy-formula-with-toast fallback below.
   try {
     const _preGateInv = _modalInvForEngine();
-    const _preGate = _buildAllocRowFromLines(_preGateInv, _parseInvLines(_preGateInv));
+    const _preGate = _buildAllocRowsFromLines(_preGateInv, _parseInvLines(_preGateInv));
     if (_preGate && _preGate.excluded) {
       toast('Not saved — ' + (_preGate.error || 'per-line engine cannot build a single allocation row') + '.', 'error');
       return;
@@ -9699,12 +9733,14 @@ async function saveInvoice() {
   // for invoices the single-row schema cannot represent (mixed preparers /
   // reviewers across lines, 3+ beneficiaries, coverage drift); in that case the
   // user is told explicitly. Schema is unchanged: still one row per invoice.
+  let _extraAllocRows = [];   // multi-row invoices: rows 2..N (row 1 = allocData)
   try {
     const _canonInv = _modalInvForEngine();
     _canonInv.inv_id = res.inv_id || editingInvId;
-    const _canon = _buildAllocRowFromLines(_canonInv, _parseInvLines(_canonInv));
+    const _canon = _buildAllocRowsFromLines(_canonInv, _parseInvLines(_canonInv));
     if (_canon && _canon.ok && Math.abs(_canon.castDiff || 0) <= 0.05) {
       const p = _canon.proposed;
+      _extraAllocRows = _canon.multi ? _canon.rows.slice(1) : [];
       ['gross_fee','disbursements','abot_cost','cecilia_fee','ssm_fee','admin_retain','kc_commission','koay_commission',
        'net_for_split','preparer_name','preparer_amt','reviewer_name','reviewer_amt','reviewer_top20','claude_retain']
         .forEach(k => { allocData[k] = p[k]; });
@@ -9750,6 +9786,28 @@ async function saveInvoice() {
       console.log(`Auto-voided ${oldAllocs.length} stale alloc row(s) for ${inv_no}`);
     }
   } catch(e) { console.warn('auto-dedupe alloc failed', e); }
+  // Multi-row invoice: save the other preparer/reviewer groups' rows. They are new
+  // rows (not in ALLOCATIONS yet), so the auto-dedupe above never voids them.
+  if (_extraAllocRows.length) {
+    const _rowKeys = ['gross_fee','disbursements','disb_amount','abot_cost','cecilia_fee','ssm_fee','admin_retain','kc_commission',
+      'koay_commission','net_for_split','preparer_name','preparer_amt','reviewer_name','reviewer_amt','reviewer_top20','claude_retain'];
+    let _okN = 0;
+    for (const p of _extraAllocRows) {
+      const d = Object.assign({}, allocData);
+      _rowKeys.forEach(k => { d[k] = p[k]; });
+      d.prep_pct = (p.prep_pct !== '' && p.prep_pct > 0 && p.prep_pct < 100) ? p.prep_pct : null;
+      try { const r = await api({ action: 'save_allocation', data: d }); if (r && r.ok) _okN++; } catch(e) {}
+    }
+    try {
+      const _crTot = [allocData].concat(_extraAllocRows).reduce((s, x) => s + (parseFloat(x.claude_retain) || 0), 0);
+      if (_crTot > 0.005) localStorage.setItem('claude_retain_' + inv_no, _crTot.toFixed(2));
+    } catch(e) {}
+    if (_okN < _extraAllocRows.length) {
+      toast('Invoice saved, but ' + (_extraAllocRows.length - _okN) + ' of ' + (_extraAllocRows.length + 1) + ' allocation rows did not save — reopen ' + inv_no + ' and save again.', 'error');
+    } else {
+      console.log('[saveInvoice] ' + inv_no + ' saved as ' + (_extraAllocRows.length + 1) + ' allocation rows (mixed preparers/reviewers)');
+    }
+  }
   // Same guard for the invoice itself — old GAS appends, so re-saves spawn
   // duplicate invoice rows. Cancel any other active rows with the same inv_no.
   try {
@@ -10278,7 +10336,7 @@ function _modalInvForEngine() {
 function _modalCanonicalAlloc() {
   try {
     const inv = _modalInvForEngine();
-    return _buildAllocRowFromLines(inv, _parseInvLines(inv));
+    return _buildAllocRowsFromLines(inv, _parseInvLines(inv));
   } catch(e) { console.warn('canonical alloc preview failed', e); return null; }
 }
 // Renders the canonical row under the legacy formula preview so the user sees
@@ -10292,6 +10350,17 @@ function _renderCanonAllocPreview(res) {
   let html = '<div id="alloc-canon-block" style="margin-top:8px;padding:8px;border-top:1px dashed var(--border);font-size:11px;color:var(--text2)">';
   if (!res.ok) {
     html += '<strong style="color:#b45309">Per-line engine:</strong> ' + (res.error || 'cannot build a single allocation row') + ' — the legacy formula above will be saved.';
+  } else if (res.multi) {
+    html += '<strong>Will save ' + res.rows.length + ' allocation rows</strong> (lines have different preparers/reviewers):';
+    res.rows.forEach((p, i) => {
+      html += '<div style="margin-top:2px">Row ' + (i + 1) + ': ' + (p.preparer_name || '—') + ' (prep) <strong style="color:var(--text)">' + fmt(p.preparer_amt) + '</strong>'
+        + ' · ' + (p.reviewer_name || '—') + ' (rev) <strong style="color:var(--text)">' + fmt(p.reviewer_amt) + '</strong>'
+        + (p.reviewer_top20 > 0.005 ? ' + RM20 top-up ' + fmt(p.reviewer_top20) : '')
+        + ' · KC comm ' + fmt(p.kc_commission)
+        + (p.koay_commission > 0.005 ? ' · Koay comm ' + fmt(p.koay_commission) : '')
+        + ' · Retain ' + fmt(p.admin_retain) + '</div>';
+    });
+    if (Math.abs(res.castDiff || 0) > 0.05) html += ' · <span style="color:#b91c1c">cast off by ' + fmt(res.castDiff) + '</span>';
   } else {
     const p = res.proposed;
     html += '<strong>Will save (per-line engine):</strong>'
