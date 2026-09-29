@@ -996,6 +996,7 @@
         <div class="page-actions">
           <button class="btn btn-ghost" id="payout-view-btn" onclick="togglePayoutView()">⊞ Totals Only</button>
           <button class="btn btn-ghost" onclick="editReconTargets()" title="Set the Excel green/expected balance per person to flag unreconciled diffs">⚖ Recon Targets</button>
+          <button class="btn btn-ghost" onclick="openBulkPaidTool()" title="Tick many Ready-to-pay lines as already paid at once (e.g. after a lump-sum payment made without ticking invoices).">☑ Bulk mark paid</button>
           <button class="btn btn-ghost" onclick="openAllocationAudit()" title="Verify every outstanding invoice has proper allocations flowing to Invoice Breakdown — count, gross_fee, KC presence, disb lines.">🔍 Audit Allocations</button>
           <button class="btn btn-ghost" onclick="openCeciliaRetainer()" title="Matrix view of cosec clients × quarters × Cecilia's retainer fee. Auto-detects from her voucher payments.">📅 Cecilia Retainer</button>
           <button class="btn btn-secondary" onclick="reconcileAgainstExcelGreen()" title="Mark every historical allocation as paid-out, EXCEPT the specific invoices that are still outstanding per your Excel green-highlighted rows. One-click bulk reconciliation.">↻ Reconcile from Excel</button>
@@ -19020,6 +19021,89 @@ function toggleIbSubrow(inv_no) {
 // ══════════════════════════════════════════════════
 // Shows expected balance vs Excel green target. User can set targets in localStorage.
 // Format: localStorage['seraya_recon_targets_v1'] = JSON string {Koay:999.45,ET:1025.45,Ivy:380.62}
+// ── Bulk mark already paid (29 Sep 2026) ────────────────────────────────────
+// Past payments were often lump sums made without ticking invoices, so "Ready to
+// pay" kept showing lines already settled. This tool lists every Ready-to-pay line
+// per person; the user reviews the ticks and applies them in one go. It only writes
+// per-person paid marks (markWagePaid) and, optionally, the Recon Targets — no
+// invoice, allocation, voucher or amount changes. Every tick can be undone per line.
+// Defaults for the 29 Sep catch-up (from master S 21.9.26 green cells = NOT yet paid):
+const BULK_PAID_KEEP_DUE = { KC: ['INV260910','INV260911'], ET: ['INV260910','INV260911'], Koay: ['INV260801','INV260802'] };
+const BULK_PAID_TARGETS  = { KC: 4135.49, Koay: 3096.79, ET: 4015.72, Ivy: 652.50, Cecilia: 150.00 };
+async function openBulkPaidTool() {
+  if (!(SESSION && SESSION.user && SESSION.user.name === 'Principal')) { toast('Only the Principal can bulk-mark payouts.', 'error'); return; }
+  try { renderPayoutDetail(); } catch(e) {}
+  await new Promise(r => setTimeout(r, 300));
+  const raw = window.ALLOCATIONS_RAW || ALLOCATIONS || [];
+  const byPerson = {}, index = {};
+  document.querySelectorAll('#payout-detail .wp-ready-chk').forEach(c => {
+    const person = c.dataset.person || '', aid = c.dataset.aid || '';
+    if (!person || !aid) return;
+    const amt = parseFloat(c.dataset.amt || 0) || 0;
+    const k = aid + '|' + person;
+    if (index[k]) { index[k].amt += amt; return; }          // same row, extra line (e.g. RM20 top-up)
+    const a = raw.find(x => String(x.alloc_id) === aid);
+    const inv = a ? a.inv_no : aid.replace(/^live_/, '');
+    const i = (INVOICES || []).find(x => x.inv_no === inv) || {};
+    const row = { aid, person, inv, client: (i.client_name || '').slice(0, 30), amt, keep: (BULK_PAID_KEEP_DUE[person] || []).includes(inv) };
+    index[k] = row;
+    (byPerson[person] = byPerson[person] || []).push(row);
+  });
+  const people = Object.keys(byPerson);
+  if (!people.length) { toast('Nothing in Ready to pay.', 'info'); return; }
+  const cur = (typeof getReconTargets === 'function' ? getReconTargets() : {}) || {};
+  const esc = x => String(x).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  let h = '<div style="font-size:12px;color:var(--text2);margin-bottom:10px">Ticked lines move to <b>Already paid</b> for that person (dated today). Unticked lines stay in Ready to pay. Pre-ticks follow the master Excel (green = not yet paid).</div>';
+  people.forEach(p => {
+    const rows = byPerson[p];
+    h += '<div style="margin:10px 0 4px;font-weight:600">' + esc(p) + ' <span style="font-weight:400;color:var(--text3)">(' + rows.length + ' lines)</span></div><table style="width:100%;border-collapse:collapse;font-size:12px">';
+    rows.forEach(r => {
+      h += '<tr style="border-bottom:1px solid var(--border)"><td style="padding:3px 6px;width:24px"><input type="checkbox" class="bp-chk" data-aid="' + esc(r.aid) + '" data-person="' + esc(p) + '" data-amt="' + r.amt + '"' + (r.keep ? '' : ' checked') + '></td>'
+        + '<td style="padding:3px 6px">' + esc(r.inv) + '</td><td style="padding:3px 6px;color:var(--text2)">' + esc(r.client) + '</td>'
+        + '<td style="padding:3px 6px;text-align:right;font-family:monospace">RM ' + r.amt.toFixed(2) + '</td>'
+        + '<td style="padding:3px 6px;font-size:11px;color:' + (r.keep ? '#b45309' : 'var(--text3)') + '">' + (r.keep ? 'still owed (master green)' : '') + '</td></tr>';
+    });
+    h += '</table>';
+  });
+  h += '<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border)"><label style="font-size:12px"><input type="checkbox" id="bp-set-targets" checked> Also set Recon Targets to the master balances:</label><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">';
+  Object.keys(BULK_PAID_TARGETS).forEach(p => {
+    h += '<label style="font-size:12px">' + p + ' <input type="number" step="0.01" class="bp-tgt" data-person="' + p + '" value="' + BULK_PAID_TARGETS[p] + '" style="width:90px"> <span style="color:var(--text3);font-size:10px">(now ' + (cur[p] != null ? cur[p] : '—') + ')</span></label>';
+  });
+  h += '</div></div>';
+  const ov = document.createElement('div');
+  ov.id = 'bulk-paid-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99998;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--surface,#fff);color:var(--text);border-radius:12px;width:min(760px,100%);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.3)">'
+    + '<div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center"><div style="font-weight:600">Bulk mark already paid</div><button class="btn btn-ghost" id="bp-close">✕</button></div>'
+    + '<div style="padding:12px 18px;overflow:auto">' + h + '</div>'
+    + '<div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px"><span id="bp-summary" style="font-size:12px;color:var(--text2)"></span><span><button class="btn btn-ghost" id="bp-cancel">Cancel</button> <button class="btn btn-primary" id="bp-apply">Apply</button></span></div></div>';
+  document.body.appendChild(ov);
+  const sum = () => {
+    const c = [...ov.querySelectorAll('.bp-chk:checked')];
+    document.getElementById('bp-summary').textContent = c.length + ' lines ticked · RM ' + c.reduce((t, x) => t + parseFloat(x.dataset.amt || 0), 0).toFixed(2);
+  };
+  ov.addEventListener('change', sum); sum();
+  const close = () => ov.remove();
+  document.getElementById('bp-close').onclick = close;
+  document.getElementById('bp-cancel').onclick = close;
+  document.getElementById('bp-apply').onclick = () => {
+    const c = [...ov.querySelectorAll('.bp-chk:checked')];
+    const setT = document.getElementById('bp-set-targets').checked;
+    if (!confirm('Mark ' + c.length + ' line(s) as already paid' + (setT ? ' and update the Recon Targets' : '') + '?\n\nNo amounts change; each tick can be undone per line.')) return;
+    const today = (typeof _localToday === 'function') ? _localToday() : new Date().toISOString().slice(0, 10);
+    c.forEach(x => markWagePaid(x.dataset.aid, today, x.dataset.person));
+    if (setT) {
+      const t = Object.assign({}, getReconTargets() || {});
+      ov.querySelectorAll('.bp-tgt').forEach(i => { const v = parseFloat(i.value); if (!isNaN(v)) t[i.dataset.person] = v; });
+      setReconTargets(t);
+    }
+    close();
+    try { renderPayoutView(); } catch(e) {}
+    try { renderPayoutDetail(); } catch(e) {}
+    toast(c.length + ' line(s) marked already paid' + (setT ? ' · Recon Targets updated' : '') + '. Syncing to Google Sheet…', 'success');
+  };
+}
+
 function getReconTargets() {
   try { return JSON.parse(localStorage.getItem('seraya_recon_targets_v1') || '{}'); } catch (e) { return {}; }
 }
