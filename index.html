@@ -14310,7 +14310,8 @@ function renderPayoutDetail() {
           if (_wpAll[ck] !== null && _wpAll[ck] !== undefined) return true;
         }
       }
-      return _wpAll[allocId] !== undefined && _wpAll[allocId] !== null;
+      if (_wpAll[allocId] !== undefined && _wpAll[allocId] !== null) return true;
+      return _wpPaidOnSiblingRow(_wpAll, allocId, aliases);
     };
     const _paidDate = (allocId, person) => {
       if (allocId == null) return null;
@@ -15469,7 +15470,8 @@ function pvBuildChecklist(payee, preCheckIds, editMode) {
         }
       }
       // Fall back to plain key (legacy)
-      return wpMap[allocId] !== undefined && wpMap[allocId] !== null;
+      if (wpMap[allocId] !== undefined && wpMap[allocId] !== null) return true;
+      return _wpPaidOnSiblingRow(wpMap, allocId, aliases);
     };
     const grouped = {}; // keyed by inv_no
     ALLOCATIONS.forEach(a => {
@@ -19566,6 +19568,25 @@ function migrateWpMapToInvKeys() {
 // Robust wage-paid check: handles alloc_id rotation. Returns true if THIS
 // alloc, OR any sibling alloc on the same invoice, OR the invoice-level
 // flag is marked paid.
+// 29 Sep 2026: a person's "paid" tick is stored against an allocation row id, but
+// re-saving an invoice voids that row and creates a new one — so the tick used to be
+// left behind and the invoice reappeared in "Ready to pay". Look for the person's
+// tick on ANY row (live or voided) of the same invoice.
+function _wpPaidOnSiblingRow(wpMap, allocId, aliases) {
+  const raw = (Array.isArray(window.ALLOCATIONS_RAW) && window.ALLOCATIONS_RAW.length) ? window.ALLOCATIONS_RAW : ((typeof ALLOCATIONS !== 'undefined') ? ALLOCATIONS : []);
+  // An explicit un-tick (null) on the current row wins over any older tick.
+  if (aliases.some(a => (allocId + '|' + a) in wpMap && wpMap[allocId + '|' + a] === null)) return false;
+  const me = raw.find(x => x && String(x.alloc_id) === String(allocId));
+  if (!me || !me.inv_no) return false;
+  for (const x of raw) {
+    if (!x || x.inv_no !== me.inv_no || String(x.alloc_id) === String(allocId)) continue;
+    for (const alias of aliases) {
+      const v = wpMap[x.alloc_id + '|' + alias];
+      if (v !== undefined && v !== null) return true;
+    }
+  }
+  return false;
+}
 function isWagePaidForAlloc(a) {
   if (!a) return false;
   const m = getWagePaidMap();
