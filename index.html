@@ -4685,7 +4685,7 @@ async function voidCancelledAllocs() {
 // mixed-reviewer/multi-party exclusions. No silent sweeps observed.
 const AUTOSYNC_APPLY_ENABLED = true;
 async function syncStaleAllocations() {
-  const stale = (window.__STALE_INV_NOS || []);
+  const stale = (window.__STALE_INV_NOS || []).filter(no => ((INVOICES||[]).find(i => i.inv_no === no) || {}).status !== 'paid');
   if (!stale.length) { try { toast('No stale invoices to sync.', 'info'); } catch(e){} return; }
   const rows = [];
   for (const invNo of stale) {
@@ -5647,6 +5647,14 @@ function _excelParityCheck(liveBank, liveTD, netProfit, liveDrawings) {
 function runAccountingHealth(receipts, vouchers) {
   const el = document.getElementById('dash-acct-health');
   if (!el) return;
+  // 29 Sep 2026: if a startup load failed (GAS cold start), the arrays are empty and
+  // every check reports false drift. Say so instead of showing misleading warnings.
+  if (!(INVOICES||[]).length || !(receipts||[]).length || !(vouchers||[]).length) {
+    el.innerHTML = '<div style="padding:14px 16px;border:1px solid var(--border);border-radius:10px;background:#FFFBEB;color:#78350F;font-size:13px">'
+      + '⏳ Accounting Health paused — data not fully loaded (invoices ' + (INVOICES||[]).length + ', receipts ' + (receipts||[]).length + ', vouchers ' + (vouchers||[]).length + '). '
+      + 'Google Sheets may still be waking up. <a href="javascript:location.reload()" style="font-weight:600;text-decoration:underline">Reload</a> in a few seconds.</div>';
+    return;
+  }
   try {
     const fy    = String(new Date().getFullYear());
     const inFY  = d => { if (!d) return false; if (/^\d{4}/.test(d)) return d.slice(0,4)===fy; const m=(d||'').match(/\b(\d{4})\b/); return m?m[1]===fy:false; };
@@ -6171,7 +6179,7 @@ function runAccountingHealth(receipts, vouchers) {
     let _allocFreshOk = true;
     let _allocFreshDetail = 'All invoices reconcile (saved allocations match lines)';
     try {
-      const stale = [];
+      let stale = [];
       const _norm = p => p === 'Koay PH' ? 'Koay' : p;
       (INVOICES||[]).filter(i => i.status !== 'cancelled').forEach(inv => {
         const gross = parseFloat(inv.amount || 0);
@@ -6239,7 +6247,17 @@ function runAccountingHealth(receipts, vouchers) {
         }
         if (reason) stale.push({ inv_no: inv.inv_no, client: (inv.client_name||'').slice(0,28), diff: diff.toFixed(2), reason });
       });
+      // 29 Sep 2026: PAID invoices are locked — their amounts must never change
+      // (Peter's rule; master Excel prevails). Re-saving legacy paid invoices
+      // with no line data would zero people's shares, so they are reported as
+      // locked instead of offered to Auto-sync.
+      const _staleLocked = stale.filter(s => ((INVOICES||[]).find(i => i.inv_no === s.inv_no) || {}).status === 'paid');
+      const _lockedNos = new Set(_staleLocked.map(s => s.inv_no));
+      stale = stale.filter(s => !_lockedNos.has(s.inv_no));
       window.__STALE_INV_NOS = stale.map(s => s.inv_no);
+      if (!stale.length && _staleLocked.length) {
+        _allocFreshDetail = `All unpaid invoices reconcile · ${_staleLocked.length} paid invoice${_staleLocked.length>1?'s':''} differ from their lines — locked (paid amounts are never re-saved)`;
+      }
       if (stale.length) {
         _allocFreshOk = false;
         const top = stale.slice(0, 3).map(s => `${s.inv_no} (${s.client}, ${s.reason})`).join(' · ');
