@@ -2585,6 +2585,18 @@ function _isPersonPayoutVoucher(v) {
   return c.startsWith('wages_') || c === 'commission' || c === 'cosec_exp';
 }
 
+// Payee used for payout matching (lower-case). A wage voucher entered with payee
+// "Other"/blank is credited to the person its category names — e.g. PV26-ET255,
+// the RM255 Prithishan part-payment ET collected (wages_et), which master
+// Due (to) books as paid to ET (confirmed by Peter 29 Sep 2026).
+const _WAGE_CATEGORY_PERSON = { wages_et: 'ET', wages_txy: 'Koay', wages_ho: 'KC', wages_wan: 'KC', wages_ivy: 'Ivy', wages_cecilia: 'Cecilia' };
+function _payoutPayee(v) {
+  const p = String((v && v.payee) || '').toLowerCase().trim();
+  if (p && p !== 'other') return p;
+  const byCat = _WAGE_CATEGORY_PERSON[String((v && v.category) || '').toLowerCase().trim()];
+  return byCat ? byCat.toLowerCase() : p;
+}
+
 // Allocation IDs to treat as voided (since save_allocation API also creates new rows
 // instead of updating). Add the OLD alloc_id when you've replaced an allocation.
 window.ALLOC_VOID_IDS = [
@@ -13782,7 +13794,7 @@ async function loadPayoutSummary() {
   const paid = {};
   (VOUCHERS||[]).forEach(v => {
     if (!_isPersonPayoutVoucher(v)) return;
-    const payee = (v.payee||'').toLowerCase().trim();
+    const payee = _payoutPayee(v);
     for (const [key, aliases] of Object.entries(PAYEE_MAP)) {
       if (aliases.some(a => a.toLowerCase() === payee)) {
         paid[key] = r2((paid[key]||0) + parseFloat(v.amount||0));
@@ -14101,7 +14113,7 @@ function renderPayoutDetail() {
   const paidMap = {}; // person key → {total, vouchers[]}
   (VOUCHERS || []).forEach(v => {
     if (!_isPersonPayoutVoucher(v)) return;  // wages/commission only — see helper
-    const payee = (v.payee || '').toLowerCase().trim();
+    const payee = _payoutPayee(v);
     for (const [key, aliases] of Object.entries(PAYEE_MAP)) {
       if (aliases.some(a => a.toLowerCase() === payee)) {
         if (!paidMap[key]) paidMap[key] = { total: 0, vouchers: [] };
