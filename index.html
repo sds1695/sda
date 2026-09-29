@@ -9210,7 +9210,7 @@ async function editReviewerTop() {
   // Update the live SETTINGS object so getSetting() picks it up immediately
   SETTINGS.abot_reviewer_top = n;
   // Persist to backend
-  const res = await api({ action: 'save_settings', data: SETTINGS });
+  const res = await saveSettingsMerged({ abot_reviewer_top: n });
   if (!res.ok) toast('Could not save setting to server — will revert on reload.', 'error');
   // Update display and rerun allocation preview
   const el = document.getElementById('alloc-top-display');
@@ -13674,9 +13674,9 @@ async function saveAllocSettings() {
     cecilia_quarterly:  parseFloat(document.getElementById('set-cecilia').value)      || 75,
     abot_reviewer_top:  parseFloat(document.getElementById('set-reviewer-top').value) || 20,
   };
-  const res = await api({ action: 'save_settings', data: newSettings });
+  const _chg = {}; ['admin_retain_pct','kc_commission_pct','abot_standard','abot_large','cecilia_quarterly','abot_reviewer_top'].forEach(k => { if (k in newSettings) _chg[k] = newSettings[k]; });
+  const res = await saveSettingsMerged(_chg);
   if (res.ok) {
-    SETTINGS = newSettings;
     document.getElementById('alloc-settings-panel').style.display = 'none';
     toast('Settings saved ✓', 'success');
     renderAllocations(); // re-render with new rates
@@ -18383,28 +18383,7 @@ async function clearAllWagePaidMarks() {
   document.body.appendChild(banner);
 
   try {
-    const token = (SESSION && SESSION.token) || '';
-    const body = JSON.stringify({ action: 'save_settings', data: newSettings, token: token });
-
-    // Try POST first (no URL limit)
-    let res = null;
-    try {
-      const r = await fetch(API, {
-        method: 'POST',
-        body: body,
-        mode: 'cors',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        redirect: 'follow',
-      });
-      const text = await r.text();
-      try { res = JSON.parse(text); } catch(e) {}
-    } catch(e) { console.warn('clear: POST error', e); }
-
-    // Fallback to JSONP if POST failed
-    if (!res || !res.ok) {
-      console.log('clear: POST result was', res, '- trying JSONP');
-      res = await api({ action: 'save_settings', data: newSettings });
-    }
+    const res = await saveSettingsMerged({ _wage_paid_blob: '' });
 
     if (!res || !res.ok) {
       banner.remove();
@@ -18414,7 +18393,6 @@ async function clearAllWagePaidMarks() {
 
     // Sheet is now updated. Wipe locally too, update in-memory SETTINGS, and reload.
     localStorage.removeItem('seraya_wage_paid_v1');
-    SETTINGS = newSettings;
     banner.innerHTML = '<div style="color:#1D9E75"><strong>\u2713 Cleared.</strong> Reloading&hellip;</div>';
 
     setTimeout(() => { location.reload(); }, 700);
@@ -21703,6 +21681,7 @@ const SYNCED_BLOBS = [
   { settingsKey: '_ib_linedefs_blob',         pattern: 'ib_linedefs_' },
   { settingsKey: '_ib_ld_blob',               pattern: 'ib_ld_' },
   { settingsKey: '_notes_blob',               lsKey: 'seraya_notes_v1' },
+  { settingsKey: '_job_inv_links_blob',       lsKey: 'seraya_job_inv_links_v1' },
 ];
 
 // Keep references to original Storage methods — used internally so we don't
@@ -21725,69 +21704,145 @@ let _syncPushTimer = null;
 let _syncDirtyKeys = new Set();
 let _syncSuspended = false;   // suspend while pulling (so writes from pull don't loop)
 
+// ── Settings sync v2 (29 Sep 2026) ─────────────────────────────────────────
+// Old behaviour sent the WHOLE SETTINGS object (as loaded at boot) on every push,
+// so one device silently overwrote other devices' blobs; blobs over Google Sheets'
+// 50,000-char cell limit made every push fail; and existing devices always
+// preferred their local copy on boot. New behaviour:
+//  • saveSettingsMerged(changes): re-read the Sheet's current settings, replace
+//    ONLY the changed keys, POST. Values over the cell limit are split into
+//    `<key>__c0..` chunk rows (each prefixed '~' so Sheets never coerces them).
+//  • Keys that failed to push stay in a persistent pending list and are retried;
+//    on boot a pending key keeps the local value, everything else takes the Sheet's.
+//  • The first time a device with existing data runs this code, nothing is
+//    overwritten either way — a banner asks which copy is correct.
+const SETTINGS_CELL_MAX = 45000;
+const _SYNC_PENDING_KEY  = 'seraya_sync_pending_v1';
+const _SYNC_MIGRATED_KEY = 'seraya_sync_migrated_v2';
+function _syncPending() { try { return new Set(JSON.parse(localStorage.getItem(_SYNC_PENDING_KEY) || '[]')); } catch(e) { return new Set(); } }
+function _syncSetPending(set) { try { _origSetItem.call(localStorage, _SYNC_PENDING_KEY, JSON.stringify([...set])); } catch(e) {} }
+
+// Read a (possibly chunked) setting value from a settings object.
+function _readSettingValue(obj, key) {
+  if (!obj) return undefined;
+  const n = parseInt(obj[key + '__n'] || '0', 10);
+  if (n > 0) {
+    let s = '';
+    for (let i = 0; i < n; i++) {
+      const part = obj[key + '__c' + i];
+      if (typeof part !== 'string') return undefined;   // incomplete — treat as missing
+      s += part.charAt(0) === '~' ? part.slice(1) : part;
+    }
+    return s;
+  }
+  return obj[key];
+}
+// Write a value into a settings object, chunking if needed and blanking stale chunks.
+function _writeSettingValue(obj, key, value) {
+  Object.keys(obj).forEach(x => { if (x === key + '__n' || x.startsWith(key + '__c')) obj[x] = ''; });
+  if (typeof value === 'string' && value.length > SETTINGS_CELL_MAX) {
+    const n = Math.ceil(value.length / SETTINGS_CELL_MAX);
+    for (let i = 0; i < n; i++) obj[key + '__c' + i] = '~' + value.slice(i * SETTINGS_CELL_MAX, (i + 1) * SETTINGS_CELL_MAX);
+    obj[key + '__n'] = String(n);
+    obj[key] = '';   // older dashboard copies treat '' as "no remote value" and keep their local copy
+  } else {
+    obj[key] = value;
+  }
+}
+
+async function _postSettings(data) {
+  const token = (SESSION && SESSION.token) || '';
+  try {
+    const r = await fetch(API, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'save_settings', data, token }),
+      mode: 'cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // no CORS preflight
+      redirect: 'follow',
+    });
+    const t = await r.text();
+    let res = null; try { res = JSON.parse(t); } catch(e) {}
+    return res || { ok: false, error: 'Unexpected response: ' + t.slice(0, 200) };
+  } catch(e) {
+    return { ok: false, error: 'POST failed: ' + ((e && e.message) || e) };
+  }
+}
+
+// THE way to save settings. `changes` = { settingsKey: value, ... }.
+// No JSONP fallback: a full settings object can never fit in a GET URL.
+let _settingsSaveChain = Promise.resolve();
+function saveSettingsMerged(changes) {
+  const run = async () => {
+    const rr = await api({ action: 'get_settings' });
+    if (!rr || !rr.ok || typeof rr.data !== 'object' || !rr.data) {
+      return { ok: false, error: 'Could not read current settings from the Sheet: ' + ((rr && rr.error) || 'no response') };
+    }
+    const out = Object.assign({}, rr.data);
+    Object.entries(changes || {}).forEach(([k, v]) => _writeSettingValue(out, k, v));
+    const res = await _postSettings(out);
+    if (res && res.ok) SETTINGS = out;
+    return res;
+  };
+  const p = _settingsSaveChain.then(run, run);   // serialise saves from this tab
+  _settingsSaveChain = p.catch(() => {});
+  return p;
+}
+
+function _syncLocalValue(def) {
+  if (def.pattern) {
+    const bundle = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(def.pattern)) bundle[key] = localStorage.getItem(key);
+    }
+    return JSON.stringify(bundle);
+  }
+  return localStorage.getItem(def.lsKey) || '';
+}
+
+let _syncFailToastShown = false;
+let _syncRetryTimer = null;
 function pushSyncedBlob(settingsKey) {
   if (_syncSuspended) return;
-  if (settingsKey) _syncDirtyKeys.add(settingsKey);
+  if (settingsKey) {
+    _syncDirtyKeys.add(settingsKey);
+    const pend = _syncPending(); pend.add(settingsKey); _syncSetPending(pend);
+  }
   if (_syncPushTimer) return;
-  _syncPushTimer = setTimeout(() => {
+  _syncPushTimer = setTimeout(async () => {
     _syncPushTimer = null;
     if (!_syncDirtyKeys.size) return;
     const dirty = Array.from(_syncDirtyKeys);
     _syncDirtyKeys.clear();
-    if (typeof SETTINGS !== 'object' || SETTINGS === null) window.SETTINGS = {};
-    dirty.forEach(k => {
-      const def = SYNCED_BLOBS.find(b => b.settingsKey === k);
-      if (!def) return;
-      if (def.pattern) {
-        // Bundle every matching localStorage key into a JSON object
-        const bundle = {};
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
-          if (key && key.startsWith(def.pattern)) {
-            bundle[key] = localStorage.getItem(key);
-          }
-        }
-        SETTINGS[k] = JSON.stringify(bundle);
-      } else {
-        const raw = localStorage.getItem(def.lsKey) || '';
-        SETTINGS[k] = raw;
-      }
-    });
-    // POST the SETTINGS via fetch — bypasses the JSONP URL length limit.
-    // GAS's doPost handles the same action dispatch as doGet.
-    try {
-      const token = (SESSION && SESSION.token) || '';
-      const body = JSON.stringify({ action: 'save_settings', data: SETTINGS, token });
-      fetch(API, {
-        method: 'POST',
-        body: body,
-        mode: 'cors',
-        // Use text/plain to avoid CORS preflight (GAS accepts this)
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        redirect: 'follow',
-      })
-      .then(r => r.text())
-      .then(t => {
-        // GAS returns JSON for POST (no JSONP wrapper)
-        let res = null; try { res = JSON.parse(t); } catch(e) {}
-        if (!res || !res.ok) {
-          console.warn('[sync] push failed:', res || t.slice(0,200));
-          // Fall back to JSONP if POST fails (older GAS deployments may not have doPost)
-          api({ action: 'save_settings', data: SETTINGS })
-            .then(r2 => { if (!r2 || !r2.ok) console.warn('[sync] JSONP fallback failed:', r2); else console.log('[sync] pushed via JSONP fallback', dirty.length, 'blob(s):', dirty); })
-            .catch(e => console.warn('[sync] JSONP fallback error:', e));
-        } else {
-          console.log('[sync] pushed', dirty.length, 'blob(s):', dirty);
-        }
-      })
-      .catch(e => {
-        console.warn('[sync] POST error, falling back to JSONP:', e);
-        api({ action: 'save_settings', data: SETTINGS })
-          .then(r2 => { if (!r2 || !r2.ok) console.warn('[sync] JSONP fallback failed:', r2); else console.log('[sync] pushed via JSONP fallback', dirty.length, 'blob(s):', dirty); })
-          .catch(e2 => console.warn('[sync] JSONP fallback error:', e2));
-      });
-    } catch(e) { console.warn('[sync] push exception:', e); }
+    const changes = {};
+    dirty.forEach(k => { const def = SYNCED_BLOBS.find(b => b.settingsKey === k); if (def) changes[k] = _syncLocalValue(def); });
+    if (!Object.keys(changes).length) return;
+    const res = await saveSettingsMerged(changes);
+    if (res && res.ok) {
+      const pend = _syncPending(); Object.keys(changes).forEach(k => pend.delete(k)); _syncSetPending(pend);
+      console.log('[sync] pushed', Object.keys(changes).length, 'blob(s):', Object.keys(changes));
+    } else {
+      console.warn('[sync] push failed — will retry in 60 s:', res && res.error);
+      if (!_syncFailToastShown && typeof toast === 'function') { _syncFailToastShown = true; toast('Settings not yet synced to Google Sheet — will keep retrying.', 'error'); }
+      if (!_syncRetryTimer) _syncRetryTimer = setTimeout(() => { _syncRetryTimer = null; _syncPending().forEach(k => _syncDirtyKeys.add(k)); pushSyncedBlob(); }, 60000);
+    }
   }, 600);
+}
+
+// Apply one remote value to localStorage (bypassing the push hook).
+function _syncApplyRemote(def, remoteRaw) {
+  let applied = 0;
+  if (def.pattern) {
+    let bundle; try { bundle = JSON.parse(remoteRaw); } catch(e) { return 0; }
+    if (typeof bundle !== 'object' || !bundle) return 0;
+    Object.entries(bundle).forEach(([k, v]) => { if (localStorage.getItem(k) !== v) { _origSetItem.call(localStorage, k, v); applied++; } });
+    const toRemove = [];
+    for (let i = 0; i < localStorage.length; i++) { const key = localStorage.key(i); if (key && key.startsWith(def.pattern) && !(key in bundle)) toRemove.push(key); }
+    toRemove.forEach(k => { _origRemoveItem.call(localStorage, k); applied++; });
+  } else if ((localStorage.getItem(def.lsKey) || '') !== remoteRaw) {
+    _origSetItem.call(localStorage, def.lsKey, remoteRaw); applied++;
+  }
+  return applied;
 }
 
 async function pullSyncedBlobs(opts) {
@@ -21796,69 +21851,26 @@ async function pullSyncedBlobs(opts) {
     if (typeof api !== 'function') return false;
     _syncSuspended = true;
     const res = await api({ action: 'get_settings' });
-    if (!res || !res.ok || typeof res.data !== 'object') {
-      _syncSuspended = false;
-      return false;
-    }
+    if (!res || !res.ok || typeof res.data !== 'object') { _syncSuspended = false; return false; }
     SETTINGS = res.data;
+    const pending  = _syncPending();
+    const migrated = !!localStorage.getItem(_SYNC_MIGRATED_KEY);
+    const conflicts = [];
     let applied = 0;
     SYNCED_BLOBS.forEach(def => {
-      const remoteRaw = SETTINGS[def.settingsKey];
-      if (def.pattern) {
-        // Pattern blob — unpack and reconcile
-        if (!remoteRaw) {
-          // No remote blob. If preferLocal, push our local up.
-          if (opts.preferLocal) {
-            // Check if we have local keys matching this pattern
-            let hasLocal = false;
-            for (let i = 0; i < localStorage.length; i++) {
-              const key = localStorage.key(i);
-              if (key && key.startsWith(def.pattern)) { hasLocal = true; break; }
-            }
-            if (hasLocal) _syncDirtyKeys.add(def.settingsKey);
-          }
-          return;
-        }
-        let bundle;
-        try { bundle = JSON.parse(remoteRaw); } catch(e) { return; }
-        if (typeof bundle !== 'object' || !bundle) return;
-        // Write all keys from the bundle (bypassing the monkey-patch)
-        Object.entries(bundle).forEach(([k, v]) => {
-          if (localStorage.getItem(k) !== v) {
-            _origSetItem.call(localStorage, k, v);
-            applied++;
-          }
-        });
-        // Remove any local keys matching the pattern that aren't in the bundle.
-        // Skip this in preferLocal mode (first-time migration — keep local extras).
-        if (!opts.preferLocal) {
-          const toRemove = [];
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key && key.startsWith(def.pattern) && !(key in bundle)) toRemove.push(key);
-          }
-          toRemove.forEach(k => { _origRemoveItem.call(localStorage, k); applied++; });
-        }
-      } else {
-        // Single-key blob
-        const localRaw = localStorage.getItem(def.lsKey) || '';
-        if (remoteRaw === undefined || remoteRaw === null || remoteRaw === '') {
-          if (opts.preferLocal && localRaw) _syncDirtyKeys.add(def.settingsKey);
-          return;
-        }
-        if (opts.preferLocal && localRaw && localRaw !== remoteRaw) {
-          // Migration path: prefer local on first run
-          _syncDirtyKeys.add(def.settingsKey);
-          return;
-        }
-        if (remoteRaw !== localRaw) {
-          _origSetItem.call(localStorage, def.lsKey, remoteRaw);
-          applied++;
-        }
-      }
+      const remoteRaw  = _readSettingValue(SETTINGS, def.settingsKey);
+      const localRaw   = _syncLocalValue(def);
+      const localEmpty = def.pattern ? localRaw === '{}' : !localRaw;
+      if (pending.has(def.settingsKey)) { _syncDirtyKeys.add(def.settingsKey); return; }   // local change not yet pushed
+      if (remoteRaw === undefined || remoteRaw === null || remoteRaw === '') return;       // nothing remote — keep local
+      if (remoteRaw === localRaw) return;
+      if (!migrated && !opts.fresh && !localEmpty) { conflicts.push(def); return; }        // first run: ask, don't overwrite
+      applied += _syncApplyRemote(def, remoteRaw);
     });
     _syncSuspended = false;
-    if (opts.preferLocal && _syncDirtyKeys.size) pushSyncedBlob();
+    if (_syncDirtyKeys.size) pushSyncedBlob();
+    if (conflicts.length) _showSyncChoiceBanner(conflicts);
+    else if (!migrated) { try { _origSetItem.call(localStorage, _SYNC_MIGRATED_KEY, new Date().toISOString()); } catch(e) {} }
     if (applied > 0) console.log('[sync] applied', applied, 'change(s) from Sheet');
     return applied;
   } catch(e) {
@@ -21866,6 +21878,52 @@ async function pullSyncedBlobs(opts) {
     _syncSuspended = false;
     return false;
   }
+}
+
+// One-time per device: this browser's data differs from the Sheet for some blobs.
+// Only the Principal can make this browser's copy the master; anyone can adopt the Sheet's.
+function _showSyncChoiceBanner(defs) {
+  if (document.getElementById('sync-choice-banner')) return;
+  const isPrincipal = !!(SESSION && SESSION.user && SESSION.user.name === 'Principal');
+  const names = defs.map(d => d.settingsKey.replace(/^_|_blob$/g, '').replace(/_/g, ' ')).join(', ');
+  const el = document.createElement('div');
+  el.id = 'sync-choice-banner';
+  el.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:99999;width:min(640px,calc(100vw - 32px));background:#FFFBEB;border:2px solid #D97706;border-radius:10px;padding:16px 20px;font-size:13px;color:#78350F;box-shadow:0 8px 24px rgba(0,0,0,.2)';
+  el.innerHTML = '<div style="font-weight:600;margin-bottom:6px">This browser\'s saved data differs from the Google Sheet</div>'
+    + '<div style="margin-bottom:10px">Items: ' + names + '. Nothing has been overwritten. Choose which copy is correct (asked once per browser).</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    + (isPrincipal ? '<button id="sync-keep-local" class="btn btn-primary" style="font-size:12px">Keep THIS browser\'s copy (upload to Sheet)</button>' : '')
+    + '<button id="sync-use-sheet" class="btn" style="font-size:12px">Use the Sheet\'s copy</button>'
+    + '<button id="sync-later" class="btn" style="font-size:12px">Decide later</button></div>';
+  document.body.appendChild(el);
+  const done = () => { try { _origSetItem.call(localStorage, _SYNC_MIGRATED_KEY, new Date().toISOString()); } catch(e) {} el.remove(); };
+  const k = document.getElementById('sync-keep-local');
+  if (k) k.onclick = () => {
+    if (!confirm('Upload this browser\'s copy of: ' + names + '\n\nto the Google Sheet? Other browsers will then adopt it.')) return;
+    // Sales orders are additive: keep any the Sheet has that this browser doesn't (by so_id).
+    try {
+      const so = defs.find(d => d.lsKey === 'seraya_sales_orders_v1');
+      if (so) {
+        const loc = JSON.parse(localStorage.getItem(so.lsKey) || '[]');
+        const rem = JSON.parse(_readSettingValue(SETTINGS, so.settingsKey) || '[]');
+        const have = new Set(loc.map(o => String(o && o.so_id)));
+        const extra = rem.filter(o => o && o.so_id && !have.has(String(o.so_id)));
+        if (extra.length) { _syncSuspended = true; _origSetItem.call(localStorage, so.lsKey, JSON.stringify(loc.concat(extra))); _syncSuspended = false; }
+      }
+    } catch(e) { _syncSuspended = false; console.warn('[sync] sales-order merge skipped:', e); }
+    const pend = _syncPending(); defs.forEach(d => pend.add(d.settingsKey)); _syncSetPending(pend);
+    defs.forEach(d => _syncDirtyKeys.add(d.settingsKey));
+    done(); pushSyncedBlob();
+    if (typeof toast === 'function') toast('Uploading this browser\'s copy to the Sheet…', 'success');
+  };
+  document.getElementById('sync-use-sheet').onclick = () => {
+    if (!confirm('Replace this browser\'s copy of: ' + names + '\n\nwith the Google Sheet\'s copy? The page will reload.')) return;
+    _syncSuspended = true;
+    defs.forEach(d => _syncApplyRemote(d, _readSettingValue(SETTINGS, d.settingsKey)));
+    _syncSuspended = false;
+    done(); location.reload();
+  };
+  document.getElementById('sync-later').onclick = () => el.remove();
 }
 
 // Monkey-patch Storage.prototype.setItem / removeItem so writes to any
@@ -21892,11 +21950,10 @@ let _syncBootPullDone = false;
 async function ensureSyncBootPull() {
   if (_syncBootPullDone) return;
   _syncBootPullDone = true;
-  // Fresh device (no local wage_paid data) → remote is authoritative: pull everything.
-  // Existing device (already has local data) → prefer local so we don't overwrite
-  // good local state with a slightly older remote snapshot; local pushes keep remote current.
+  // Fresh device (no local wage_paid data) → the Sheet is authoritative, no question asked.
+  // Existing device → pending local changes are pushed; first run asks via a banner.
   const isFreshDevice = !localStorage.getItem('seraya_wage_paid_v1');
-  await pullSyncedBlobs({ preferLocal: !isFreshDevice });
+  await pullSyncedBlobs({ fresh: isFreshDevice });
   try { renderReminders && renderReminders(); } catch(e){}
   try { renderSalesOrders && renderSalesOrders(); } catch(e){}
   try { renderPayoutView && renderPayoutView(); } catch(e){}
