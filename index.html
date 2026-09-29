@@ -2574,6 +2574,9 @@ window.VOUCHER_VOID_IDS = [
   'PV1790516871976',  // PV26143 2026-09-19 Other RM20.10 (twin PV26146)
   'PV1790518041884',  // PV26145 2026-09-19 Other RM20.10 (twin PV26146)
 ];
+// The 29-Sep entries above were each verified against a live twin — the integrity
+// guard reports them as low-severity "verified duplicate", not a red alert.
+window.VOUCHER_VOID_VERIFIED = window.VOUCHER_VOID_IDS.slice();
 
 // Does this voucher settle a person's wage/commission balance? (29 Sep 2026)
 // Only wage categories count. Expense reimbursements paid to a person — software,
@@ -2602,7 +2605,8 @@ function _payoutPayee(v) {
 window.ALLOC_VOID_IDS = [
   // 2026-05-14: removed 'A1778404624955' and 'A1778408865159' (no longer present in
   // the live Allocations sheet, so the blocklist entries were no-ops).
-  'A1778408856421',  // INV251210 Dejavu — added then voided (overshoots ET balance)
+  // 2026-09-29: removed 'A1778408856421' (INV251210 Dejavu) — no longer in the live
+  // Allocations sheet, so the entry was a no-op (integrity guard: stale blocklist ID).
 ];
 
 // Receipt numbers (receipt_no field) to suppress everywhere.
@@ -3820,7 +3824,15 @@ function runDataIntegrityChecks() {
         });
       } else {
         const desc = v.description || '';
-        if (!desc.startsWith('__VOID__')) {
+        if (!desc.startsWith('__VOID__') && (window.VOUCHER_VOID_VERIFIED || []).includes(id.toString())) {
+          // 29 Sep 2026: verified duplicate (live twin ties to master S 21.9.26) — hidden on purpose.
+          issues.push({
+            severity: 'low', area: 'Vouchers (verified duplicate)',
+            summary: `${v.voucher_no || id} hidden as a verified duplicate`,
+            detail: `Voucher ${v.voucher_no} (RM ${_integrityFmt(v.amount)}) duplicates a live voucher that ties to the master Excel (29 Sep tally, LE_private\recon\C_gl_pl_bs_pv.md). Hidden via window.VOUCHER_VOID_IDS on every device.`,
+            fix: `Optional tidy-up: prefix its description in the Vouchers sheet with "__VOID__ " so tools reading the sheet directly skip it too.`,
+          });
+        } else if (!desc.startsWith('__VOID__')) {
           issues.push({
             severity: 'high', area: 'Vouchers (split-mechanism mismatch)',
             summary: `${v.voucher_no || id} hidden by JS but visible in sheet`,
