@@ -14311,7 +14311,7 @@ function renderPayoutDetail() {
           if (_wpAll[ck] !== null && _wpAll[ck] !== undefined) return true;
         }
       }
-      if (_wpAll[allocId] !== undefined && _wpAll[allocId] !== null) return true;
+      if (_wpAll[allocId] !== undefined && _wpAll[allocId] !== null && !_wpPlainKeyIgnored(allocId, aliases)) return true;
       return _wpPaidOnSiblingRow(_wpAll, allocId, aliases);
     };
     const _paidDate = (allocId, person) => {
@@ -15471,7 +15471,7 @@ function pvBuildChecklist(payee, preCheckIds, editMode) {
         }
       }
       // Fall back to plain key (legacy)
-      if (wpMap[allocId] !== undefined && wpMap[allocId] !== null) return true;
+      if (wpMap[allocId] !== undefined && wpMap[allocId] !== null && !_wpPlainKeyIgnored(allocId, aliases)) return true;
       return _wpPaidOnSiblingRow(wpMap, allocId, aliases);
     };
     const grouped = {}; // keyed by inv_no
@@ -19656,6 +19656,15 @@ function migrateWpMapToInvKeys() {
 // re-saving an invoice voids that row and creates a new one — so the tick used to be
 // left behind and the invoice reappeared in "Ready to pay". Look for the person's
 // tick on ANY row (live or voided) of the same invoice.
+// Rows whose old "everyone paid" (plain) mark must NOT count for a given person,
+// because the master Excel shows that person still unpaid. Only the plain mark is
+// ignored — a real per-person tick (e.g. from a payment voucher) still counts.
+const WAGE_PLAIN_KEY_IGNORED = {
+  'A1779587116760|Koay': 'INV260519 Grand Hill Mining — master Due (to) green: Koay RM152 not yet paid (29 Sep 2026)',
+};
+function _wpPlainKeyIgnored(allocId, aliases) {
+  return (aliases || []).some(a => WAGE_PLAIN_KEY_IGNORED[allocId + '|' + (a === 'TXY' ? 'Koay' : a)]);
+}
 function _wpPaidOnSiblingRow(wpMap, allocId, aliases) {
   const raw = (Array.isArray(window.ALLOCATIONS_RAW) && window.ALLOCATIONS_RAW.length) ? window.ALLOCATIONS_RAW : ((typeof ALLOCATIONS !== 'undefined') ? ALLOCATIONS : []);
   // An explicit un-tick (null) on the current row wins over any older tick.
