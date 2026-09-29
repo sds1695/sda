@@ -11194,6 +11194,11 @@ function printInvoice() {
       .inv-footer { display: flex; justify-content: space-between; margin-top: auto; padding-top: var(--inv-footer-gap, 10pt); gap: 40px; align-items: flex-end; }
       /* Push footer further down when content doesn't fill the page (esp. on overflow page 2) */
       @media print { .inv-footer { margin-top: 80pt !important; } }
+      /* 30 Sep 2026: statements are longer (client groups + repeating header), so the
+         forced 80pt gap pushed the bank/signature block onto page 2. Use a small gap
+         for statements (the Document Layout 'Footer top spacing' slider still adds to it),
+         and never split the bank/signature block across pages on any document. */
+      @media print { .stmt-doc .inv-footer { margin-top: 12pt !important; } .inv-footer { break-inside: avoid; page-break-inside: avoid; } }
       .inv-bank { font-size: 12pt; flex: 1; color: #000; line-height: 15pt; }
       .inv-bank-title { font-size: 12pt; }
       .inv-bank-row { display: flex; gap: 4px; line-height: 15pt; }
