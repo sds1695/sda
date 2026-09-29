@@ -2645,7 +2645,51 @@ window.INV_STATUS_OVERRIDES = {
 // API — uses no-cors POST via form + iframe trick
 // Falls back to GET with encoded payload for reads
 // ══════════════════════════════════════════════════
+// ── Write de-duplication (29 Sep 2026) ──
+// Every save_/delete_ call gets a request_id = hash of its content. An identical
+// write already in flight (double-click, re-entrant handler) shares the first
+// call's result instead of sending a second request. If an identical write
+// TIMED OUT recently (server may still have saved it), the user is asked before
+// it is sent again. request_id is also sent to the server so Apps Script can
+// dedupe on its side. Read actions are untouched.
+const _API_WRITE_RE = /^(save_|delete_)/;
+const _apiInflight = new Map();   // request_id -> Promise
+const _apiTimedOut = new Map();   // request_id -> timestamp of timeout
+function _apiReqId(payload) {
+  const s = JSON.stringify(payload, (k, v) => (k === 'token' || k === '_t' || k === 'request_id') ? undefined : v) || '';
+  let h1 = 0x811c9dc5, h2 = 5381;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 16777619);
+    h2 = (Math.imul(h2, 33) + c) | 0;
+  }
+  return 'rq' + (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36) + s.length.toString(36);
+}
 async function api(payload) {
+  if (payload && _API_WRITE_RE.test(payload.action || '')) {
+    const rid = _apiReqId(payload);
+    if (_apiInflight.has(rid)) {
+      console.warn('[api] identical ' + payload.action + ' already in flight - not sent twice');
+      return _apiInflight.get(rid);
+    }
+    const tOut = _apiTimedOut.get(rid);
+    if (tOut && Date.now() - tOut < 15 * 60 * 1000 && payload.action !== 'save_settings') {
+      const go = confirm('An identical "' + payload.action + '" request timed out a few minutes ago and may ALREADY be saved in Google Sheets.\n\nCheck the record first (refresh the page). Send it again anyway?');
+      if (!go) return { ok: false, error: 'Not re-sent - the earlier identical save may already exist. Refresh and check.' };
+    }
+    payload.request_id = rid;
+    const p = _apiSend(payload).then(res => {
+      _apiInflight.delete(rid);
+      if (res && res.ok === false && /timed out/i.test(res.error || '')) _apiTimedOut.set(rid, Date.now());
+      else _apiTimedOut.delete(rid);
+      return res;
+    });
+    _apiInflight.set(rid, p);
+    return p;
+  }
+  return _apiSend(payload);
+}
+async function _apiSend(payload) {
   if (SESSION && SESSION.token) payload.token = SESSION.token;
   payload._t = Date.now(); // bust GAS CacheService key so stale callback names are never served
   return new Promise((resolve) => {
@@ -13432,7 +13476,16 @@ async function saveAllocEdit() {
     else localStorage.removeItem('claude_retain_' + inv_no);
   } catch(e) {}
 
-  const res = await api({ action: 'save_allocation', data });
+  let res = await api({ action: 'save_allocation', data });
+  // A timeout does NOT mean nothing was written (GAS may finish after we give up).
+  // If the replacement row did land, treat it as success — otherwise the failure
+  // branch would un-void the old row and leave BOTH allocations active.
+  if (!res.ok && /timed out/i.test(res.error || '')) {
+    const _chk = await api({ action: 'get_allocations' });
+    const _landed = _chk.ok && (_chk.data || []).some(a => a.inv_no === inv_no &&
+      !_preAllocIds.has(String(a.alloc_id||'')) && String(a.alloc_id||'') !== String(oldAllocId||''));
+    if (_landed) { console.warn('[saveAllocEdit] timed out but row landed — treating as saved'); res = { ok: true, recovered: true }; }
+  }
   if (res.ok) {
     toast('Allocation updated ✓', 'success');
     closeModal('modal-alloc-edit');
@@ -16892,7 +16945,20 @@ async function saveVoucher() {
     } catch(e) {}
   }
 
-  const res = await api({ action: 'save_voucher', data });
+  const _preVids = new Set((window.VOUCHERS_RAW || []).concat(VOUCHERS || []).map(x => String(x.voucher_id||x.id||'')));
+  if (existingId) _preVids.add(String(existingId));
+  let res = await api({ action: 'save_voucher', data });
+  // A timeout does NOT mean nothing was written. If a matching new voucher row is
+  // now in the sheet, treat it as saved (so wage-paid marks etc. still run) instead
+  // of un-voiding the old one — which would leave BOTH vouchers active.
+  if (!res.ok && /timed out/i.test(res.error || '')) {
+    const _chk = await api({ action: 'get_vouchers' });
+    const _hit = _chk.ok && (_chk.data || []).find(x =>
+      !_preVids.has(String(x.voucher_id||x.id||'')) &&
+      String(x.payee||'') === String(payee) &&
+      Math.abs(parseFloat(x.amount||0) - parseFloat(amount||0)) < 0.005);
+    if (_hit) { console.warn('[saveVoucher] timed out but row landed — treating as saved'); res = { ok: true, voucher_no: _hit.voucher_no, recovered: true }; }
+  }
   if (res.ok) {
     // Sync wage_paid marks: tick = paid, untick = unpaid.
     // In edit mode we also un-mark any invoices that were deselected (user correcting a mistake).
