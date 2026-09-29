@@ -15224,7 +15224,8 @@ function pvNextVoucherNo() {
   // Excel ledger was already up to PV040.26 as of its last save (10 Aug 2026)
   // — floor here so we never re-offer a number that may already be written
   // down by hand since then. Only applied for 2026; later years start clean.
-  if (yy === '26') maxSeq = Math.max(maxSeq, 40);
+  // 29 Sep 2026: master S 21.9.26 is at PV056.26 — never suggest PV041-056 again.
+  if (yy === '26') maxSeq = Math.max(maxSeq, 56);
   let next = maxSeq + 1;
   let candidate = `PV${String(next).padStart(3, '0')}.${yy}`;
   // Defensive loop: keep bumping past anything already in use. This is what
@@ -17075,7 +17076,8 @@ async function saveVoucher() {
     ref_inv_nos:     refInvNos.join(', '),
     payment_account: account,
     bank_account:    account === 'drawings' ? 'Drawings' : 'CIMB 8606183963',
-    voucher_no:      pvNo || undefined,  // user-set PV number; backend stores it as-is
+    voucher_no:      pvNo || undefined,  // user-set PV number; backend keeps it if unused (Patch 2)
+    replaces_voucher_id: existingId || '', // edit: lets the backend reuse this voucher's own number
     // voucher_id intentionally NOT set — GAS always appends new rows (cannot update).
     // VOID + RECREATE: void the old ID, then GAS creates a fresh row below.
   };
