@@ -2727,7 +2727,7 @@ window.INV_STATUS_OVERRIDES = {
 // TIMED OUT recently (server may still have saved it), the user is asked before
 // it is sent again. request_id is also sent to the server so Apps Script can
 // dedupe on its side. Read actions are untouched.
-const _API_WRITE_RE = /^(save_|delete_)/;
+const _API_WRITE_RE = /^(save_|delete_|void_|recalc_|rebuild_)/;
 const _apiInflight = new Map();   // request_id -> Promise
 const _apiTimedOut = new Map();   // request_id -> timestamp of timeout
 function _apiReqId(payload) {
@@ -9845,6 +9845,7 @@ async function saveInvoice() {
       const d = Object.assign({}, allocData);
       _rowKeys.forEach(k => { d[k] = p[k]; });
       d.prep_pct = (p.prep_pct !== '' && p.prep_pct > 0 && p.prep_pct < 100) ? p.prep_pct : null;
+      d.append_group = true;   // Patch 4: add this row instead of replacing the invoice's rows
       try { const r = await api({ action: 'save_allocation', data: d }); if (r && r.ok) _okN++; } catch(e) {}
     }
     try {
@@ -15929,19 +15930,24 @@ async function loadSyncTally() {
   head.innerHTML = '';
   out.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text3)">Reading the Google Sheet… (6 tables)</div>';
 
-  const names = ['invoices', 'receipts', 'vouchers', 'allocations', 'settings', 'gl'];
+  const names = ['invoices', 'receipts', 'vouchers', 'allocations', 'settings', 'gl', 'backend'];
   const calls = await Promise.all([
     api({ action: 'get_invoices' }), api({ action: 'get_receipts' }), api({ action: 'get_vouchers' }),
     api({ action: 'get_allocations' }), api({ action: 'get_settings' }), api({ action: 'get_gl' }),
+    api({ action: 'backend_info' }),
   ].map(p => Promise.resolve(p).catch(e => ({ ok: false, error: String(e) }))));
   const raw = {}, loadErr = [];
   names.forEach((n, i) => {
     const r = calls[i];
-    if (r && r.ok) raw[n] = r.data; else { raw[n] = null; loadErr.push(n + ': ' + ((r && r.error) || 'no response')); }
+    if (r && r.ok) raw[n] = r.data;
+    else if (n === 'backend') raw[n] = { _unknown: /unknown action/i.test((r && r.error) || ''), _error: (r && r.error) || 'no response' };
+    else { raw[n] = null; loadErr.push(n + ': ' + ((r && r.error) || 'no response')); }
   });
 
   const R = buildSyncTally(raw);
   R.loadErrors = loadErr;
+  R.backend = (raw.backend && !raw.backend._unknown && !raw.backend._error) ? raw.backend : (raw.backend || {});
+  if (!(R.backend.patch1_idempotency && R.backend.patch2_pv_numbers && R.backend.patch4)) R.issues++;
   R.at = new Date().toISOString();
   _SYNC_TALLY_LAST = R;
   renderSyncTally(R);
@@ -15949,7 +15955,7 @@ async function loadSyncTally() {
 
 // Pure: raw Sheet data in → report object out (no DOM, no writes).
 function buildSyncTally(raw) {
-  const R = { tables: [], hidden: [], added: [], staleHide: [], dupIds: [], overrides: [], status: [], blobs: [], localOnly: [], gl: null, issues: 0 };
+  const R = { tables: [], hidden: [], added: [], staleHide: [], dupIds: [], overrides: [], status: [], overpaid: [], blobs: [], localOnly: [], gl: null, issues: 0 };
   const idOf = { invoices: 'inv_id', receipts: 'receipt_id', vouchers: 'voucher_id', allocations: 'alloc_id' };
   const amtOf = { invoices: 'amount', receipts: 'amount', vouchers: 'amount', allocations: 'gross_fee' };
   const sheetVoid = {
@@ -16090,9 +16096,10 @@ function buildSyncTally(raw) {
       const exp = recd >= amt - 0.005 ? 'paid' : (recd > 0.005 ? 'partial' : 'outstanding');
       const cur = String(i.status || '').toLowerCase();
       const hasOvr = (window.INV_STATUS_OVERRIDES || {})[no];
+      if (recd > amt + 0.005) R.overpaid.push({ inv_no: no, client: i.client_name, date: i.date, amount: amt, received: recd, over: Math.round((recd - amt) * 100) / 100 });
       if (cur !== exp && !hasOvr) R.status.push({ inv_no: no, client: i.client_name, date: i.date, amount: amt, received: recd, sheet: cur || '(blank)', expected: exp });
     });
-    if (R.status.length) R.issues++;
+    if (R.status.length || R.overpaid.length) R.issues++;
   }
 
   // Settings sync — every SYNCED_BLOBS key, this browser vs the Sheet.
@@ -16204,11 +16211,23 @@ function renderSyncTally(R) {
       <button class="btn btn-secondary btn-sm" onclick="downloadSyncTally()" title="Save this result as a JSON file — the before/after proof for each infrastructure step">⬇ Save result (JSON)</button>
     </div>`;
 
+  // 0. Backend patches
+  const B = R.backend || {};
+  const pRow = (name, what, on) => `<tr>${td('<strong>' + name + '</strong>')}${td(what)}${td(on ? ok.replace('Tallied', 'Installed') : bad('Not installed'), 1)}</tr>`;
+  let html0 = card('0 · Backend patches (Apps Script)',
+    B._error && !B._unknown ? 'Could not ask the backend which patches are installed: ' + _stEsc(B._error) : 'Patches are pasted into Apps Script by the Principal. Patch 4 reports all three once installed.',
+    (B.patch1_idempotency && B.patch2_pv_numbers && B.patch4) ? ok.replace('Tallied', 'All installed') : bad('Pending'),
+    `<table>${th([['Patch'], ['What it does'], ['', 1]])}<tbody>
+      ${pRow('Patch 1', 'No duplicate saves (lock + request memory)', B.patch1_idempotency)}
+      ${pRow('Patch 2', 'Master-style PV numbers (PV057.26 …)', B.patch2_pv_numbers)}
+      ${pRow('Patch 4', 'Voids in the Sheet, correct invoice status, multi-row allocations, GL mirrors live records', !!B.patch4)}
+    </tbody></table>`);
+
   // 1. Records
   const recRows = R.tables.map(x => x.failed
     ? `<tr><td style="font-size:12px"><strong>${tName[x.t]}</strong></td><td colspan="6" style="font-size:12px;color:var(--red)">Could not load from the Sheet</td></tr>`
     : `<tr>${td('<strong>' + tName[x.t] + '</strong>')}${td(x.total, 1, 1)}${td(x.voided + (x.voided ? ' <span style="color:var(--text3)">(' + _stFmt(x.voidedAmt) + ')</span>' : ''), 1, 1)}${td(x.live + '<br><span style="color:var(--text3)">' + _stFmt(x.liveAmt) + '</span>', 1, 1)}${td(x.hidden ? bad('−' + x.hidden) + '<br><span style="color:var(--red)">' + _stFmt(x.hiddenAmt) + '</span>' : '0', 1, 1)}${td(x.added ? bad('+' + x.added) + '<br><span style="color:var(--red)">' + _stFmt(x.addedAmt) + '</span>' : '0', 1, 1)}${td(x.shown + '<br><span style="color:var(--text3)">' + _stFmt(x.shownAmt) + '</span>', 1, 1)}${td(x.ok ? ok : bad('Differs'), 1)}</tr>`).join('');
-  let html = card('1 · Records: Sheet vs dashboard',
+  let html = html0 + card('1 · Records: Sheet vs dashboard',
     'Sheet live = all rows less those voided in the Sheet itself (__VOID__, _DUP_, cancelled). The dashboard should show exactly the Sheet live rows. Amounts: invoice amount, receipt amount, voucher amount, allocation gross fee.',
     R.tables.every(x => x.ok) ? ok : bad('Differs'),
     `<table>${th([['Table'], ['Sheet rows', 1], ['Voided in Sheet', 1], ['Sheet live', 1], ['Hidden by browser only', 1], ['Added by browser only', 1], ['Dashboard shows', 1], ['', 1]])}<tbody>${recRows}</tbody></table>`);
@@ -16229,8 +16248,9 @@ function renderSyncTally(R) {
   // 4. Status vs receipts
   html += card('4 · Invoice status vs receipts',
     'Status stored in the Sheet compared with the receipts the dashboard counts against each invoice (invoice amount already includes disbursements). Invoices with a hard-coded status override (section 3) are excluded.',
-    (R.status.length || (R.mislinked || []).length) ? bad((R.status.length + (R.mislinked || []).length) + ' to fix') : ok,
+    (R.status.length || (R.mislinked || []).length || (R.overpaid || []).length) ? bad((R.status.length + (R.mislinked || []).length + (R.overpaid || []).length) + ' to fix') : ok,
     (R.status.length ? `<table>${th([['Invoice'], ['Date'], ['Client'], ['Amount', 1], ['Received', 1], ['Sheet status'], ['Should be']])}<tbody>${R.status.sort((a, b) => String(a.inv_no).localeCompare(String(b.inv_no))).map(s => `<tr>${td(s.inv_no, 0, 1)}${td(formatDate(s.date))}${td(_stEsc(s.client))}${td(_stFmt(s.amount), 1, 1)}${td(_stFmt(s.received), 1, 1)}${td(bad(s.sheet))}${td('<strong>' + s.expected + '</strong>')}</tr>`).join('')}</tbody></table>` : none('Every invoice status agrees with its receipts.'))
+    + ((R.overpaid || []).length ? `<div style="font-size:12px;font-weight:600;margin:10px 12px 4px">Invoices that received more than their amount (often a lump-sum receipt recorded against one invoice)</div><table>${th([['Invoice'], ['Date'], ['Client'], ['Amount', 1], ['Received', 1], ['Over by', 1]])}<tbody>${R.overpaid.map(o => `<tr>${td(o.inv_no, 0, 1)}${td(formatDate(o.date))}${td(_stEsc(o.client))}${td(_stFmt(o.amount), 1, 1)}${td(_stFmt(o.received), 1, 1)}${td(bad(_stFmt(o.over)), 1, 1)}</tr>`).join('')}</tbody></table>` : '')
     + ((R.mislinked || []).length ? `<div style="font-size:12px;font-weight:600;margin:10px 12px 4px">Receipts whose invoice number and invoice link disagree (counted against the linked invoice)</div><table>${th([['Receipt'], ['Date'], ['Amount', 1], ['Typed invoice no.'], ['Linked to'], ['Client']])}<tbody>${R.mislinked.map(m => `<tr>${td(_stEsc(m.receipt), 0, 1)}${td(formatDate(m.date))}${td(_stFmt(m.amount), 1, 1)}${td(bad(_stEsc(m.inv_no)) + (m.noExists ? '' : ' <span style="color:var(--text3)">(no such invoice)</span>'))}${td(_stEsc(m.idPointsTo), 0, 1)}${td(_stEsc(m.client))}</tr>`).join('')}</tbody></table>` : ''));
 
   // 5. Settings sync
@@ -17833,7 +17853,11 @@ async function loadGL() {
     needPF    ? prefetchGlobals()                                      : Promise.resolve(),
     needAlloc ? loadAllocations().catch(()=>{})                        : Promise.resolve(),
     needGL    ? api({ action: 'get_gl' }).then(jr => {
-                  window._GL_JOURNALS_CACHE = (jr && jr.ok && Array.isArray(jr.data)) ? jr.data : [];
+                  // The backend GL tab also holds its own auto-postings for invoices,
+                  // receipts and vouchers — those are already built from live records
+                  // by buildGLFromCache(), so only take manual journals from it.
+                  const _auto = { invoice: 1, invoice_disb: 1, receipt: 1, voucher: 1 };
+                  window._GL_JOURNALS_CACHE = (jr && jr.ok && Array.isArray(jr.data)) ? jr.data.filter(g => !_auto[String(g.source_type || '').trim()]) : [];
                 }).catch(() => { window._GL_JOURNALS_CACHE = []; })    : Promise.resolve(),
   ]);
   augmentInvoicesWithJobType();
