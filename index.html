@@ -16065,11 +16065,26 @@ function buildSyncTally(raw) {
   // both are shown when they disagree.
   if (raw.invoices && raw.receipts) {
     const visRc = raw.receipts.filter(r => !sheetVoid.receipts(r) && !browserHide.receipts(r));
+    // Resolve each receipt to an invoice: inv_id first (what the backend uses),
+    // then inv_no. A receipt whose inv_no and inv_id disagree is listed as mislinked.
+    const invById = {}, invNoSet = {};
+    raw.invoices.forEach(i => { if (i.inv_id) invById[String(i.inv_id)] = i; invNoSet[String(i.inv_no || '').trim()] = i; });
     const paidBy = {};
-    visRc.forEach(r => { const k = String(r.inv_no || r.inv_id || '').trim(); if (k) paidBy[k] = (paidBy[k] || 0) + (parseFloat(r.amount) || 0); });
+    R.mislinked = [];
+    visRc.forEach(r => {
+      const byId = invById[String(r.inv_id || '')];
+      const no = String(r.inv_no || '').trim();
+      const byNo = invNoSet[no];
+      const inv = byId || byNo;
+      if (byId && no && String(byId.inv_no || '').trim() !== no) R.mislinked.push({ receipt: r.receipt_no || r.receipt_id, date: r.date, amount: parseFloat(r.amount) || 0, inv_no: no, idPointsTo: byId.inv_no, client: byId.client_name, noExists: !!byNo });
+      if (!inv) { if (no || r.inv_id) R.mislinked.push({ receipt: r.receipt_no || r.receipt_id, date: r.date, amount: parseFloat(r.amount) || 0, inv_no: no || '(blank)', idPointsTo: '(no such invoice)', client: r.client_name, noExists: false }); return; }
+      const k = String(inv.inv_no || '').trim();
+      paidBy[k] = (paidBy[k] || 0) + (parseFloat(r.amount) || 0);
+    });
+    if (R.mislinked.length) R.issues++;
     raw.invoices.filter(i => !sheetVoid.invoices(i) && !browserHide.invoices(i)).forEach(i => {
       const no = String(i.inv_no || '').trim();
-      const recd = Math.round(((paidBy[no] || 0) + (no !== String(i.inv_id || '') ? (paidBy[String(i.inv_id || '')] || 0) : 0)) * 100) / 100;
+      const recd = Math.round((paidBy[no] || 0) * 100) / 100;
       const amt = parseFloat(i.amount || 0);
       if (amt <= 0) return;
       const exp = recd >= amt - 0.005 ? 'paid' : (recd > 0.005 ? 'partial' : 'outstanding');
@@ -16214,8 +16229,9 @@ function renderSyncTally(R) {
   // 4. Status vs receipts
   html += card('4 · Invoice status vs receipts',
     'Status stored in the Sheet compared with the receipts the dashboard counts against each invoice (invoice amount already includes disbursements). Invoices with a hard-coded status override (section 3) are excluded.',
-    R.status.length ? bad(R.status.length + ' mismatch' + (R.status.length === 1 ? '' : 'es')) : ok,
-    R.status.length ? `<table>${th([['Invoice'], ['Date'], ['Client'], ['Amount', 1], ['Received', 1], ['Sheet status'], ['Should be']])}<tbody>${R.status.sort((a, b) => String(a.inv_no).localeCompare(String(b.inv_no))).map(s => `<tr>${td(s.inv_no, 0, 1)}${td(formatDate(s.date))}${td(_stEsc(s.client))}${td(_stFmt(s.amount), 1, 1)}${td(_stFmt(s.received), 1, 1)}${td(bad(s.sheet))}${td('<strong>' + s.expected + '</strong>')}</tr>`).join('')}</tbody></table>` : none('Every invoice status agrees with its receipts.'));
+    (R.status.length || (R.mislinked || []).length) ? bad((R.status.length + (R.mislinked || []).length) + ' to fix') : ok,
+    (R.status.length ? `<table>${th([['Invoice'], ['Date'], ['Client'], ['Amount', 1], ['Received', 1], ['Sheet status'], ['Should be']])}<tbody>${R.status.sort((a, b) => String(a.inv_no).localeCompare(String(b.inv_no))).map(s => `<tr>${td(s.inv_no, 0, 1)}${td(formatDate(s.date))}${td(_stEsc(s.client))}${td(_stFmt(s.amount), 1, 1)}${td(_stFmt(s.received), 1, 1)}${td(bad(s.sheet))}${td('<strong>' + s.expected + '</strong>')}</tr>`).join('')}</tbody></table>` : none('Every invoice status agrees with its receipts.'))
+    + ((R.mislinked || []).length ? `<div style="font-size:12px;font-weight:600;margin:10px 12px 4px">Receipts whose invoice number and invoice link disagree (counted against the linked invoice)</div><table>${th([['Receipt'], ['Date'], ['Amount', 1], ['Typed invoice no.'], ['Linked to'], ['Client']])}<tbody>${R.mislinked.map(m => `<tr>${td(_stEsc(m.receipt), 0, 1)}${td(formatDate(m.date))}${td(_stFmt(m.amount), 1, 1)}${td(bad(_stEsc(m.inv_no)) + (m.noExists ? '' : ' <span style="color:var(--text3)">(no such invoice)</span>'))}${td(_stEsc(m.idPointsTo), 0, 1)}${td(_stEsc(m.client))}</tr>`).join('')}</tbody></table>` : ''));
 
   // 5. Settings sync
   const stLabel = { same: ok, empty: '<span style="color:var(--text3)">empty both sides</span>', pending: bad('Not yet uploaded'), differs: bad('This browser differs'), 'local-only': bad('Only in this browser'), 'sheet-only': warn('Only in Sheet (will download)') };
