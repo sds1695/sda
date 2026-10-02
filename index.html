@@ -15923,6 +15923,14 @@ let _SYNC_TALLY_LAST = null;
 
 function _stFmt(n) { return 'RM ' + (Math.round((parseFloat(n) || 0) * 100) / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function _stEsc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+// Two invoice records can share a number (a cancelled / deleted duplicate):
+// a number always resolves to the live one.
+function _stInvDead(i) { return String((i && i.status) || '').toLowerCase() === 'cancelled' || isDeleted('invoices', String((i && i.inv_id) || '')); }
+function _stInvByNo(invoices) {
+  const m = {};
+  (invoices || []).forEach(i => { const no = String(i.inv_no || '').trim(); if (!m[no] || (_stInvDead(m[no]) && !_stInvDead(i))) m[no] = i; });
+  return m;
+}
 function _stSum(arr, f) { return Math.round(arr.reduce((s, x) => s + (parseFloat(x[f]) || 0), 0) * 100) / 100; }
 
 async function loadSyncTally() {
@@ -16052,8 +16060,7 @@ function buildSyncTally(raw) {
   if (R.dupIds.length) R.issues++;
 
   // Hard-coded invoice overrides (dashboard shows a value the Sheet doesn't hold).
-  const invByNo = {};
-  (raw.invoices || []).forEach(i => { invByNo[String(i.inv_no || '').trim()] = i; });
+  const invByNo = _stInvByNo(raw.invoices);
   const ovr = [
     ['INVOICE_AMOUNT_OVERRIDES', window.INVOICE_AMOUNT_OVERRIDES || {}, (i, v) => ['amount', i && i.amount, v]],
     ['INVOICE_DISB_OVERRIDES',   window.INVOICE_DISB_OVERRIDES   || {}, (i, v) => ['disb_amount', i && i.disb_amount, v]],
@@ -16083,8 +16090,8 @@ function buildSyncTally(raw) {
     const visRc = raw.receipts.filter(r => !sheetVoid.receipts(r) && !browserHide.receipts(r));
     // Resolve each receipt to an invoice: inv_id first (what the backend uses),
     // then inv_no. A receipt whose inv_no and inv_id disagree is listed as mislinked.
-    const invById = {}, invNoSet = {};
-    raw.invoices.forEach(i => { if (i.inv_id) invById[String(i.inv_id)] = i; invNoSet[String(i.inv_no || '').trim()] = i; });
+    const invById = {}, invNoSet = _stInvByNo(raw.invoices);
+    raw.invoices.forEach(i => { if (i.inv_id) invById[String(i.inv_id)] = i; });
     const paidBy = {};
     R.mislinked = [];
     visRc.forEach(r => {
@@ -16092,6 +16099,14 @@ function buildSyncTally(raw) {
       const no = String(r.inv_no || '').trim();
       const byNo = invNoSet[no];
       const inv = byId || byNo;
+      if (byId && _stInvDead(byId)) {
+        const live = invNoSet[String(byId.inv_no || '').trim()];
+        if (live && !_stInvDead(live) && live !== byId) {
+          R.mislinked.push({ receipt: r.receipt_no || r.receipt_id, date: r.date, amount: parseFloat(r.amount) || 0, inv_no: (no || byId.inv_no) + ' (linked to a cancelled copy)', idPointsTo: live.inv_no, client: live.client_name, noExists: true, toLive: true });
+          paidBy[String(live.inv_no).trim()] = (paidBy[String(live.inv_no).trim()] || 0) + (parseFloat(r.amount) || 0);
+          return;
+        }
+      }
       if (byId && no && String(byId.inv_no || '').trim() !== no) R.mislinked.push({ receipt: r.receipt_no || r.receipt_id, date: r.date, amount: parseFloat(r.amount) || 0, inv_no: no, idPointsTo: byId.inv_no, client: byId.client_name, noExists: !!byNo });
       if (!inv) { if (no || r.inv_id) R.mislinked.push({ receipt: r.receipt_no || r.receipt_id, date: r.date, amount: parseFloat(r.amount) || 0, inv_no: no || '(blank)', idPointsTo: '(no such invoice)', client: r.client_name, noExists: false }); return; }
       const k = String(inv.inv_no || '').trim();
@@ -16402,7 +16417,7 @@ function buildSyncFixPlan(raw, R) {
   const steps = [];
   if (!raw || !raw.receipts || !raw.invoices) return steps;
   const rcById = {}; raw.receipts.forEach(r => { rcById[String(r.receipt_id)] = r; });
-  const invByNo = {}; raw.invoices.forEach(i => { invByNo[String(i.inv_no || '').trim()] = i; });
+  const invByNo = _stInvByNo(raw.invoices);
   const isVoidRc = r => String((r && r.notes) || '').startsWith('__VOID__');
   const tagged = (tag, rid, invNo) => raw.receipts.some(r => !isVoidRc(r) && String(r.notes || '').indexOf('[' + tag + ' of ' + rid + ']') >= 0 && String(r.inv_no || '').trim() === invNo);
   const tName = { invoices: 'invoice', receipts: 'receipt', vouchers: 'voucher', allocations: 'allocation' };
@@ -16446,10 +16461,12 @@ function buildSyncFixPlan(raw, R) {
     const target = invByNo[String(m.idPointsTo || '').trim()];
     if (!target) { steps.push({ group: g, desc: 'Cannot fix: typed ' + m.inv_no + ' and the link points to no invoice — check by hand', blocked: true }); return; }
     const has = tagged('Re-link', orig.receipt_id, target.inv_no);
-    steps.push({ group: g, desc: 'Add receipt RM' + parseFloat(orig.amount).toFixed(2) + ' for ' + target.inv_no + ' (' + target.client_name + ') — typed as ' + m.inv_no, amount: parseFloat(orig.amount), done: has,
+    const rootTag = (String(orig.notes || '').match(/\[(?:Split|Re-link) of R\d+\]/) || [''])[0];
+    const restNotes = String(orig.notes || '').replace(rootTag, '').trim();
+    steps.push({ group: g, desc: 'Add receipt RM' + parseFloat(orig.amount).toFixed(2) + ' for ' + target.inv_no + ' (' + target.client_name + ', invoice ' + target.inv_id + ') — was ' + m.inv_no, amount: parseFloat(orig.amount), done: has,
       call: has ? null : { action: 'save_receipt', data: { receipt_no: orig.receipt_no || '', date: _stLocalDate(orig.date), inv_id: target.inv_id, inv_no: target.inv_no, client_name: target.client_name,
-        amount: parseFloat(orig.amount), bank_account: orig.bank_account || '', notes: '[Re-link of ' + orig.receipt_id + '] ' + (orig.notes || '') } } });
-    steps.push({ group: g, desc: 'Void the original receipt ' + orig.receipt_id + ' (typed ' + m.inv_no + ')', amount: parseFloat(orig.amount),
+        amount: parseFloat(orig.amount), bank_account: orig.bank_account || '', notes: (rootTag ? rootTag + ' ' : '') + '[Re-link of ' + orig.receipt_id + '] ' + restNotes } } });
+    steps.push({ group: g, desc: 'Void the original receipt ' + orig.receipt_id + ' (' + m.inv_no + ')', amount: parseFloat(orig.amount),
       call: { action: 'void_record', table: 'receipts', id: orig.receipt_id, reason: 'invoice number corrected to ' + target.inv_no } });
   });
 
