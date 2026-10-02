@@ -649,6 +649,9 @@
       <div class="nav-item" onclick="showPage('coa')">
         <span class="icon">⚙</span><span>Chart of Accounts</span>
       </div>
+      <div class="nav-item" onclick="showPage('sync-tally')">
+        <span class="icon">⇄</span><span>Sync &amp; Tally</span>
+      </div>
     </nav>
     <div class="sidebar-footer">
       <div class="sidebar-user">Signed in as <span id="sidebar-username">—</span></div>
@@ -1518,6 +1521,19 @@
           <tbody id="coa-recon-tbody"></tbody>
         </table>
       </div>
+    </div>
+
+    <!-- ══ SYNC & TALLY ══ -->
+    <div class="page" id="page-sync-tally">
+      <div class="page-header">
+        <div class="page-title">Sync &amp; Tally</div>
+        <div class="page-sub">Read-only check that the backend Google Sheet and this dashboard hold the same records. Nothing is changed.</div>
+        <div class="page-actions">
+          <button class="btn btn-primary btn-sm" onclick="loadSyncTally()">↻ Re-run check</button>
+        </div>
+      </div>
+      <div id="st-summary"></div>
+      <div id="st-body"></div>
     </div>
 
     <!-- ══ CLIENT DEADLINES ══ -->
@@ -3414,6 +3430,7 @@ function showPage(id) {
   if (id === 'sales-orders')        renderSalesOrders();
   if (id === 'jobs')                { (async () => { try { await loadClients(); } catch(e){} try { renderJobsBoard(); } catch(e){ console.warn('renderJobsBoard', e); } })(); }
   if (id === 'notes')               loadNotesPage();
+  if (id === 'sync-tally')          loadSyncTally();
 }
 
 // ══════════════════════════════════════════════════
@@ -15861,6 +15878,400 @@ function _getUnbilledDisbForClient(clientId) {
     if (v.ref_inv_id || v.ref_inv_nos) return false;
     return true;
   });
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// SYNC & TALLY  (added 2026-10-02)
+// Read-only check that the backend Google Sheet and this dashboard agree.
+// Fetches fresh raw rows from the Sheet, applies the SAME hide/void rules the
+// dashboard uses, and reports every difference: rows hidden only in this
+// browser, rows added only in this browser, hard-coded overrides, invoice
+// status vs receipts, settings-sync state, browser-only data, backend GL tab.
+// Writes nothing — not to the Sheet, not to localStorage.
+// ════════════════════════════════════════════════════════════════════════
+
+// Browser-only localStorage data that is NOT in SYNCED_BLOBS. `figures:true`
+// = changes amounts somewhere in the dashboard (must be synced — Step 4).
+const SYNC_TALLY_LOCAL_ONLY = [
+  { key: 'claude_retain_',               prefix: true, label: 'Claude retain amounts per invoice',       figures: true  },
+  { key: 'ret_ded_lbl_',                 prefix: true, label: 'Retention deduction labels',              figures: false },
+  { key: 'ret_ded_',                     prefix: true, label: 'Retention deduction amounts',             figures: true, notPrefix: 'ret_ded_lbl_' },
+  { key: 'prep_pct_',                    prefix: true, label: 'Preparer % per invoice',                  figures: true  },
+  { key: 'seraya_local_journals',                      label: 'Manual journals (feed GL / IS / BS)',      figures: true, list: true },
+  { key: 'seraya_schedules',                           label: 'Scheduled postings',                       figures: true, list: true },
+  { key: 'seraya_excel_snapshot_v1',                   label: 'Excel snapshot ("vs Excel" figures)',      figures: true  },
+  { key: 'seraya_excel_line_snapshot_v1',              label: 'Excel line snapshot',                      figures: true  },
+  { key: 'seraya_excel_vouchers_v1',                   label: 'Excel vouchers paste (payout check)',      figures: true  },
+  { key: 'seraya_outstanding_invs_v1',                 label: 'Outstanding-invoice list (payout recon)',  figures: true  },
+  { key: 'seraya_last_recon_cutoff_v1',                label: 'Last recon cut-off date',                  figures: true  },
+  { key: 'seraya_alloc_cache_v2',                      label: 'Allocation cache (rows not yet on Sheet)', figures: true, list: true },
+  { key: 'seraya_clients_deleted_v1',                  label: 'Deleted clients list',                     figures: false, list: true },
+  { key: 'seraya_team_members_v1',                     label: 'Team Members register',                    figures: false, list: true },
+  { key: 'seraya_doc_content_v1',                      label: 'Invoice / statement firm details',         figures: false },
+  { key: 'seraya_inv_line_presets',                    label: 'Invoice line presets',                     figures: false, list: true },
+  { key: 'seraya_inv_drafts',                          label: 'Unsaved invoice drafts',                   figures: false, list: true },
+  { key: 'seraya_deadlines_done_v1',                   label: 'Deadlines marked done',                    figures: false },
+  { key: 'seraya_rem_todos_v1',                        label: 'Deadline to-dos',                          figures: false, list: true },
+  { key: 'seraya_rem_notes_v1',                        label: 'Deadline notes',                           figures: false },
+];
+
+let _SYNC_TALLY_LAST = null;
+
+function _stFmt(n) { return 'RM ' + (Math.round((parseFloat(n) || 0) * 100) / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function _stEsc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function _stSum(arr, f) { return Math.round(arr.reduce((s, x) => s + (parseFloat(x[f]) || 0), 0) * 100) / 100; }
+
+async function loadSyncTally() {
+  try { markPageSynced('sync-tally'); } catch(e) {}
+  const out = document.getElementById('st-body');
+  const head = document.getElementById('st-summary');
+  if (!out) return;
+  head.innerHTML = '';
+  out.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text3)">Reading the Google Sheet… (6 tables)</div>';
+
+  const names = ['invoices', 'receipts', 'vouchers', 'allocations', 'settings', 'gl'];
+  const calls = await Promise.all([
+    api({ action: 'get_invoices' }), api({ action: 'get_receipts' }), api({ action: 'get_vouchers' }),
+    api({ action: 'get_allocations' }), api({ action: 'get_settings' }), api({ action: 'get_gl' }),
+  ].map(p => Promise.resolve(p).catch(e => ({ ok: false, error: String(e) }))));
+  const raw = {}, loadErr = [];
+  names.forEach((n, i) => {
+    const r = calls[i];
+    if (r && r.ok) raw[n] = r.data; else { raw[n] = null; loadErr.push(n + ': ' + ((r && r.error) || 'no response')); }
+  });
+
+  const R = buildSyncTally(raw);
+  R.loadErrors = loadErr;
+  R.at = new Date().toISOString();
+  _SYNC_TALLY_LAST = R;
+  renderSyncTally(R);
+}
+
+// Pure: raw Sheet data in → report object out (no DOM, no writes).
+function buildSyncTally(raw) {
+  const R = { tables: [], hidden: [], added: [], staleHide: [], dupIds: [], overrides: [], status: [], blobs: [], localOnly: [], gl: null, issues: 0 };
+  const idOf = { invoices: 'inv_id', receipts: 'receipt_id', vouchers: 'voucher_id', allocations: 'alloc_id' };
+  const amtOf = { invoices: 'amount', receipts: 'amount', vouchers: 'amount', allocations: 'gross_fee' };
+  const sheetVoid = {
+    invoices:    i => String(i.status || '').toLowerCase() === 'cancelled',
+    receipts:    r => String(r.notes || '').startsWith('__VOID__'),
+    vouchers:    v => String(v.description || '').startsWith('__VOID__'),
+    allocations: a => String(a.inv_no || '').startsWith('_DUP_'),
+  };
+  const suppress = window.RECEIPT_SUPPRESS_IDS || new Set();
+  const voidRcAuto = raw.receipts ? computeVoidReceiptIds(raw.receipts) : new Set();
+  // Why would the dashboard hide this (non-Sheet-void) row? '' = it shows it.
+  const browserHide = {
+    invoices: i => isDeleted('invoices', i.inv_id || '') ? 'deleted list (synced)' : '',
+    receipts: r => {
+      const id = String(r.receipt_id || '');
+      if (suppress.has(id)) return 'hard-coded RECEIPT_SUPPRESS_IDS';
+      if (isDeleted('receipts', id)) return 'deleted list (synced)';
+      if (isVoided('receipts', id)) return 'void list (synced)';
+      if (voidRcAuto.has(id) || isVoidedReceiptNo(r)) return 'RECEIPT_VOID_NOS rule';
+      return '';
+    },
+    vouchers: v => {
+      const id = String(v.voucher_id || '');
+      if ((window.VOUCHER_VOID_IDS || []).includes(id)) return 'hard-coded VOUCHER_VOID_IDS';
+      if (isDeleted('vouchers', id)) return 'deleted list (synced)';
+      if (isVoided('vouchers', id)) return 'void list (synced)';
+      return '';
+    },
+    allocations: a => {
+      const id = String(a.alloc_id || '');
+      if ((window.ALLOC_VOID_IDS || []).includes(id)) return 'hard-coded ALLOC_VOID_IDS';
+      if (isVoided('allocations', id)) return 'void list (synced)';
+      return '';
+    },
+  };
+  const label = {
+    invoices:    i => [i.inv_no, i.date, i.client_name].filter(Boolean).join(' · '),
+    receipts:    r => [r.receipt_no, r.date, r.client_name, r.inv_no].filter(Boolean).join(' · '),
+    vouchers:    v => [v.voucher_no, v.date, v.payee, v.description].filter(Boolean).join(' · '),
+    allocations: a => [a.inv_no, a.job_type, a.preparer_name, a.reviewer_name].filter(Boolean).join(' · '),
+  };
+  // Rows the dashboard adds that are not on the Sheet at all.
+  const browserAdds = {
+    invoices: () => [], allocations: () => {
+      try {
+        const sheetIds = new Set((raw.allocations || []).map(a => String(a.alloc_id || '')));
+        const c = JSON.parse(localStorage.getItem(_ALLOC_CACHE_KEY) || '[]');
+        return c.filter(x => x._cached_at && (Date.now() - x._cached_at) < _ALLOC_CACHE_TTL && x.alloc_id && !sheetIds.has(String(x.alloc_id)) && !isVoided('allocations', String(x.alloc_id)))
+                .map(x => ({ id: x.alloc_id, label: label.allocations(x), amount: parseFloat(x.gross_fee || 0), why: 'allocation cache (this browser)' }));
+      } catch(e) { return []; }
+    },
+    receipts: () => { try { return (_journalsAsReceipts() || []).map(x => ({ id: x.receipt_id, label: [x.receipt_no, x.date, x.client_name].filter(Boolean).join(' · '), amount: x.amount, why: 'manual journal (this browser)' })); } catch(e) { return []; } },
+    vouchers: () => { try { return (_journalsAsVouchers() || []).map(x => ({ id: x.voucher_id, label: [x.voucher_no, x.date, x.payee, x.description].filter(Boolean).join(' · '), amount: x.amount, why: 'manual journal (this browser)' })); } catch(e) { return []; } },
+  };
+  const hideLists = {
+    invoices: () => getDeletedIds('invoices'),
+    receipts: () => [...getDeletedIds('receipts'), ...getVoidIds('receipts'), ...suppress],
+    vouchers: () => [...(window.VOUCHER_VOID_IDS || []), ...getDeletedIds('vouchers'), ...getVoidIds('vouchers')],
+    allocations: () => [...(window.ALLOC_VOID_IDS || []), ...getVoidIds('allocations')],
+  };
+
+  ['invoices', 'receipts', 'vouchers', 'allocations'].forEach(t => {
+    const rows = raw[t];
+    if (!rows) { R.tables.push({ t, failed: true }); R.issues++; return; }
+    const idF = idOf[t], amtF = amtOf[t];
+    const seen = {};
+    rows.forEach(x => { const id = String(x[idF] || ''); if (id) seen[id] = (seen[id] || 0) + 1; });
+    Object.entries(seen).filter(([, n]) => n > 1).forEach(([id, n]) => R.dupIds.push({ t, id, n }));
+    const voided = rows.filter(sheetVoid[t]);
+    const live = rows.filter(x => !sheetVoid[t](x));
+    const hid = [], shown = [];
+    live.forEach(x => { const why = browserHide[t](x); if (why) hid.push({ x, why }); else shown.push(x); });
+    hid.forEach(h => R.hidden.push({ t, id: h.x[idF], label: label[t](h.x), amount: parseFloat(h.x[amtF] || 0), why: h.why }));
+    const adds = browserAdds[t]();
+    adds.forEach(a => R.added.push(Object.assign({ t }, a)));
+    const ids = new Set(rows.map(x => String(x[idF] || '')));
+    [...new Set(hideLists[t]().map(String))].filter(id => id && !ids.has(id)).forEach(id => R.staleHide.push({ t, id }));
+    const addAmt = Math.round(adds.reduce((s, a) => s + (parseFloat(a.amount) || 0), 0) * 100) / 100;
+    R.tables.push({
+      t, total: rows.length, voided: voided.length, voidedAmt: _stSum(voided, amtF),
+      live: live.length, liveAmt: _stSum(live, amtF),
+      hidden: hid.length, hiddenAmt: _stSum(hid.map(h => h.x), amtF),
+      added: adds.length, addedAmt: addAmt,
+      shown: shown.length + adds.length, shownAmt: Math.round((_stSum(shown, amtF) + addAmt) * 100) / 100,
+      ok: !hid.length && !adds.length,
+    });
+    if (hid.length || adds.length) R.issues++;
+  });
+  if (R.dupIds.length) R.issues++;
+
+  // Hard-coded invoice overrides (dashboard shows a value the Sheet doesn't hold).
+  const invByNo = {};
+  (raw.invoices || []).forEach(i => { invByNo[String(i.inv_no || '').trim()] = i; });
+  const ovr = [
+    ['INVOICE_AMOUNT_OVERRIDES', window.INVOICE_AMOUNT_OVERRIDES || {}, (i, v) => ['amount', i && i.amount, v]],
+    ['INVOICE_DISB_OVERRIDES',   window.INVOICE_DISB_OVERRIDES   || {}, (i, v) => ['disb_amount', i && i.disb_amount, v]],
+  ];
+  ovr.forEach(([name, map, f]) => Object.entries(map).forEach(([no, v]) => {
+    const [field, sheetVal, dashVal] = f(invByNo[no], v);
+    if (String(sheetVal) !== String(dashVal)) R.overrides.push({ name, inv_no: no, field, sheet: sheetVal, dash: dashVal });
+  }));
+  Object.entries(window.INV_STATUS_OVERRIDES || {}).forEach(([no, o]) => {
+    const i = invByNo[no];
+    ['status', 'amount_outstanding'].forEach(field => {
+      if (o[field] !== undefined && String(i && i[field]) !== String(o[field])) R.overrides.push({ name: 'INV_STATUS_OVERRIDES', inv_no: no, field, sheet: i ? i[field] : '(not on Sheet)', dash: o[field] });
+    });
+  });
+  if (R.overrides.length) R.issues++;
+
+  // Invoice status vs receipts. Receipts the dashboard counts, matched by inv_no
+  // (falling back to inv_id). Dashboard rule: invoice.amount already includes
+  // disbursements. Backend updateInvoiceStatus() adds disb_amount on top, so
+  // both are shown when they disagree.
+  if (raw.invoices && raw.receipts) {
+    const visRc = raw.receipts.filter(r => !sheetVoid.receipts(r) && !browserHide.receipts(r));
+    const paidBy = {};
+    visRc.forEach(r => { const k = String(r.inv_no || r.inv_id || '').trim(); if (k) paidBy[k] = (paidBy[k] || 0) + (parseFloat(r.amount) || 0); });
+    raw.invoices.filter(i => !sheetVoid.invoices(i) && !browserHide.invoices(i)).forEach(i => {
+      const no = String(i.inv_no || '').trim();
+      const recd = Math.round(((paidBy[no] || 0) + (no !== String(i.inv_id || '') ? (paidBy[String(i.inv_id || '')] || 0) : 0)) * 100) / 100;
+      const amt = parseFloat(i.amount || 0);
+      if (amt <= 0) return;
+      const exp = recd >= amt - 0.005 ? 'paid' : (recd > 0.005 ? 'partial' : 'outstanding');
+      const cur = String(i.status || '').toLowerCase();
+      const hasOvr = (window.INV_STATUS_OVERRIDES || {})[no];
+      if (cur !== exp && !hasOvr) R.status.push({ inv_no: no, client: i.client_name, date: i.date, amount: amt, received: recd, sheet: cur || '(blank)', expected: exp });
+    });
+    if (R.status.length) R.issues++;
+  }
+
+  // Settings sync — every SYNCED_BLOBS key, this browser vs the Sheet.
+  if (raw.settings) {
+    const pend = _syncPending();
+    SYNCED_BLOBS.forEach(def => {
+      const remote = _readSettingValue(raw.settings, def.settingsKey);
+      const local = _syncLocalValue(def);
+      const lEmpty = def.pattern ? local === '{}' : !local;
+      const rEmpty = remote === undefined || remote === null || remote === '';
+      let state;
+      if (pend.has(def.settingsKey)) state = 'pending';
+      else if (lEmpty && rEmpty) state = 'empty';
+      else if (rEmpty) state = 'local-only';
+      else if (lEmpty) state = 'sheet-only';
+      else state = remote === local ? 'same' : 'differs';
+      R.blobs.push({ key: def.settingsKey, lsKey: def.lsKey || (def.pattern + '*'), state, localLen: lEmpty ? 0 : local.length, remoteLen: rEmpty ? 0 : String(remote).length });
+    });
+    if (R.blobs.some(b => b.state === 'pending' || b.state === 'differs' || b.state === 'local-only')) R.issues++;
+  } else {
+    R.issues++;
+  }
+
+  // Browser-only data held on this device.
+  SYNC_TALLY_LOCAL_ONLY.forEach(d => {
+    let n = 0, size = 0;
+    if (d.prefix) {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(d.key) && !(d.notPrefix && k.startsWith(d.notPrefix))) { n++; size += (localStorage.getItem(k) || '').length; }
+      }
+    } else {
+      const v = localStorage.getItem(d.key);
+      if (v) {
+        size = v.length;
+        if (d.list) { try { const p = JSON.parse(v); n = Array.isArray(p) ? p.length : Object.keys(p || {}).length; } catch(e) { n = 1; } }
+        else n = 1;
+        if (d.list && n === 0) size = 0;
+      }
+    }
+    R.localOnly.push(Object.assign({}, d, { n, size }));
+  });
+  if (R.localOnly.some(d => d.figures && d.n > 0)) R.issues++;
+
+  // Backend GL tab vs the live records it was posted from.
+  if (raw.gl) {
+    const srcKind = { invoice: 'invoices', invoice_disb: 'invoices', receipt: 'receipts', voucher: 'vouchers' };
+    const status = { invoices: {}, receipts: {}, vouchers: {} };
+    ['invoices', 'receipts', 'vouchers'].forEach(t => (raw[t] || []).forEach(x => {
+      const id = String(x[idOf[t]] || '');
+      status[t][id] = sheetVoid[t](x) ? 'void' : (browserHide[t](x) ? 'hidden' : 'live');
+    }));
+    const G = { rows: raw.gl.length, byType: {}, dupPost: 0, dupAmt: 0, toVoid: 0, toVoidAmt: 0, toHidden: 0, toHiddenAmt: 0, orphan: 0, orphanAmt: 0 };
+    const seenSrc = {};
+    raw.gl.forEach(g => {
+      const st = String(g.source_type || 'other');
+      const amt = parseFloat(g.amount || 0) || 0;
+      const b = G.byType[st] = G.byType[st] || { n: 0, amt: 0 };
+      b.n++; b.amt += amt;
+      const kind = srcKind[st];
+      if (!kind || !raw[kind]) return;
+      const sid = String(g.source_id || '');
+      const k = st + '|' + sid;
+      if (seenSrc[k]) { G.dupPost++; G.dupAmt += amt; return; }
+      seenSrc[k] = 1;
+      const s = status[kind][sid];
+      if (!s) { G.orphan++; G.orphanAmt += amt; }
+      else if (s === 'void') { G.toVoid++; G.toVoidAmt += amt; }
+      else if (s === 'hidden') { G.toHidden++; G.toHiddenAmt += amt; }
+    });
+    const tb = t => (R.tables.find(x => x.t === t) || {});
+    G.compare = [
+      { label: 'Invoices (incl. disb lines)', gl: (G.byType.invoice || { amt: 0 }).amt + (G.byType.invoice_disb || { amt: 0 }).amt, dash: tb('invoices').shownAmt },
+      { label: 'Receipts', gl: (G.byType.receipt || { amt: 0 }).amt, dash: tb('receipts').shownAmt },
+      { label: 'Payment vouchers', gl: (G.byType.voucher || { amt: 0 }).amt, dash: tb('vouchers').shownAmt },
+    ];
+    R.gl = G;
+    if (G.dupPost || G.toVoid || G.toHidden || G.orphan || G.compare.some(c => Math.abs((c.gl || 0) - (c.dash || 0)) > 0.01)) R.issues++;
+  } else {
+    R.issues++;
+  }
+  return R;
+}
+
+function renderSyncTally(R) {
+  const head = document.getElementById('st-summary');
+  const out = document.getElementById('st-body');
+  const tName = { invoices: 'Invoices', receipts: 'Receipts', vouchers: 'Payment vouchers', allocations: 'Allocations' };
+  const ok = '<span style="color:var(--green);font-weight:600">✓ Tallied</span>';
+  const bad = s => `<span style="color:var(--red);font-weight:600">${s}</span>`;
+  const warn = s => `<span style="color:var(--amber);font-weight:600">${s}</span>`;
+  const card = (title, sub, statusHtml, body) => `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header" style="align-items:flex-start"><div><div class="card-title">${title}</div><div style="font-size:11px;color:var(--text3);margin-top:2px;font-weight:400">${sub}</div></div><div style="margin-left:auto;white-space:nowrap">${statusHtml}</div></div>
+      <div style="overflow-x:auto">${body}</div>
+    </div>`;
+  const th = cols => '<thead><tr>' + cols.map(c => `<th style="font-size:11px;${c[1] ? 'text-align:right' : ''}">${c[0]}</th>`).join('') + '</tr></thead>';
+  const td = (v, right, mono) => `<td style="font-size:12px;${right ? 'text-align:right;' : ''}${mono ? "font-family:'DM Mono',monospace;" : ''}">${v}</td>`;
+  const none = msg => `<div style="padding:12px;font-size:12px;color:var(--text3);text-align:center">${msg}</div>`;
+
+  const allOk = R.issues === 0 && !R.loadErrors.length;
+  head.innerHTML = `
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 18px;border-radius:8px;margin-bottom:16px;border:1.5px solid ${allOk ? 'var(--green)' : 'var(--amber)'};background:var(--surface2)">
+      <div style="font-size:22px">${allOk ? '✅' : '⚠️'}</div>
+      <div style="flex:1;min-width:220px">
+        <div style="font-weight:700;font-size:15px">${allOk ? 'Backend and dashboard tally' : R.issues + ' area' + (R.issues === 1 ? '' : 's') + ' where the backend and dashboard differ'}</div>
+        <div style="font-size:12px;color:var(--text3);margin-top:2px">Checked ${formatDate(R.at)} ${new Date(R.at).toLocaleTimeString('en-MY')} · read-only, nothing was changed${R.loadErrors.length ? ' · <span style="color:var(--red)">could not load: ' + _stEsc(R.loadErrors.join('; ')) + '</span>' : ''}</div>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="downloadSyncTally()" title="Save this result as a JSON file — the before/after proof for each infrastructure step">⬇ Save result (JSON)</button>
+    </div>`;
+
+  // 1. Records
+  const recRows = R.tables.map(x => x.failed
+    ? `<tr><td style="font-size:12px"><strong>${tName[x.t]}</strong></td><td colspan="6" style="font-size:12px;color:var(--red)">Could not load from the Sheet</td></tr>`
+    : `<tr>${td('<strong>' + tName[x.t] + '</strong>')}${td(x.total, 1, 1)}${td(x.voided + (x.voided ? ' <span style="color:var(--text3)">(' + _stFmt(x.voidedAmt) + ')</span>' : ''), 1, 1)}${td(x.live + '<br><span style="color:var(--text3)">' + _stFmt(x.liveAmt) + '</span>', 1, 1)}${td(x.hidden ? bad('−' + x.hidden) + '<br><span style="color:var(--red)">' + _stFmt(x.hiddenAmt) + '</span>' : '0', 1, 1)}${td(x.added ? bad('+' + x.added) + '<br><span style="color:var(--red)">' + _stFmt(x.addedAmt) + '</span>' : '0', 1, 1)}${td(x.shown + '<br><span style="color:var(--text3)">' + _stFmt(x.shownAmt) + '</span>', 1, 1)}${td(x.ok ? ok : bad('Differs'), 1)}</tr>`).join('');
+  let html = card('1 · Records: Sheet vs dashboard',
+    'Sheet live = all rows less those voided in the Sheet itself (__VOID__, _DUP_, cancelled). The dashboard should show exactly the Sheet live rows. Amounts: invoice amount, receipt amount, voucher amount, allocation gross fee.',
+    R.tables.every(x => x.ok) ? ok : bad('Differs'),
+    `<table>${th([['Table'], ['Sheet rows', 1], ['Voided in Sheet', 1], ['Sheet live', 1], ['Hidden by browser only', 1], ['Added by browser only', 1], ['Dashboard shows', 1], ['', 1]])}<tbody>${recRows}</tbody></table>`);
+
+  // 2. Hidden / added detail
+  const det = [...R.hidden.map(h => Object.assign({ dir: 'Hidden' }, h)), ...R.added.map(a => Object.assign({ dir: 'Added' }, a))];
+  html += card('2 · Rows that exist on one side only',
+    'Hidden = live in the Sheet (so the backend, GL tab and any other reader count it) but the dashboard hides it. Added = shown in the dashboard but not in the Sheet. Step 3 moves every hidden row into the Sheet as a proper void.',
+    det.length ? bad(det.length + ' row' + (det.length === 1 ? '' : 's')) : ok,
+    det.length ? `<table>${th([['Side'], ['Table'], ['Row'], ['Why'], ['Amount', 1], ['ID']])}<tbody>${det.map(d => `<tr>${td(d.dir === 'Hidden' ? bad('Hidden') : warn('Added'))}${td(tName[d.t])}${td(_stEsc(d.label))}${td(_stEsc(d.why))}${td(_stFmt(d.amount), 1, 1)}${td('<span style="color:var(--text3)">' + _stEsc(d.id) + '</span>', 0, 1)}</tr>`).join('')}</tbody></table>` : none('None — every Sheet row is shown and nothing extra is added.'));
+
+  // 3. Overrides
+  html += card('3 · Hard-coded overrides in the dashboard code',
+    'Values the dashboard shows instead of what the Sheet holds. Each should be written into the Sheet, then removed from the code.',
+    R.overrides.length ? bad(R.overrides.length + ' override' + (R.overrides.length === 1 ? '' : 's')) : ok,
+    R.overrides.length ? `<table>${th([['Invoice'], ['Field'], ['Sheet', 1], ['Dashboard', 1], ['Source']])}<tbody>${R.overrides.map(o => `<tr>${td(o.inv_no, 0, 1)}${td(o.field)}${td(_stEsc(o.sheet === undefined || o.sheet === '' ? '(blank)' : o.sheet), 1, 1)}${td(_stEsc(o.dash), 1, 1)}${td('<span style="color:var(--text3)">' + o.name + '</span>')}</tr>`).join('')}</tbody></table>` : none('None.'));
+
+  // 4. Status vs receipts
+  html += card('4 · Invoice status vs receipts',
+    'Status stored in the Sheet compared with the receipts the dashboard counts against each invoice (invoice amount already includes disbursements). Invoices with a hard-coded status override (section 3) are excluded.',
+    R.status.length ? bad(R.status.length + ' mismatch' + (R.status.length === 1 ? '' : 'es')) : ok,
+    R.status.length ? `<table>${th([['Invoice'], ['Date'], ['Client'], ['Amount', 1], ['Received', 1], ['Sheet status'], ['Should be']])}<tbody>${R.status.sort((a, b) => String(a.inv_no).localeCompare(String(b.inv_no))).map(s => `<tr>${td(s.inv_no, 0, 1)}${td(formatDate(s.date))}${td(_stEsc(s.client))}${td(_stFmt(s.amount), 1, 1)}${td(_stFmt(s.received), 1, 1)}${td(bad(s.sheet))}${td('<strong>' + s.expected + '</strong>')}</tr>`).join('')}</tbody></table>` : none('Every invoice status agrees with its receipts.'));
+
+  // 5. Settings sync
+  const stLabel = { same: ok, empty: '<span style="color:var(--text3)">empty both sides</span>', pending: bad('Not yet uploaded'), differs: bad('This browser differs'), 'local-only': bad('Only in this browser'), 'sheet-only': warn('Only in Sheet (will download)') };
+  const blobBad = R.blobs.filter(b => ['pending', 'differs', 'local-only'].includes(b.state)).length;
+  html += card('5 · Synced settings: this browser vs the Sheet',
+    'Firm data the dashboard already syncs through the Settings tab. "Differs" usually means another device saved after this page loaded — reload and re-run.',
+    !R.blobs.length ? bad('Could not read Settings') : (blobBad ? bad(blobBad + ' not in sync') : ok),
+    R.blobs.length ? `<table>${th([['Data'], ['Browser key'], ['This browser (chars)', 1], ['Sheet (chars)', 1], ['State', 1]])}<tbody>${R.blobs.map(b => `<tr>${td(b.key.replace(/^_|_blob$/g, '').replace(/_/g, ' '))}${td('<span style="color:var(--text3)">' + _stEsc(b.lsKey) + '</span>', 0, 1)}${td(b.localLen.toLocaleString(), 1, 1)}${td(b.remoteLen.toLocaleString(), 1, 1)}${td(stLabel[b.state], 1)}</tr>`).join('')}</tbody></table>` : none('Settings tab could not be loaded.'));
+
+  // 6. Browser-only data
+  const lo = R.localOnly.filter(d => d.n > 0);
+  const loFig = lo.filter(d => d.figures).length;
+  html += card('6 · Data saved only in this browser (not synced)',
+    'Another device, or this browser after clearing site data, will not have these. Items marked "Affects figures" change amounts on some page. Step 4 adds them to the sync.',
+    loFig ? bad(loFig + ' affect figures') : (lo.length ? warn(lo.length + ' item' + (lo.length === 1 ? '' : 's')) : ok),
+    `<table>${th([['Data'], ['Browser key'], ['Entries', 1], ['Size (chars)', 1], ['Affects figures?', 1]])}<tbody>${R.localOnly.map(d => `<tr style="${d.n ? '' : 'opacity:.45'}">${td(d.label)}${td('<span style="color:var(--text3)">' + _stEsc(d.key) + (d.prefix ? '*' : '') + '</span>', 0, 1)}${td(d.n, 1, 1)}${td(d.size.toLocaleString(), 1, 1)}${td(d.figures ? (d.n ? bad('Yes') : 'Yes') : 'No', 1)}</tr>`).join('')}</tbody></table>`);
+
+  // 7. Backend GL tab
+  if (R.gl) {
+    const G = R.gl;
+    const glBad = G.dupPost || G.toVoid || G.toHidden || G.orphan;
+    const cmp = G.compare.map(c => { const d = Math.round(((c.gl || 0) - (c.dash || 0)) * 100) / 100; return `<tr>${td(c.label)}${td(_stFmt(c.gl), 1, 1)}${td(_stFmt(c.dash), 1, 1)}${td(Math.abs(d) < 0.01 ? ok : bad(_stFmt(d)), 1, 1)}</tr>`; }).join('');
+    const line = (lbl, n, amt) => `<tr>${td(lbl)}${td(n ? bad(n) : '0', 1, 1)}${td(n ? _stFmt(amt) : '—', 1, 1)}</tr>`;
+    html += card('7 · Backend GL tab',
+      'The backend appends a GL row on every save (and again on every invoice edit) and never reverses one. The dashboard\'s own Income Statement and Balance Sheet do not use this tab, but anything reading the Sheet directly does. Step 5 rebuilds it.',
+      glBad || G.compare.some(c => Math.abs((c.gl || 0) - (c.dash || 0)) > 0.01) ? bad('Does not tally') : ok,
+      `<table>${th([['GL rows by source', 0], ['Rows', 1], ['Amount', 1]])}<tbody>
+        ${Object.entries(G.byType).map(([k, v]) => `<tr>${td(_stEsc(k))}${td(v.n, 1, 1)}${td(_stFmt(v.amt), 1, 1)}</tr>`).join('')}
+        ${line('Repeat postings for the same record', G.dupPost, G.dupAmt)}
+        ${line('Postings for records voided in the Sheet', G.toVoid, G.toVoidAmt)}
+        ${line('Postings for records hidden by the browser', G.toHidden, G.toHiddenAmt)}
+        ${line('Postings for records no longer on the Sheet', G.orphan, G.orphanAmt)}
+      </tbody></table>
+      <table style="margin-top:8px">${th([['Totals'], ['GL tab', 1], ['Dashboard', 1], ['Difference', 1]])}<tbody>${cmp}</tbody></table>`);
+  } else {
+    html += card('7 · Backend GL tab', 'Could not load the GL tab.', bad('Not checked'), '');
+  }
+
+  // 8. Housekeeping
+  const hk = [...R.dupIds.map(d => ({ what: 'Same ID on ' + d.n + ' Sheet rows', t: d.t, id: d.id })), ...R.staleHide.map(s => ({ what: 'Hide-list entry with no Sheet row (harmless)', t: s.t, id: s.id }))];
+  html += card('8 · Housekeeping',
+    'Duplicate IDs in the Sheet (append-only saves) and hide-list entries that no longer match any Sheet row.',
+    R.dupIds.length ? bad(R.dupIds.length + ' duplicate ID' + (R.dupIds.length === 1 ? '' : 's')) : (hk.length ? warn(hk.length + ' stale') : ok),
+    hk.length ? `<table>${th([['Issue'], ['Table'], ['ID']])}<tbody>${hk.map(h => `<tr>${td(h.what)}${td(tName[h.t])}${td(_stEsc(h.id), 0, 1)}</tr>`).join('')}</tbody></table>` : none('Nothing to tidy.'));
+
+  out.innerHTML = html;
+}
+
+function downloadSyncTally() {
+  if (!_SYNC_TALLY_LAST) return;
+  const blob = new Blob([JSON.stringify(_SYNC_TALLY_LAST, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'sync-tally_' + _SYNC_TALLY_LAST.at.replace(/[:.]/g, '-').slice(0, 19) + '.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 // ── Pending disbursements in the Client Registry (added 2026-10-02) ──────
