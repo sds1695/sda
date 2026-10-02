@@ -1533,6 +1533,7 @@
         </div>
       </div>
       <div id="st-summary"></div>
+      <div id="st-fix"></div>
       <div id="st-body"></div>
     </div>
 
@@ -14696,23 +14697,25 @@ async function loadReceipts() {
 let _rvCache = {};
 function rebuildRVCache() {
   _rvCache = {};
-  const buckets = {}; // 'YYYY-MM' → array of {id, date, idNum}
+  const buckets = {}; // 'YYYY-MM' → array of {id, date, idNum, ids}
+  const groups = {};  // receipts split from / re-linked from one receipt share its RV number
   (RECEIPTS || []).forEach(r => {
     const id = (r.receipt_id || r.id || '').toString();
     if (!id) return;
     const d = r.date ? new Date(r.date) : null;
     if (!d || isNaN(d)) return;
+    const gk = (typeof _rvKeyOf === 'function' && _rvKeyOf(r)) || id;
+    if (groups[gk]) { groups[gk].ids.push(id); return; }
     const key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
-    (buckets[key] = buckets[key] || []).push({
-      id, date: d.getTime(), idNum: parseInt(String(id).replace(/\D/g,''),10) || 0
-    });
+    groups[gk] = { id: gk, ids: [id], date: d.getTime(), idNum: parseInt(String(gk).replace(/\D/g,''),10) || 0 };
+    (buckets[key] = buckets[key] || []).push(groups[gk]);
   });
   Object.keys(buckets).forEach(k => {
     buckets[k].sort((a,b) => a.date - b.date || a.idNum - b.idNum);
     const [yyyy, mm] = k.split('-');
     const yy = yyyy.slice(-2);
     buckets[k].forEach((e, i) => {
-      _rvCache[e.id] = 'RV' + yy + mm + String(i+1).padStart(2,'0');
+      e.ids.forEach(rid => { _rvCache[rid] = 'RV' + yy + mm + String(i+1).padStart(2,'0'); });
     });
   });
 }
@@ -15944,6 +15947,7 @@ async function loadSyncTally() {
     else { raw[n] = null; loadErr.push(n + ': ' + ((r && r.error) || 'no response')); }
   });
 
+  _SYNC_TALLY_RAW = raw;
   const R = buildSyncTally(raw);
   R.loadErrors = loadErr;
   R.backend = (raw.backend && !raw.backend._unknown && !raw.backend._error) ? raw.backend : (raw.backend || {});
@@ -15951,6 +15955,7 @@ async function loadSyncTally() {
   R.at = new Date().toISOString();
   _SYNC_TALLY_LAST = R;
   renderSyncTally(R);
+  try { renderSyncFixPanel(R); } catch(e) { console.warn('fix panel failed', e); }
 }
 
 // Pure: raw Sheet data in → report object out (no DOM, no writes).
@@ -16060,6 +16065,11 @@ function buildSyncTally(raw) {
   Object.entries(window.INV_STATUS_OVERRIDES || {}).forEach(([no, o]) => {
     const i = invByNo[no];
     ['status', 'amount_outstanding'].forEach(field => {
+      if (field === 'amount_outstanding' && o[field] !== undefined && i && !(field in i) && raw.receipts) {
+        const recd = raw.receipts.filter(r => !sheetVoid.receipts(r) && !browserHide.receipts(r) && (String(r.inv_id || '') === String(i.inv_id) || (!r.inv_id && String(r.inv_no || '').trim() === no)))
+                                 .reduce((t, r) => t + (parseFloat(r.amount) || 0), 0);
+        if (Math.abs((parseFloat(i.amount) || 0) - recd - parseFloat(o[field])) < 0.01) return;   // Sheet has no such column; amount − receipts already gives this
+      }
       if (o[field] !== undefined && String(i && i[field]) !== String(o[field])) R.overrides.push({ name: 'INV_STATUS_OVERRIDES', inv_no: no, field, sheet: i ? i[field] : '(not on Sheet)', dash: o[field] });
     });
   });
@@ -16308,6 +16318,216 @@ function downloadSyncTally() {
   a.download = 'sync-tally_' + _SYNC_TALLY_LAST.at.replace(/[:.]/g, '-').slice(0, 19) + '.json';
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// BACKEND VOIDS (Patch 4) — added 2026-10-03
+// The dashboard still hides a voided/deleted row in its synced browser list
+// straight away, and ALSO voids it in the Sheet via the backend's
+// void_record — but only once no save is in flight and the row is still meant
+// to be hidden. Edits hide the old row BEFORE saving its replacement and
+// un-hide it if that save fails, so voiding in the Sheet immediately could
+// lose the original. Rows that never reach the Sheet (tab closed, staff
+// voiding the Principal's record) stay "hidden by browser only" and show on
+// Sync & Tally, whose Fix panel voids them.
+// ════════════════════════════════════════════════════════════════════════
+const _BV_TYPES = { vouchers: 1, receipts: 1, allocations: 1 };
+const _bvQueue = new Map();
+let _bvTimer = null;
+function _queueBackendVoid(type, id, reason) {
+  if (!_BV_TYPES[type] || !id) return;
+  const s = String(id);
+  if (/^(J|JE|SCH)/.test(s)) return;                      // local journal projections — not on the Sheet
+  _bvQueue.set(type + '|' + s, { type, id: s, reason: reason || '', due: Date.now() + 5000, tries: 0 });
+  _bvKick();
+}
+function _bvKick(delay) { if (!_bvTimer) _bvTimer = setTimeout(_bvRun, delay || 3000); }
+async function _bvRun() {
+  _bvTimer = null;
+  if (!_bvQueue.size) return;
+  if (_apiInflight.size) { _bvKick(); return; }           // a save is still running — wait for it
+  const now = Date.now();
+  for (const [k, q] of Array.from(_bvQueue.entries())) {
+    if (q.due > now) continue;
+    const stillHidden = isVoided(q.type, q.id) || (q.type !== 'allocations' && isDeleted(q.type, q.id));
+    if (!stillHidden) { _bvQueue.delete(k); continue; }    // the edit was rolled back
+    const res = await api({ action: 'void_record', table: q.type, id: q.id, reason: q.reason });
+    const err = String((res && res.error) || '');
+    if ((res && res.ok) || /unknown action|not found|only the principal/i.test(err)) {
+      _bvQueue.delete(k);
+      if (res && res.ok && !res.already) console.log('[void] ' + q.type + ' ' + q.id + ' voided in the Sheet');
+      else if (!(res && res.ok)) console.log('[void] ' + q.type + ' ' + q.id + ' not voided in the Sheet: ' + err);
+    } else if (++q.tries >= 3) {
+      _bvQueue.delete(k);
+      console.warn('[void] giving up on ' + q.type + ' ' + q.id + ': ' + err);
+    } else {
+      q.due = Date.now() + 30000;
+    }
+  }
+  if (_bvQueue.size) _bvKick(10000);
+}
+
+// Receipts created by Sync & Tally's Fix panel carry "[Split of Rxxx]" or
+// "[Re-link of Rxxx]" in their notes. They take the RV number of the receipt
+// they replace, so no other receipt is renumbered.
+function _rvKeyOf(r) {
+  const m = String((r && r.notes) || '').match(/\[(?:Split|Re-link) of (R\d+)\]/);
+  return m ? m[1] : null;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// SYNC & TALLY — Fix panel (Step 3, added 2026-10-03). Principal only.
+// Builds a list of Sheet writes from the latest check; nothing is written
+// until Apply is confirmed. Every step is safe to re-run: done steps are
+// detected and skipped, so a run that stops half-way can simply be resumed.
+// ════════════════════════════════════════════════════════════════════════
+// Lump-sum receipts recorded against one invoice, split per invoice as in the
+// master Excel (GL 2026: 24-Mar-26 EJ Loh RM1,150; 8-Apr-26 FRAZ RM850).
+const SYNC_LUMP_SPLITS = [
+  { rid: 'R1776953144065', amount: 1150, label: 'EJ Loh bulk Q1 — master GL 24-Mar-26',
+    parts: [['INV260203', 325], ['INV260204', 275], ['INV260205', 275], ['INV260306', 275]] },
+  { rid: 'R1776953162708', amount: 850, label: 'FRAZ bulk Apr — master GL 8-Apr-26',
+    parts: [['INV260410', 275], ['INV260408', 275], ['INV260409', 300]] },
+];
+let _SYNC_TALLY_RAW = null;
+let _SYNC_FIX_RUNNING = false;
+
+function _stLocalDate(d) {
+  const t = new Date(d);
+  if (isNaN(t)) return String(d || '');
+  return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
+}
+
+function buildSyncFixPlan(raw, R) {
+  const steps = [];
+  if (!raw || !raw.receipts || !raw.invoices) return steps;
+  const rcById = {}; raw.receipts.forEach(r => { rcById[String(r.receipt_id)] = r; });
+  const invByNo = {}; raw.invoices.forEach(i => { invByNo[String(i.inv_no || '').trim()] = i; });
+  const isVoidRc = r => String((r && r.notes) || '').startsWith('__VOID__');
+  const tagged = (tag, rid, invNo) => raw.receipts.some(r => !isVoidRc(r) && String(r.notes || '').indexOf('[' + tag + ' of ' + rid + ']') >= 0 && String(r.inv_no || '').trim() === invNo);
+  const tName = { invoices: 'invoice', receipts: 'receipt', vouchers: 'voucher', allocations: 'allocation' };
+  const splitIds = new Set(SYNC_LUMP_SPLITS.map(s => s.rid));
+
+  // A. Rows the dashboard hides but the Sheet still counts → void them in the Sheet.
+  (R.hidden || []).forEach(h => {
+    if (h.t === 'invoices') return;   // deleted invoices are handled by delete_invoice, not voids
+    steps.push({ group: 'A · Void rows hidden only in this browser', desc: 'Void ' + tName[h.t] + ' ' + h.label, amount: h.amount, why: h.why,
+      call: { action: 'void_record', table: h.t, id: h.id, reason: 'was hidden in dashboard only (' + h.why + ')' } });
+  });
+
+  // B. Split lump-sum receipts per invoice (parts first, then void the lump).
+  SYNC_LUMP_SPLITS.forEach(sp => {
+    const g = 'B · Split lump-sum receipt ' + sp.label;
+    const orig = rcById[sp.rid];
+    const sum = Math.round(sp.parts.reduce((s, p) => s + p[1], 0) * 100) / 100;
+    let block = '';
+    if (!orig) block = 'receipt ' + sp.rid + ' is not on the Sheet';
+    else if (Math.abs(parseFloat(orig.amount) - sp.amount) > 0.005) block = 'receipt amount is ' + orig.amount + ', expected ' + sp.amount;
+    else if (Math.abs(sum - sp.amount) > 0.005) block = 'parts add up to ' + sum;
+    sp.parts.forEach(([no, amt]) => { const i = invByNo[no]; if (!block && (!i || Math.abs(parseFloat(i.amount) - amt) > 0.005)) block = no + (i ? ' amount is ' + i.amount + ', expected ' + amt : ' not found'); });
+    if (block) { steps.push({ group: g, desc: 'Cannot split: ' + block, blocked: true }); return; }
+    const done = isVoidRc(orig);
+    sp.parts.forEach(([no, amt]) => {
+      const i = invByNo[no];
+      if (done || tagged('Split', sp.rid, no)) { steps.push({ group: g, desc: 'Receipt RM' + amt + ' for ' + no + ' (' + i.client_name + ')', amount: amt, done: true }); return; }
+      steps.push({ group: g, desc: 'Add receipt RM' + amt.toFixed(2) + ' for ' + no + ' (' + i.client_name + ')', amount: amt,
+        call: { action: 'save_receipt', data: { receipt_no: orig.receipt_no || '', date: _stLocalDate(orig.date), inv_id: i.inv_id, inv_no: no, client_name: i.client_name,
+          amount: amt, bank_account: orig.bank_account || '', notes: '[Split of ' + sp.rid + '] ' + (orig.client_name || '') + ' RM' + sp.amount.toFixed(2) + (orig.notes ? ' — ' + orig.notes : '') } } });
+    });
+    steps.push({ group: g, desc: 'Void the lump receipt ' + sp.rid + ' (' + (orig.client_name || '') + ', RM' + sp.amount.toFixed(2) + ' on ' + (orig.inv_no || '') + ')', amount: sp.amount, done,
+      call: done ? null : { action: 'void_record', table: 'receipts', id: sp.rid, reason: 'split into per-invoice receipts' } });
+  });
+
+  // C. Receipts whose typed invoice number disagrees with their invoice link.
+  (R.mislinked || []).forEach(m => {
+    const orig = raw.receipts.find(r => String(r.receipt_no || r.receipt_id) === String(m.receipt) || String(r.receipt_id) === String(m.receipt));
+    if (!orig || splitIds.has(String(orig.receipt_id))) return;
+    const g = 'C · Correct the invoice number on receipt ' + orig.receipt_id;
+    const target = invByNo[String(m.idPointsTo || '').trim()];
+    if (!target) { steps.push({ group: g, desc: 'Cannot fix: typed ' + m.inv_no + ' and the link points to no invoice — check by hand', blocked: true }); return; }
+    const has = tagged('Re-link', orig.receipt_id, target.inv_no);
+    steps.push({ group: g, desc: 'Add receipt RM' + parseFloat(orig.amount).toFixed(2) + ' for ' + target.inv_no + ' (' + target.client_name + ') — typed as ' + m.inv_no, amount: parseFloat(orig.amount), done: has,
+      call: has ? null : { action: 'save_receipt', data: { receipt_no: orig.receipt_no || '', date: _stLocalDate(orig.date), inv_id: target.inv_id, inv_no: target.inv_no, client_name: target.client_name,
+        amount: parseFloat(orig.amount), bank_account: orig.bank_account || '', notes: '[Re-link of ' + orig.receipt_id + '] ' + (orig.notes || '') } } });
+    steps.push({ group: g, desc: 'Void the original receipt ' + orig.receipt_id + ' (typed ' + m.inv_no + ')', amount: parseFloat(orig.amount),
+      call: { action: 'void_record', table: 'receipts', id: orig.receipt_id, reason: 'invoice number corrected to ' + target.inv_no } });
+  });
+
+  // D. Hard-coded invoice amount / disbursement overrides → write them into the Sheet.
+  (R.overrides || []).filter(o => o.field === 'disb_amount' || o.field === 'amount').forEach(o => {
+    const i = invByNo[o.inv_no];
+    if (!i) { steps.push({ group: 'D · Write code overrides into the Sheet', desc: o.inv_no + ' not on the Sheet', blocked: true }); return; }
+    const data = { inv_id: i.inv_id, inv_no: i.inv_no }; data[o.field] = o.dash;
+    steps.push({ group: 'D · Write code overrides into the Sheet', desc: o.inv_no + ' ' + i.client_name + ': ' + o.field + ' ' + (o.sheet === '' || o.sheet == null ? '(blank)' : o.sheet) + ' → ' + o.dash + ' (what the dashboard already uses)',
+      call: { action: 'save_invoice', data } });
+  });
+  return steps;
+}
+
+function renderSyncFixPanel(R) {
+  const host = document.getElementById('st-fix');
+  if (!host) return;
+  const B = R.backend || {};
+  const isPrincipal = !!(SESSION && SESSION.user && (SESSION.user.name === 'Principal' || SESSION.user.role === 'admin'));
+  if (!B.patch4 || !isPrincipal) { host.innerHTML = ''; return; }
+  const steps = buildSyncFixPlan(_SYNC_TALLY_RAW, R);
+  window.__SYNC_FIX_STEPS = steps;
+  const todo = steps.filter(s => s.call && !s.done && !s.blocked);
+  const blocked = steps.filter(s => s.blocked);
+  const groups = [];
+  steps.forEach(s => { let g = groups.find(x => x.name === s.group); if (!g) groups.push(g = { name: s.group, items: [] }); g.items.push(s); });
+  const badge = s => s.blocked ? '<span style="color:var(--red);font-weight:600">Blocked</span>' : (s.done ? '<span style="color:var(--green);font-weight:600">✓ Done</span>' : (s._result ? s._result : '<span style="color:var(--amber);font-weight:600">To do</span>'));
+  const rowsHtml = groups.map(g => `<tr><td colspan="3" style="font-size:12px;font-weight:700;background:var(--surface2);padding:6px 10px">${_stEsc(g.name)}</td></tr>` +
+    g.items.map(s => `<tr><td style="font-size:12px">${_stEsc(s.desc)}${s.why ? '<br><span style="color:var(--text3);font-size:11px">' + _stEsc(s.why) + '</span>' : ''}</td><td style="font-size:12px;text-align:right;font-family:'DM Mono',monospace;white-space:nowrap">${s.amount != null ? _stFmt(s.amount) : ''}</td><td style="font-size:12px;text-align:right;white-space:nowrap" data-fix-idx="${steps.indexOf(s)}">${badge(s)}</td></tr>`).join('')).join('');
+  host.innerHTML = `
+    <div class="card" style="margin-bottom:16px;border:1.5px solid ${todo.length ? 'var(--amber)' : 'var(--green)'}">
+      <div class="card-header" style="align-items:flex-start">
+        <div><div class="card-title">Fix the Sheet (Principal only)</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px;font-weight:400">Writes to the backend Google Sheet, one step at a time, stopping at the first error. Rows are voided, never deleted (kept with a __VOID__ / _DUP_ mark and logged in the Void_Log tab). Already-done steps are skipped, so it is safe to run again. Figures the dashboard shows do not change: these rows are already hidden or already counted this way.</div></div>
+        <div style="margin-left:auto;white-space:nowrap;display:flex;gap:8px;align-items:center">
+          ${todo.length ? `<button class="btn btn-primary btn-sm" id="st-fix-apply" onclick="applySyncFixPlan()">Apply ${todo.length} step${todo.length === 1 ? '' : 's'}</button>` : '<span style="color:var(--green);font-weight:600">✓ Nothing to fix</span>'}
+        </div>
+      </div>
+      ${steps.length ? `<div style="overflow-x:auto"><table><tbody>${rowsHtml}</tbody></table></div>` : ''}
+      ${blocked.length ? `<div style="padding:8px 12px;font-size:12px;color:var(--red)">${blocked.length} step${blocked.length === 1 ? '' : 's'} blocked: the data no longer matches what the fix expects. Nothing is written for them.</div>` : ''}
+      <div id="st-fix-log" style="padding:0 12px 10px;font-size:12px;color:var(--text2)"></div>
+    </div>`;
+}
+
+async function applySyncFixPlan() {
+  if (_SYNC_FIX_RUNNING) return;
+  const steps = (window.__SYNC_FIX_STEPS || []);
+  const todo = steps.filter(s => s.call && !s.done && !s.blocked);
+  if (!todo.length) return;
+  const n = a => todo.filter(s => s.call.action === a).length;
+  if (!confirm('Write ' + todo.length + ' change(s) to the backend Google Sheet?\n\n• ' + n('void_record') + ' void(s) — rows are kept, marked void and logged\n• ' + n('save_receipt') + ' new per-invoice receipt(s)\n• ' + n('save_invoice') + ' invoice field update(s)\n\nSave a Sync & Tally result (JSON) first if you have not. It stops at the first error.')) return;
+  _SYNC_FIX_RUNNING = true;
+  const btn = document.getElementById('st-fix-apply'); if (btn) { btn.disabled = true; btn.textContent = 'Applying…'; }
+  const log = document.getElementById('st-fix-log');
+  const results = [];
+  let failed = null;
+  for (let k = 0; k < todo.length; k++) {
+    const s = todo[k];
+    const cell = document.querySelector('[data-fix-idx="' + steps.indexOf(s) + '"]');
+    if (cell) cell.innerHTML = '<span style="color:var(--text3)">Writing…</span>';
+    if (log) log.textContent = 'Step ' + (k + 1) + ' of ' + todo.length + ': ' + s.desc;
+    const res = await api(JSON.parse(JSON.stringify(s.call)));
+    results.push({ desc: s.desc, call: s.call, res });
+    if (res && res.ok) { if (cell) cell.innerHTML = '<span style="color:var(--green);font-weight:600">✓ Written</span>'; }
+    else { failed = { s, res }; if (cell) cell.innerHTML = '<span style="color:var(--red);font-weight:600">Failed</span>'; break; }
+  }
+  _SYNC_FIX_RUNNING = false;
+  try { localStorage.setItem('seraya_sync_fix_log_v1', JSON.stringify({ at: new Date().toISOString(), results })); } catch(e) {}
+  if (failed) {
+    if (log) log.innerHTML = '<span style="color:var(--red)">Stopped at: ' + _stEsc(failed.s.desc) + ' — ' + _stEsc((failed.res && failed.res.error) || 'no response') + '. Earlier steps were written. Re-run the check, then Apply again to continue.</span>';
+    return;
+  }
+  if (log) log.textContent = 'All ' + todo.length + ' steps written. Reloading data and re-running the check…';
+  // Fresh copies everywhere so the dashboard reflects the Sheet.
+  try { INVOICES = []; RECEIPTS = []; VOUCHERS = []; ALLOCATIONS = []; } catch(e) {}
+  try { await Promise.all([loadInvoices(), loadReceipts(), loadVouchers()]); } catch(e) {}
+  try { await loadAllocations(); } catch(e) {}
+  loadSyncTally();
 }
 
 // ── Pending disbursements in the Client Registry (added 2026-10-02) ──────
@@ -17204,6 +17424,7 @@ function addDeletedId(type, id) {
   const key = id.toString();
   if (!ids.includes(key)) {
     ids.push(key); localStorage.setItem('seraya_deleted_' + type, JSON.stringify(ids));
+    try { _queueBackendVoid(type, key, 'deleted in dashboard'); } catch(e) {}
     // Belt-and-braces: push the deletion blacklist to the Sheet so it syncs to every device
     try { const d = _findSyncDef('seraya_deleted_' + type); if (d) pushSyncedBlob(d.settingsKey); } catch(e) {}
   }
@@ -17232,6 +17453,7 @@ function addVoidId(type, id) {
     const ids = JSON.parse(localStorage.getItem(key) || '[]');
     const s = id.toString();
     if (!ids.includes(s)) { ids.push(s); localStorage.setItem(key, JSON.stringify(ids)); }
+    try { _queueBackendVoid(type, s, 'replaced or voided in dashboard'); } catch(e) {}
   } catch(e) {}
 }
 function getVoidIds(type) {
