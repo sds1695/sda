@@ -17038,10 +17038,14 @@ function buildMasterCheck(M, invoices, allocations) {
     if (issues.length) {
       try { advice = _masterAdvice({ no, dash, master: d.amt, dTotal: d.total, invAmt: parseFloat(inv.amount) || 0, starts: d.starts, rows: d.rows, prep: prepAdvice, paid, shared: liveByNo[no] }); } catch(e) {}
     }
-    if (issues.length) out.rows.push({ inv_no: no, client: inv.client_name, dash: fmtP(dash) + (src !== 'lines' ? ' (from ' + src + ')' : ''), master: fmtP(d.amt), dueRows: d.rows, allocRow: a ? a.row : null, issues, fix, notes, advice, paid,
+    if (issues.length) out.rows.push({ inv_no: no, inv_id: inv.inv_id, client: inv.client_name, dash: fmtP(dash) + (src !== 'lines' ? ' (from ' + src + ')' : ''), master: fmtP(d.amt), dueRows: d.rows, allocRow: a ? a.row : null, issues, fix, notes, advice, paid,
       sig: no + '|' + issues.join('|') });
     else out.matched++;
   });
+  // Two dashboard invoices can share a number: each row then gets its own Reviewed key.
+  const nByNo = {};
+  out.rows.forEach(r => { nByNo[r.inv_no] = (nByNo[r.inv_no] || 0) + 1; });
+  out.rows.forEach(r => { r.rkey = nByNo[r.inv_no] > 1 ? r.inv_no + '#' + r.inv_id : r.inv_no; });
   return out;
 }
 
@@ -17457,15 +17461,18 @@ async function applyFollowMaster() {
 // signature is the difference text, so if the difference changes it shows again.
 const MASTER_REVIEWED_KEY = 'seraya_master_reviewed_v1';
 function _masterReviewed() { try { return JSON.parse(localStorage.getItem(MASTER_REVIEWED_KEY) || '{}') || {}; } catch(e) { return {}; } }
-function _masterIsReviewed(row) { const r = _masterReviewed()[row.inv_no]; return !!(r && r.sig === row.sig); }
+function _masterIsReviewed(row) {
+  const m = _masterReviewed(), r = m[row.rkey || row.inv_no] || m[row.inv_no];
+  return !!(r && r.sig === row.sig);
+}
 function _masterOpenRows(C) { return ((C && C.rows) || []).filter(x => !_masterIsReviewed(x)); }
-function markMasterReviewed(invNo, on) {
+function markMasterReviewed(key, on) {
   const C = _SYNC_TALLY_LAST && _SYNC_TALLY_LAST.masterCheck;
-  const row = C && C.rows.find(x => x.inv_no === invNo);
+  const row = C && (C.rows.find(x => x.rkey === key) || C.rows.find(x => x.inv_no === key));
   if (!row) return;
-  const m = _masterReviewed();
-  if (on) m[invNo] = { sig: row.sig, at: new Date().toISOString(), by: (SESSION && SESSION.user && SESSION.user.name) || '' };
-  else delete m[invNo];
+  const m = _masterReviewed(), k = row.rkey || row.inv_no;
+  if (on) m[k] = { sig: row.sig, at: new Date().toISOString(), by: (SESSION && SESSION.user && SESSION.user.name) || '' };
+  else { delete m[k]; if (m[row.inv_no] && m[row.inv_no].sig === row.sig) delete m[row.inv_no]; }
   localStorage.setItem(MASTER_REVIEWED_KEY, JSON.stringify(m));   // synced via _master_reviewed_blob
   renderMasterCheck(_SYNC_TALLY_LAST);
   try { _autoCheckFromReport(_SYNC_TALLY_LAST); } catch(e) {}
@@ -17496,7 +17503,7 @@ function renderMasterCheck(R) {
       <td style="font-size:12px;vertical-align:top"><span style="color:var(--red)">${x.issues.map(esc).join('<br>')}</span>${(x.advice || []).length
         ? '<br><strong>Fix:</strong> ' + x.advice.map(v => '<span style="display:inline-block;font-size:10px;padding:0 5px;border-radius:4px;border:1px solid var(--border);color:var(--text2);margin-right:4px">' + esc(_MASTER_KIND[v.kind] || v.kind) + '</span>' + esc(v.text)).join('<br>') + (x.fix.length ? '<br><span style="color:var(--text3);font-size:11px">Where: ' + x.fix.map(esc).join(' · ') + '</span>' : '')
         : (x.fix.length ? '<br><strong>Fix:</strong> ' + x.fix.map(esc).join('<br>') : '')}${(x.notes || []).length ? '<br><span style="color:var(--text3)">' + x.notes.map(esc).join('<br>') + '</span>' : ''}</td>
-      <td style="font-size:12px;vertical-align:top;white-space:nowrap;text-align:right">${canTick ? `<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px;border:1px solid var(--border)" onclick="markMasterReviewed('${esc(x.inv_no)}', ${reviewed ? 'false' : 'true'})">${reviewed ? 'Undo' : '✓ Reviewed'}</button>` : ''}${reviewed ? '<br><span style="color:var(--text3);font-size:10px">' + esc((_masterReviewed()[x.inv_no] || {}).by || '') + ' ' + esc(((_masterReviewed()[x.inv_no] || {}).at || '').slice(0, 10)) + '</span>' : ''}</td>
+      <td style="font-size:12px;vertical-align:top;white-space:nowrap;text-align:right">${canTick ? `<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px;border:1px solid var(--border)" onclick="markMasterReviewed('${esc(x.rkey || x.inv_no)}', ${reviewed ? 'false' : 'true'})">${reviewed ? 'Undo' : '✓ Reviewed'}</button>` : ''}${reviewed ? '<br><span style="color:var(--text3);font-size:10px">' + esc((_masterReviewed()[x.rkey] || _masterReviewed()[x.inv_no] || {}).by || '') + ' ' + esc(((_masterReviewed()[x.rkey] || _masterReviewed()[x.inv_no] || {}).at || '').slice(0, 10)) + '</span>' : ''}</td>
     </tr>`;
   const rows = open.map(x => rowHtml(x, false)).join('');
   const doneHtml = done.length ? `<details style="padding:8px 12px;font-size:12px"><summary style="cursor:pointer">${done.length} reviewed difference${done.length === 1 ? '' : 's'} (accepted, hidden from the count)</summary><div style="overflow-x:auto;margin-top:6px"><table><tbody>${done.map(x => rowHtml(x, true)).join('')}</tbody></table></div></details>` : '';
