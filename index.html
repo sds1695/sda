@@ -1537,6 +1537,7 @@
       <div id="st-fix"></div>
       <div id="st-body"></div>
       <div id="st-master"></div>
+      <div id="st-debtors"></div>
     </div>
 
     <!-- ══ CLIENT DEADLINES ══ -->
@@ -15972,6 +15973,7 @@ async function loadSyncTally() {
   renderSyncTally(R);
   try { renderSyncFixPanel(R); } catch(e) { console.warn('fix panel failed', e); }
   try { renderMasterCheck(R); } catch(e) { console.warn('master check failed', e); }
+  try { renderDebtorCheck(R); } catch(e) { console.warn('debtor check failed', e); }
   try { _autoCheckFromReport(R); } catch(e) {}
 }
 
@@ -16008,6 +16010,7 @@ async function runSyncTallyCheck(opts) {
     try { R.masterCheck = buildMasterCheck(R.master, raw.invoices, raw.allocations); if (_masterOpenRows(R.masterCheck).length) R.issues++; }
     catch(e) { R.master = { ok: false, error: 'check failed: ' + e.message }; }
   }
+  try { R.debtors = buildDebtorCheck(R); if (R.debtors.issue) R.issues++; } catch(e) { R.debtors = { ok: false, why: 'check failed: ' + e.message }; }
   R.at = new Date().toISOString();
   return { R, raw };
 }
@@ -16028,6 +16031,9 @@ function syncTallyAreas(R) {
   const M = R.master || {};
   if (!M.ok) a.push('master: not read');
   else if (R.masterCheck) { const n = _masterOpenRows(R.masterCheck).length; if (n) a.push('master: ' + n + ' invoice' + (n === 1 ? '' : 's')); }
+  const TD = R.debtors || {};
+  if (TD.needsPatch7) a.push('trade debtors: needs Patch 7');
+  else if (TD.issue) a.push('trade debtors');
   return a;
 }
 
@@ -16216,6 +16222,7 @@ function buildSyncTally(raw) {
   // disbursements. Backend updateInvoiceStatus() adds disb_amount on top, so
   // both are shown when they disagree.
   if (raw.invoices && raw.receipts) {
+    R.outstanding = {};
     const visRc = raw.receipts.filter(r => !sheetVoid.receipts(r) && !browserHide.receipts(r));
     // Resolve each receipt to an invoice: inv_id first (what the backend uses),
     // then inv_no. A receipt whose inv_no and inv_id disagree is listed as mislinked.
@@ -16252,6 +16259,7 @@ function buildSyncTally(raw) {
       const hasOvr = (window.INV_STATUS_OVERRIDES || {})[no];
       if (recd > amt + 0.005) R.overpaid.push({ inv_no: no, client: i.client_name, date: i.date, amount: amt, received: recd, over: Math.round((recd - amt) * 100) / 100 });
       if (cur !== exp && !hasOvr) R.status.push({ inv_no: no, client: i.client_name, date: i.date, amount: amt, received: recd, sheet: cur || '(blank)', expected: exp });
+      if (amt - recd > 0.005) R.outstanding[no] = { inv_no: no, client: i.client_name, date: i.date, amount: amt, received: recd, out: Math.round((amt - recd) * 100) / 100 };
     });
     if (R.status.length || R.overpaid.length) R.issues++;
   }
@@ -16415,6 +16423,8 @@ function renderSyncTally(R) {
       ${pRow('Patch 1', 'No duplicate saves (lock + request memory)', B.patch1_idempotency)}
       ${pRow('Patch 2', 'Master-style PV numbers (PV057.26 …)', B.patch2_pv_numbers)}
       ${pRow('Patch 4', 'Voids in the Sheet, correct invoice status, multi-row allocations, GL mirrors live records', !!B.patch4)}
+      ${pRow('Patch 6', 'Read-only copy of the master (Allocation 2026, Due (to)) for section 9', !!B.patch6_master_read)}
+      ${pRow('Patch 7', 'Master GL 2026, Balance Sheet, Client Outstanding Recon for section 10 (file 5_SerayaPatches_REPLACE_ALL_v3_master_tabs.gs)', !!B.patch7_master_tabs)}
     </tbody></table>`);
 
   // 1. Records
@@ -16775,8 +16785,9 @@ function buildMasterCheck(M, invoices, allocations) {
     if (c0 || c1) {
       cur = _mInvNo(c1) || null;
       if (!cur) return;
-      due[cur] = due[cur] || { rows: [], amt: { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 }, total: 0, blocks: 0 };
+      due[cur] = due[cur] || { rows: [], amt: { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 }, total: 0, blocks: 0, starts: [] };
       due[cur].blocks++;
+      due[cur].starts.push(i + 1);
     } else if (!cur) return;
     else {
       // Continuation rows ("- MITRS", or amounts only) follow directly with nothing in C.
@@ -16800,6 +16811,11 @@ function buildMasterCheck(M, invoices, allocations) {
   });
   const r2 = n => Math.round(n * 100) / 100;
   const fmtP = o => Object.keys(o).filter(k => Math.abs(o[k]) > 0.005).map(k => k + ' ' + r2(o[k]).toFixed(2)).join(' · ') || '—';
+  const liveByNo = {};
+  (invoices || []).forEach(inv => {
+    if (String(inv.status || '').toLowerCase() === 'cancelled' || isDeleted('invoices', String(inv.inv_id || ''))) return;
+    const no = _mInvNo(inv.inv_no); if (no) (liveByNo[no] = liveByNo[no] || []).push(inv);
+  });
   (invoices || []).forEach(inv => {
     if (String(inv.status || '').toLowerCase() === 'cancelled' || isDeleted('invoices', String(inv.inv_id || ''))) return;
     const no = _mInvNo(inv.inv_no);
@@ -16829,6 +16845,7 @@ function buildMasterCheck(M, invoices, allocations) {
       }
     } catch(e) {}
     const issues = [], fix = [], notes = [];
+    let prepAdvice = '';
     // Cosec retainer: the master puts Cecilia's quarterly fee on the invoice row; the dashboard
     // pays it through the Cecilia retainer tracker (per client per quarter), not the invoice.
     if (cosec && Math.abs(dash.Cecilia) < 0.005 && d.amt.Cecilia > 0.005) {
@@ -16854,18 +16871,156 @@ function buildMasterCheck(M, invoices, allocations) {
       if (a.amtPerson && typed && !same(typed, a.amtPerson) && dp.some(x => same(x, typed))) {
         issues.push('Allocation 2026 says "' + a.typed + '" but the preparer amount is in the ' + a.amtPerson + ' column, and the dashboard followed "' + a.typed + '"');
         fix.push('Master: Allocation 2026 D' + a.row + ' → ' + a.amtPerson + '; dashboard: set the preparer of ' + no + ' to ' + a.amtPerson);
+        prepAdvice = a.amtPerson;
       }
       const mPrep = a.amtPerson || typed;
       if (mPrep && dp.length && dp.indexOf(mPrep === 'Koay PH' ? 'Koay' : mPrep) < 0) {
         issues.push('preparer: dashboard ' + dp.join('/') + ', master ' + mPrep);
+        prepAdvice = mPrep === 'Koay PH' ? 'Koay' : mPrep;
         if (!diffPeople.length) fix.push('Dashboard: set the preparer of ' + no + ' to ' + mPrep);
       }
     }
-    if (issues.length) out.rows.push({ inv_no: no, client: inv.client_name, dash: fmtP(dash) + (src !== 'lines' ? ' (from ' + src + ')' : ''), master: fmtP(d.amt), dueRows: d.rows, allocRow: a ? a.row : null, issues, fix, notes,
+    const paid = String(inv.status || '').toLowerCase() === 'paid';
+    let advice = [];
+    if (issues.length) {
+      try { advice = _masterAdvice({ no, dash, master: d.amt, dTotal: d.total, invAmt: parseFloat(inv.amount) || 0, starts: d.starts, rows: d.rows, prep: prepAdvice, paid, shared: liveByNo[no] }); } catch(e) {}
+    }
+    if (issues.length) out.rows.push({ inv_no: no, client: inv.client_name, dash: fmtP(dash) + (src !== 'lines' ? ' (from ' + src + ')' : ''), master: fmtP(d.amt), dueRows: d.rows, allocRow: a ? a.row : null, issues, fix, notes, advice, paid,
       sig: no + '|' + issues.join('|') });
     else out.matched++;
   });
   return out;
+}
+
+
+// ── 10 · Trade debtors vs master (Patch 7) ───────────────────────────────────
+// Dashboard trade debtors = Σ (invoice amount − receipts) over live invoices, the same
+// receipts rule as section 4. Master = the Balance Sheet row labelled "Trade debtor"
+// (first figure to its right = current year), and the invoices listed in the
+// Client Outstanding Recon tab (invoice number in A, amount = first figure after B).
+function buildDebtorCheck(R) {
+  const M = R.master || {};
+  if (!M.ok) return { ok: false, why: 'master not read' };
+  if (!M.balance_sheet && !M.outstanding_recon) return { ok: false, needsPatch7: true };
+  const r2 = n => Math.round(n * 100) / 100;
+  const blank = v => v === null || v === undefined || String(v).trim() === '' || String(v).trim() === '-';
+  const D = { ok: true, dash: 0, count: 0, master: null, cell: '', recon: [], reconTotal: 0, notInRecon: [], reconNotOutstanding: [], amountDiffers: [] };
+  const outs = R.outstanding || {};
+  Object.keys(outs).forEach(no => { D.dash += outs[no].out; D.count++; });
+  D.dash = r2(D.dash);
+  (M.balance_sheet || []).some((r, i) => {
+    for (let c = 0; c < Math.min(3, r.length); c++) {
+      if (!/^\s*trade\s+debtors?\s*$/i.test(String(r[c] == null ? '' : r[c]))) continue;
+      for (let k = c + 1; k < r.length; k++) if (!blank(r[k])) { D.master = r2(_mNum(r[k])); D.cell = 'Balance Sheet ' + _colLetter(k) + (i + 1); return true; }
+      return true;
+    }
+    return false;
+  });
+  const recon = {};
+  (M.outstanding_recon || []).forEach((r, i) => {
+    const no = _mInvNo(r[0]);
+    if (!no || recon[no]) return;
+    let amt = 0;
+    for (let k = 2; k < r.length; k++) if (!blank(r[k])) { amt = _mNum(r[k]); break; }
+    recon[no] = { inv_no: no, client: String(r[1] == null ? '' : r[1]), amount: r2(amt), row: i + 1 };
+    D.recon.push(recon[no]);
+    D.reconTotal += amt;
+  });
+  D.reconTotal = r2(D.reconTotal);
+  D.hasRecon = !!M.outstanding_recon;
+  if (D.hasRecon) {
+    Object.keys(outs).sort().forEach(no => {
+      const o = outs[no], m = recon[_mInvNo(no)];
+      if (!m) D.notInRecon.push(o);
+      else if (Math.abs(m.amount - o.out) > MASTER_TOL) D.amountDiffers.push({ inv_no: no, client: o.client, dash: o.out, master: m.amount, row: m.row });
+    });
+    const outNos = new Set(Object.keys(outs).map(_mInvNo));
+    D.recon.forEach(m => { if (!outNos.has(m.inv_no)) D.reconNotOutstanding.push(m); });
+  }
+  D.diff = D.master == null ? null : r2(D.dash - D.master);
+  D.issue = D.master == null || Math.abs(D.diff) > MASTER_TOL || D.notInRecon.length > 0 || D.reconNotOutstanding.length > 0 || D.amountDiffers.length > 0;
+  return D;
+}
+
+function renderDebtorCheck(R) {
+  const host = document.getElementById('st-debtors');
+  if (!host) return;
+  const D = R.debtors || {}, esc = _stEsc, f = _stFmt;
+  const head = (st, sub) => `<div class="card-header" style="align-items:flex-start"><div><div class="card-title">10 · Trade debtors vs master</div><div style="font-size:11px;color:var(--text3);margin-top:2px;font-weight:400">${sub}</div></div><div style="margin-left:auto;white-space:nowrap">${st}</div></div>`;
+  const amber = s => `<span style="color:var(--amber);font-weight:600">${s}</span>`;
+  if (!D.ok) {
+    host.innerHTML = `<div class="card" style="margin-bottom:16px">${head(amber('Not checked'), D.needsPatch7
+      ? 'Needs backend Patch 7 (the master\'s Balance Sheet and Client Outstanding Recon tabs). Replace the "Seraya Patches" file with apps-script\\READY_TO_PASTE\\5_SerayaPatches_REPLACE_ALL_v3_master_tabs.gs and deploy a new version.'
+      : 'Could not check: ' + esc(D.why || ''))}</div>`;
+    return;
+  }
+  const st = D.issue ? '<span style="color:var(--red);font-weight:600">Differs</span>' : '<span style="color:var(--green);font-weight:600">✓ Tallied</span>';
+  const td = (v, right) => `<td style="font-size:12px;${right ? "text-align:right;font-family:'DM Mono',monospace" : ''}">${v}</td>`;
+  const line = (label, v, extra) => `<tr>${td(label)}${td(v == null ? '<span style="color:var(--red)">not found</span>' : f(v), 1)}${td(extra || '')}</tr>`;
+  let html = `<table><tbody>
+    ${line('<strong>Dashboard</strong> — ' + D.count + ' invoices outstanding (amount − receipts)', D.dash)}
+    ${line('<strong>Master</strong> — trade debtor', D.master, D.cell ? '<span style="color:var(--text3)">' + esc(D.cell) + '</span>' : '<span style="color:var(--red)">no row labelled "Trade debtor" in the Balance Sheet tab</span>')}
+    ${line('Difference (dashboard − master)', D.diff, D.diff != null && Math.abs(D.diff) <= MASTER_TOL ? '<span style="color:var(--green)">✓</span>' : '')}
+    ${D.hasRecon ? line('Master Client Outstanding Recon tab — ' + D.recon.length + ' invoices listed', D.reconTotal, Math.abs(D.reconTotal - D.dash) <= MASTER_TOL ? '<span style="color:var(--green)">✓ = dashboard</span>' : '<span style="color:var(--amber)">update the tab by hand (list below)</span>') : ''}
+  </tbody></table>`;
+  const tbl = (title, rows, cols) => rows.length ? `<div style="font-size:12px;font-weight:600;margin:10px 12px 4px">${title}</div><table><thead><tr>${cols.map(c => `<th style="font-size:11px;${c[2] ? 'text-align:right' : ''}">${c[0]}</th>`).join('')}</tr></thead><tbody>${rows.map(r => '<tr>' + cols.map(c => td(c[1](r), c[2])).join('') + '</tr>').join('')}</tbody></table>` : '';
+  html += tbl('Outstanding on the dashboard but not in the master\'s Client Outstanding Recon tab — add them there', D.notInRecon,
+    [['Invoice', r => esc(r.inv_no)], ['Date', r => formatDate(r.date)], ['Client', r => esc(r.client)], ['Outstanding', r => f(r.out), 1]]);
+  html += tbl('In the Client Outstanding Recon tab but fully paid (or not found) on the dashboard — check the receipt, then remove from the tab', D.reconNotOutstanding,
+    [['Invoice', r => esc(r.inv_no)], ['Client (master)', r => esc(r.client)], ['Master amount', r => f(r.amount), 1], ['Tab row', r => r.row]]);
+  html += tbl('Outstanding amount differs', D.amountDiffers,
+    [['Invoice', r => esc(r.inv_no)], ['Client', r => esc(r.client)], ['Dashboard', r => f(r.dash), 1], ['Master', r => f(r.master), 1], ['Tab row', r => r.row]]);
+  host.innerHTML = `<div class="card" style="margin-bottom:16px">${head(st, 'The master is typed by hand; the dashboard never writes to it. Master figures: ' + esc((R.master || {}).file || '') + ' (saved ' + esc((R.master || {}).file_updated || '') + '). Differences of 5 sen or less are ignored.')}<div style="overflow-x:auto">${html}</div></div>`;
+}
+
+// Section 9 suggested action for one difference (2b). Pure; returns [{ kind, text }].
+// kind: twice · lump · preparer · topup · split. Paid invoices are flagged as needing the Principal's OK.
+function _masterAdvice(c) {
+  const r2 = n => Math.round(n * 100) / 100;
+  const ok = c.paid ? ' (paid invoice — needs your OK)' : '';
+  const out = [];
+  const people = Object.keys(c.dash || {});
+  const deltas = people.map(k => ({ k, d: r2((c.dash[k] || 0) - ((c.master || {})[k] || 0)) })).filter(x => Math.abs(x.d) > MASTER_TOL);
+  const inv = +c.invAmt || 0, mt = +c.dTotal || 0;
+  if ((c.starts || []).length > 1) {
+    const last = c.starts[c.starts.length - 1];
+    out.push({ kind: 'twice', text: 'Entered ' + c.starts.length + ' times in Due (to) (rows ' + c.starts.join(' and ') + '): delete the stray master entry at row ' + last + ' (Peter, in the master).' });
+    return out;
+  }
+  if (c.shared && c.shared.length > 1) {
+    out.push({ kind: 'lump', text: 'The master entry covers ' + c.shared.length + ' dashboard invoices with this number — a grouped entry. Usually accept (✓ Reviewed).' });
+    return out;
+  }
+  if (inv > 0 && mt > 0 && Math.abs(mt - 2 * inv) <= MASTER_TOL) {
+    out.push({ kind: 'twice', text: 'Due (to) holds twice the invoice (RM' + r2(mt).toFixed(2) + ' vs RM' + inv.toFixed(2) + '): the invoice was entered twice — delete the duplicate master row(s) (Peter, in the master).' });
+    return out;
+  }
+  if (inv > 0 && mt > inv + MASTER_TOL && mt / inv >= 1.5) {
+    out.push({ kind: 'lump', text: 'The master records a lump / grouped amount (RM' + r2(mt).toFixed(2) + ' vs this invoice RM' + inv.toFixed(2) + '). Usually accept (✓ Reviewed).' });
+    return out;
+  }
+  if (c.prep) out.push({ kind: 'preparer', text: 'Set the dashboard preparer of ' + c.no + ' to ' + c.prep + ' (master)' + ok + '.' });
+  if (deltas.length === 1 && deltas[0].k === 'KC' && deltas[0].d < 0 && -deltas[0].d >= 15 && -deltas[0].d <= 45) {
+    out.push({ kind: 'topup', text: 'KC lower by RM' + (-deltas[0].d).toFixed(2) + ': the RM20 reviewer top-up is missing on the dashboard — set it in Allocation Setup' + ok + '.' });
+  } else if (deltas.length && !c.prep) {
+    const sum = r2(deltas.reduce((t, x) => t + x.d, 0));
+    out.push({ kind: 'split', text: 'Split differs (dashboard − master): ' + deltas.map(x => x.k + ' ' + (x.d > 0 ? '+' : '−') + Math.abs(x.d).toFixed(2)).join(' · ')
+      + (Math.abs(sum) <= MASTER_TOL ? ' — same total, different split' : ' — totals differ by RM' + Math.abs(sum).toFixed(2))
+      + '. Check the master Due (to) row ' + (c.rows || [])[0] + ' first; if the master is right, correct the split in Allocation Setup' + ok + '.' });
+  }
+  return out;
+}
+
+function downloadMasterAdvice() {
+  const C = _SYNC_TALLY_LAST && _SYNC_TALLY_LAST.masterCheck;
+  if (!C) return;
+  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const lines = [['Invoice', 'Client', 'Paid', 'Kind', 'Difference', 'Suggested action', 'Reviewed', 'Tick (Peter)'].map(q).join(',')];
+  C.rows.forEach(x => lines.push([x.inv_no, x.client, x.paid ? 'yes' : '', (x.advice || []).map(a => a.kind).join(' + '), x.issues.join('; '), (x.advice || []).map(a => a.text).join(' '), _masterIsReviewed(x) ? 'yes' : '', ''].map(q).join(',')));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv' }));
+  a.download = 'Dashboard-vs-Master_suggested-actions_' + new Date().toISOString().slice(0, 10) + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
 }
 
 // Differences the Principal has looked at and accepted. Keyed by invoice; the stored
@@ -16886,6 +17041,7 @@ function markMasterReviewed(invNo, on) {
   try { _autoCheckFromReport(_SYNC_TALLY_LAST); } catch(e) {}
 }
 
+const _MASTER_KIND = { twice: 'entered twice', lump: 'lump / grouped', preparer: 'preparer', topup: 'RM20 top-up', split: 'split' };
 function renderMasterCheck(R) {
   const host = document.getElementById('st-master');
   if (!host) return;
@@ -16907,13 +17063,18 @@ function renderMasterCheck(R) {
       <td style="font-size:12px;vertical-align:top">${esc(x.client || '')}</td>
       <td style="font-size:12px;vertical-align:top">${esc(x.dash)}</td>
       <td style="font-size:12px;vertical-align:top">${esc(x.master)}<br><span style="color:var(--text3);font-size:11px">Due (to) row ${x.dueRows[0]}${x.dueRows.length > 1 ? '–' + x.dueRows[x.dueRows.length - 1] : ''}${x.allocRow ? ' · Allocation 2026 row ' + x.allocRow : ''}</span></td>
-      <td style="font-size:12px;vertical-align:top"><span style="color:var(--red)">${x.issues.map(esc).join('<br>')}</span>${x.fix.length ? '<br><strong>Fix:</strong> ' + x.fix.map(esc).join('<br>') : ''}${(x.notes || []).length ? '<br><span style="color:var(--text3)">' + x.notes.map(esc).join('<br>') + '</span>' : ''}</td>
+      <td style="font-size:12px;vertical-align:top"><span style="color:var(--red)">${x.issues.map(esc).join('<br>')}</span>${(x.advice || []).length
+        ? '<br><strong>Fix:</strong> ' + x.advice.map(v => '<span style="display:inline-block;font-size:10px;padding:0 5px;border-radius:4px;border:1px solid var(--border);color:var(--text2);margin-right:4px">' + esc(_MASTER_KIND[v.kind] || v.kind) + '</span>' + esc(v.text)).join('<br>') + (x.fix.length ? '<br><span style="color:var(--text3);font-size:11px">Where: ' + x.fix.map(esc).join(' · ') + '</span>' : '')
+        : (x.fix.length ? '<br><strong>Fix:</strong> ' + x.fix.map(esc).join('<br>') : '')}${(x.notes || []).length ? '<br><span style="color:var(--text3)">' + x.notes.map(esc).join('<br>') + '</span>' : ''}</td>
       <td style="font-size:12px;vertical-align:top;white-space:nowrap;text-align:right">${canTick ? `<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px;border:1px solid var(--border)" onclick="markMasterReviewed('${esc(x.inv_no)}', ${reviewed ? 'false' : 'true'})">${reviewed ? 'Undo' : '✓ Reviewed'}</button>` : ''}${reviewed ? '<br><span style="color:var(--text3);font-size:10px">' + esc((_masterReviewed()[x.inv_no] || {}).by || '') + ' ' + esc(((_masterReviewed()[x.inv_no] || {}).at || '').slice(0, 10)) + '</span>' : ''}</td>
     </tr>`;
   const rows = open.map(x => rowHtml(x, false)).join('');
   const doneHtml = done.length ? `<details style="padding:8px 12px;font-size:12px"><summary style="cursor:pointer">${done.length} reviewed difference${done.length === 1 ? '' : 's'} (accepted, hidden from the count)</summary><div style="overflow-x:auto;margin-top:6px"><table><tbody>${done.map(x => rowHtml(x, true)).join('')}</tbody></table></div></details>` : '';
   const nim = C.notInMaster.length ? `<details style="padding:8px 12px;font-size:12px"><summary style="cursor:pointer">${C.notInMaster.length} dashboard invoice${C.notInMaster.length === 1 ? '' : 's'} not found in the master's Due (to)</summary><div style="margin-top:6px;font-family:'DM Mono',monospace;color:var(--text2)">${C.notInMaster.map(esc).join(', ')}</div></details>` : '';
-  host.innerHTML = `<div class="card" style="margin-bottom:16px">${head(st, sub)}
+  const kinds = {};
+  open.forEach(x => (x.advice || []).forEach(v => { kinds[v.kind] = (kinds[v.kind] || 0) + 1; }));
+  const kindLine = Object.keys(kinds).length ? `<div style="padding:8px 12px;font-size:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center"><span style="color:var(--text3)">Suggested actions:</span>${Object.keys(kinds).map(k => esc(_MASTER_KIND[k] || k) + ' ' + kinds[k]).join(' · ')}<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="downloadMasterAdvice()">⬇ List to tick (CSV)</button></div>` : '';
+  host.innerHTML = `<div class="card" style="margin-bottom:16px">${head(st, sub)}${kindLine}
     ${open.length ? `<div style="overflow-x:auto"><table><thead><tr><th style="font-size:11px">Invoice</th><th style="font-size:11px">Client</th><th style="font-size:11px">Dashboard</th><th style="font-size:11px">Master</th><th style="font-size:11px">Difference and fix</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div style="padding:12px;font-size:12px;color:var(--text3);text-align:center">' + (done.length ? 'No new differences — every remaining difference has been reviewed.' : 'Every invoice found in the master matches it.') + '</div>'}
     ${doneHtml}${nim}</div>`;
 }
