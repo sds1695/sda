@@ -2591,25 +2591,9 @@ window.ALLOCATIONS_RAW = [];
 // Voucher IDs to treat as voided (since save_voucher API can't update existing rows).
 // Use this when a voucher has been "split" or replaced — the original gets ignored everywhere.
 window.VOUCHER_VOID_IDS = [
-  // 2026-05-14 reconciliation: REMOVED 'PV1776953367192' (PV26027). It was originally
-  // hidden because someone split it into PV26048 (236.24 wages) + PV26049 (179.52
-  // dividend), but per the reconciliation against Excel the consolidated PV26027
-  // (RM 415.76, wages_et) is the correct posting. PV26048 + PV26049 have been
-  // __VOID__'d at the description level instead.
-  // 2026-09-29: these were hidden ONLY by one browser's localStorage, so other devices
-  // showed them (bank ~RM3,970 lower). Each has a live twin (same amount/date) that ties
-  // to master S 21.9.26 — see LE_private\recon\C_gl_pl_bs_pv.md. Hardcoded so every device agrees.
-  'PV1782499522868',  // PV26081 2026-06-27 TXY RM769.50 (superseded by PV26087)
-  'PV1787650819846',  // PV26114 2026-08-07 KC RM1,743.96 (twin PV26115 = master PV038.26)
-  'PV1789192040047',  // PV26125 2026-09-12 KC RM2,008.10 (twin PV26141)
-  'PV1789209094496',  // PV26130 2026-09-12 Other RM30.00 (twin PV26138)
-  'PV1789312793900',  // PV26132 2026-09-12 ET RM220.00 (twin = master PV052.26)
-  'PV1790432601686',  // PV26135 2026-09-25 Other RM50.00 (twin PV26137)
-  'PV1790434927395',  // PV26136 2026-09-25 Other RM50.00 (twin PV26137)
-  'PV1790440337592',  // PV26140 2026-09-25 Other RM14.70 (twin PV26139)
-  'PV1790516825917',  // PV26142 2026-09-19 Other RM33.20 (twin PV26144)
-  'PV1790516871976',  // PV26143 2026-09-19 Other RM20.10 (twin PV26146)
-  'PV1790518041884',  // PV26145 2026-09-19 Other RM20.10 (twin PV26146)
+  // 2026-10-03: emptied. The 11 duplicates listed here on 29 Sep were voided in the Sheet
+  // itself (__VOID__, Void_Log tab) by Sync & Tally's Fix panel on 2 Oct, so every reader
+  // already ignores them. Prefer void_record (Patch 4) over adding IDs here.
 ];
 // The 29-Sep entries above were each verified against a live twin — the integrity
 // guard reports them as low-severity "verified duplicate", not a red alert.
@@ -2669,23 +2653,8 @@ window.RECEIPT_VOID_CRITERIA = [];
 // is too broad or ambiguous. These IDs are unconditionally excluded from all
 // receipt totals, balance calculations, and the Receipts tab display.
 window.RECEIPT_SUPPRESS_IDS = new Set([
-  // ── Original duplicate: INV260415 Mutualpro Apr-29 (4-second double-entry) ──
-  // R1778395201694 is the legitimate receipt; R1778395205459 is the errant copy.
-  // This one extra receipt caused bankRc to be +RM 325 vs Excel GL (18,283.80 vs 17,958.80).
-  'R1778395205459',
-  // ── v3-recovery artefacts (2026-05-15 14:21-22): accidental duplicates ──
-  // Created when the recovery function mistakenly called save_receipt for each voided record,
-  // which always creates a NEW row in GSheets rather than updating the original.
-  'R1778854914599',  // artefact copy of INV260101 (PDS Usaha Niaga, Jan 6)
-  'R1778854918072',  // artefact copy of INV260201 (NH Vertex, Feb 16)
-  'R1778854922241',  // artefact copy of INV260208 (Corning TCM, Feb 27)
-  'R1778854928154',  // artefact copy of INV260415 (Mutualpro, Apr 29)
-  'R1778854931674',  // artefact copy of INV260415 (Mutualpro, Apr 29)
-  // ── INV260108 H&B split fix (2026-06-17): original 988.80 batch receipt voided ──
-  // Jan-20 payment of RM 988.80 covered both INV260108 (618.80) + INV260109 (370).
-  // INV260109 portion was later receipted separately (R1781377621423, RM 370).
-  // Replaced by R1781705152309 (RM 618.80) to hold only INV260108's correct share.
-  'R1776953033283',
+  // 2026-10-03: emptied. None of the 7 receipt IDs listed here since May/June exists in
+  // the Sheet any more (Sync & Tally: stale hide-list entries), so the list did nothing.
 ]);
 
 // Invoice amount overrides: GSheets holds the raw-data amount; Excel GL has the
@@ -2702,7 +2671,7 @@ window.INVOICE_AMOUNT_OVERRIDES = {};
 // lets the Disbursements revenue account (4040) capture it correctly.
 // Remove each entry once GSheets invoice row has been updated with the correct disb_amount.
 window.INVOICE_DISB_OVERRIDES = {
-  'INV260506': 95,  // Twofire — 95 attestation/print/travel baked into amount override above
+  // 2026-10-03: INV260506 (95) removed — written into the Sheet's disb_amount on 2 Oct.
 };
 
 // Invoice status/outstanding overrides: GSheets has wrong values; correct here
@@ -23105,7 +23074,14 @@ function saveSettingsMerged(changes) {
     }
     const out = Object.assign({}, rr.data);
     Object.entries(changes || {}).forEach(([k, v]) => _writeSettingValue(out, k, v));
-    const res = await _postSettings(out);
+    // Send ONLY the keys this save changes (the value plus any chunk rows it adds or
+    // blanks). The backend updates just the keys it is sent, so another tab or device
+    // saving a different setting at the same moment can no longer write back stale
+    // copies of everything else (fixed 3 Oct 2026 — a full-object save undid a clean-up).
+    const delta = {};
+    Object.keys(out).forEach(k => { if (out[k] !== rr.data[k]) delta[k] = out[k]; });
+    if (!Object.keys(delta).length) { SETTINGS = out; return { ok: true, unchanged: true }; }
+    const res = await _postSettings(delta);
     if (res && res.ok) SETTINGS = out;
     return res;
   };
