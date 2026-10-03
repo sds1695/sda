@@ -726,6 +726,7 @@
         <button class="btn btn-sm" onclick="reconDismiss()" title="Dismiss if you have already verified GSheets is correct" style="background:transparent;border:1.5px solid #F9A825;color:#7D5A00;font-weight:500;white-space:nowrap">✓ Already done</button>
       </div>
       <div id="dash-autocheck" style="margin:16px 0 0;display:none"></div>
+      <div id="dash-recurring" style="margin:12px 0 0;display:none"></div>
       <div id="dash-acct-health" style="margin:16px 0 0"></div>
       <!-- ══ Scheduled Postings (recurring journals) ══ -->
       <div id="sched-due-banner" style="display:none;margin:16px 0 0;padding:14px 18px;border-radius:8px;background:#FFF8E1;border:1.5px solid #F9A825;align-items:center;gap:14px;flex-wrap:wrap"></div>
@@ -2853,6 +2854,7 @@ async function loadStartupSequence() {
   ]);
   await loadDashboard();
   _removeWarm();
+  try { renderRecurringDue(); } catch(e) {}
   setTimeout(() => { runDashAutoCheck(false).catch(e => console.warn('[autocheck]', e)); }, 3000);
 
   // Run sales-order auto-scans now that CLIENTS and INVOICES are loaded.
@@ -5260,7 +5262,7 @@ async function openAccountDrill(code) {
   if (sec.side === 'expense') {
     vouchers.filter(v => matchTokens.has((v.category||'').toLowerCase())).forEach(v => {
       txns.push({
-        date: v.date, ref: v.voucher_id || v.id, type: 'PV',
+        date: v.date, ref: _pvDisplayNo(v), type: 'PV',
         description: (v.payee||'') + (v.description ? ' — ' + v.description : ''),
         amount: parseFloat(v.amount||0)
       });
@@ -5273,14 +5275,14 @@ async function openAccountDrill(code) {
   if (/bank|cimb|cash at bank/i.test(acct.name) || code === '1010') {
     receipts.filter(r => !isDrawings(r)).forEach(r => {
       txns.push({
-        date: r.date, ref: r.receipt_id || r.id, type: 'RC',
+        date: r.date, ref: _rvDisplayNo(r), type: 'RC',
         description: 'Receipt — ' + (r.client_name||r.inv_no||''),
         amount: parseFloat(r.amount||0)
       });
     });
     vouchers.filter(v => !isDrawings(v)).forEach(v => {
       txns.push({
-        date: v.date, ref: v.voucher_id || v.id, type: 'PV',
+        date: v.date, ref: _pvDisplayNo(v), type: 'PV',
         description: (v.payee||'') + ' — ' + (v.description||v.category||''),
         amount: -parseFloat(v.amount||0)
       });
@@ -5312,7 +5314,7 @@ async function openAccountDrill(code) {
     // Bank receipts reduce trade debtors
     receipts.filter(r => !isDrawings(r)).forEach(r => {
       txns.push({
-        date: r.date, ref: r.receipt_id || r.id, type: 'RC',
+        date: r.date, ref: _rvDisplayNo(r), type: 'RC',
         description: 'Receipt — ' + (r.client_name||r.inv_no||''),
         amount: -parseFloat(r.amount||0)
       });
@@ -5335,7 +5337,7 @@ async function openAccountDrill(code) {
       );
       if (invNoMatch || clientMatch) {
         txns.push({
-          date: r.date, ref: r.receipt_id || r.id, type: 'RC',
+          date: r.date, ref: _rvDisplayNo(r), type: 'RC',
           description: 'Receipt (via drawings) — ' + (r.client_name||''),
           amount: -parseFloat(r.amount||0)
         });
@@ -5347,14 +5349,14 @@ async function openAccountDrill(code) {
   if (/drawing/i.test(acct.name) || code === '3300') {
     vouchers.filter(v => isDrawings(v)).forEach(v => {
       txns.push({
-        date: v.date, ref: v.voucher_id || v.id, type: 'PV',
+        date: v.date, ref: _pvDisplayNo(v), type: 'PV',
         description: (v.payee||'') + ' — ' + (v.description||v.category||''),
         amount: parseFloat(v.amount||0)
       });
     });
     receipts.filter(r => isDrawings(r)).forEach(r => {
       txns.push({
-        date: r.date, ref: r.receipt_id || r.id, type: 'RC',
+        date: r.date, ref: _rvDisplayNo(r), type: 'RC',
         description: 'Drawing repayment — ' + (r.client_name||r.inv_no||''),
         amount: -parseFloat(r.amount||0)
       });
@@ -14857,6 +14859,18 @@ function computeVoidReceiptIds(rawArr) {
   return result;
 }
 
+// Numbers as the Payment Vouchers / Receipts pages show them (master-style PV via overrides).
+function _pvDisplayNo(v) {
+  if (!v) return '—';
+  let o = {};
+  try { o = JSON.parse(localStorage.getItem('seraya_pvno_overrides') || '{}') || {}; } catch(e) {}
+  return o[v.voucher_no] || v.voucher_no || v.voucher_id || v.id || '—';
+}
+function _rvDisplayNo(r) {
+  if (!r) return '—';
+  if (r.receipt_no) return r.receipt_no;
+  try { return fmtRV(r.receipt_id || r.id, r.date); } catch(e) { return r.receipt_id || r.id || '—'; }
+}
 function fmtRV(id, date) {
   // Per-month sequential numbering, e.g. RV260401, RV260402, …
   // Cache built by rebuildRVCache() each time RECEIPTS is refreshed.
@@ -15291,6 +15305,7 @@ async function loadVouchers() {
   // Merge journal-shaped payments into the voucher list (so scheduled postings show here too)
   try { (_journalsAsVouchers() || []).forEach(v => VOUCHERS.push(v)); } catch(e) { console.warn('journals→vouchers projection failed', e); }
   renderVoucherRows(VOUCHERS);
+  try { renderRecurringDue(); } catch(e) {}
   try { runDataIntegrityChecks(); } catch(e) { console.warn('integrity check failed', e); }
 }
 
@@ -16072,6 +16087,93 @@ function syncTallyAreas(R) {
   if (TD.needsPatch7) a.push('trade debtors: needs Patch 7');
   else if (TD.issue) a.push('trade debtors');
   return a;
+}
+
+
+// ── Recurring payment reminders (added 2026-10-04) ───────────────────────────
+// Each recurring bill renews on a fixed day of the month. A period counts as recorded when a
+// live payment voucher in the bill's categories names the period start ("20.9.26") in its
+// description, or — if no voucher names a period — is dated within a week before to 27 days
+// after the renewal. Unrecorded periods show on the Dashboard from 3 days before renewal until
+// a voucher exists. Nothing is saved automatically: "Create PV" opens a pre-filled voucher.
+const RECURRING_BILLS = [
+  { id: 'claude', label: 'Claude subscription', day: 20, from: '2026-05-20', category: 'coa_5151',
+    cats: ['coa_5151', 'claude_subscription', 'claude', 'claude subscription'], text: /claude/i, payee: 'Koay', descLabel: 'Claude subscription' },
+];
+const RECURRING_SKIP_KEY = 'seraya_recurring_skip_v1';   // { 'claude|2026-09-20': iso } — synced
+function _recurSkips() { try { return JSON.parse(localStorage.getItem(RECURRING_SKIP_KEY) || '{}') || {}; } catch(e) { return {}; } }
+function _recurDmy(day) { const d = new Date(day * 86400000); return d.getUTCDate() + '.' + (d.getUTCMonth() + 1) + '.' + String(d.getUTCFullYear()).slice(2); }
+function _recurPeriodText(startDay) {
+  const s = new Date(startDay * 86400000);
+  const e = Date.UTC(s.getUTCFullYear(), s.getUTCMonth() + 1, s.getUTCDate()) / 86400000 - 1;
+  return _recurDmy(startDay) + ' to ' + _recurDmy(e);
+}
+function buildRecurringDue(vouchers, today) {
+  const tDay = _agDay(today || _agLocalToday()), skips = _recurSkips(), out = [];
+  RECURRING_BILLS.forEach(b => {
+    const vs = (vouchers || []).filter(v => !String(v.description || '').startsWith('__VOID__') && _agDay(v.date) != null
+      && !isDeleted('vouchers', String(v.voucher_id || '')) && !isVoided('vouchers', String(v.voucher_id || ''))
+      && (b.cats.includes(String(v.category || '').toLowerCase().trim()) || b.text.test(String(v.description || ''))))
+      .map(v => ({ v, day: _agDay(v.date), desc: String(v.description || '') }))
+      .sort((x, y) => x.day - y.day);
+    const last = vs[vs.length - 1];
+    const used = new Set();
+    const from = new Date(_agDay(b.from) * 86400000);
+    for (let k = 0; ; k++) {
+      const start = Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + k, b.day) / 86400000;
+      if (start > tDay + 3) break;
+      const tag = _recurDmy(start);
+      const re = new RegExp('(^|[^\\d.])' + tag.replace(/\./g, '\\.') + '(?![\\d])');
+      let hit = vs.find(x => !used.has(x.v) && re.test(x.desc));
+      if (!hit) hit = vs.find(x => !used.has(x.v) && !/\d{1,2}\.\d{1,2}\.\d{2}\s*(to|-|–)/.test(x.desc) && x.day >= start - 7 && x.day <= start + 27);
+      if (hit) { used.add(hit.v); continue; }
+      const key = b.id + '|' + _agIso(start);
+      if (skips[key]) continue;
+      out.push({ bill: b, key, start: _agIso(start), period: _recurPeriodText(start), daysLate: tDay - start,
+        amount: last ? parseFloat(last.v.amount) || 0 : 0, payee: (last && last.v.payee && last.v.payee !== 'Other') ? last.v.payee : b.payee });
+    }
+  });
+  return out;
+}
+function renderRecurringDue() {
+  const el = document.getElementById('dash-recurring');
+  if (!el) return;
+  let due = [];
+  try { due = buildRecurringDue(VOUCHERS); } catch(e) { console.warn('[recurring]', e); }
+  window._RECUR_DUE = due;
+  if (!due.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const f = n => 'RM ' + (n || 0).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  el.style.display = '';
+  el.innerHTML = `<div style="padding:10px 16px;border-radius:8px;border:1.5px solid var(--amber);background:var(--surface2)">
+    <div style="font-weight:600;font-size:13px;margin-bottom:4px">🔁 Recurring payments to record</div>
+    ${due.map((d, i) => `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;padding:4px 0;border-top:${i ? '1px solid var(--border)' : '0'}">
+      <div style="flex:1;min-width:220px"><strong>${_stEsc(d.bill.label)}</strong> ${_stEsc(d.period)} · ${f(d.amount)} · ${d.daysLate < 0 ? 'renews in ' + (-d.daysLate) + ' day' + (d.daysLate === -1 ? '' : 's') : d.daysLate === 0 ? '<span style="color:var(--amber);font-weight:600">renews today</span>' : '<span style="color:var(--red);font-weight:600">' + d.daysLate + ' days since renewal — no payment voucher</span>'}</div>
+      <button class="btn btn-secondary btn-sm" onclick="openRecurringVoucher(${i})">Create PV</button>
+      <a href="#" style="font-size:11px;color:var(--text3)" onclick="skipRecurring(${i});return false" title="Not paid for this period (e.g. cancelled) — stop reminding">Not needed</a>
+    </div>`).join('')}
+  </div>`;
+}
+async function openRecurringVoucher(i) {
+  const d = (window._RECUR_DUE || [])[i];
+  if (!d) return;
+  await openVoucherModal(false);
+  const set = (id, v) => { const e = document.getElementById(id); if (e && v != null) e.value = v; };
+  const pay = document.getElementById('pv-payee');
+  if (pay && Array.from(pay.options).some(o => o.value === d.payee)) { pay.value = d.payee; try { onPayeeChange(); } catch(e) {} }
+  const cat = document.getElementById('pv-category');
+  if (cat && Array.from(cat.options).some(o => o.value === d.bill.category)) cat.value = d.bill.category;
+  set('pv-amount', d.amount ? d.amount.toFixed(2) : '');
+  set('pv-desc', d.bill.descLabel + ' ' + d.period);
+  pvAmountEdited = true; pvDescEdited = true;
+  toast('Check the date, amount and PV number, then Save.', 'info');
+}
+function skipRecurring(i) {
+  const d = (window._RECUR_DUE || [])[i];
+  if (!d) return;
+  if (!confirm('Stop reminding about ' + d.bill.label + ' ' + d.period + '? (Use this only if nothing is payable for that period.)')) return;
+  const m = _recurSkips(); m[d.key] = new Date().toISOString();
+  try { localStorage.setItem(RECURRING_SKIP_KEY, JSON.stringify(m)); } catch(e) {}
+  renderRecurringDue();
 }
 
 // ── Auto-check on the Dashboard (Principal only) ─────────────────────────────
@@ -21827,7 +21929,7 @@ function renderReconciliation(yr) {
           vouchers.filter(v => set.has((v.category||'').toLowerCase())).forEach(v => {
             const amt = parseFloat(v.amount||0);
             live += amt;
-            contributors.push({ ref: v.voucher_id, desc: (v.payee||'') + (v.description ? ' — ' + v.description : ''), amt, type: 'PV' });
+            contributors.push({ ref: _pvDisplayNo(v), desc: (v.payee||'') + (v.description ? ' — ' + v.description : ''), amt, type: 'PV' });
           });
         }
       }
@@ -23634,6 +23736,7 @@ const SYNCED_BLOBS = [
   { settingsKey: '_rem_notes_blob',           lsKey: 'seraya_rem_notes_v1',          v3: true },
   { settingsKey: '_master_reviewed_blob',     lsKey: 'seraya_master_reviewed_v1' },
   { settingsKey: '_credit_terms_blob',        lsKey: 'seraya_credit_terms_v1' },
+  { settingsKey: '_recurring_skip_blob',      lsKey: 'seraya_recurring_skip_v1' },
 ];
 
 // Keep references to original Storage methods — used internally so we don't
