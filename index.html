@@ -16093,7 +16093,7 @@ function syncTallyAreas(R) {
   if ((R.tables || []).some(x => x.failed || !x.ok) || (R.dupIds || []).length) a.push('records');
   if ((R.overrides || []).length) a.push('overrides');
   if ((R.status || []).length || (R.overpaid || []).length || (R.mislinked || []).length) a.push('status');
-  if ((R.people || []).length) a.push('people');
+  if (_peopleOpen(R.people).length) a.push('people');
   if (R.settingsMissing || (R.blobs || []).some(b => ['pending', 'differs', 'local-only'].includes(b.state))) a.push('settings');
   if ((R.localOnly || []).some(d => d.figures && d.n > 0)) a.push('browser-only data');
   const G = R.gl;
@@ -16456,11 +16456,13 @@ function buildSyncTally(raw) {
         if (blankPrep) notes.push('allocation row has a preparer amount but no preparer');
         if ((diffP || diffR) && rows.length === 1 && (lp.size > 1 || lr.size > 1)) notes.push('invoice lines name more than one person but the Sheet holds one allocation row (saved before Patch 4) — payouts use the lines; re-save the invoice to store one row per person');
         else if (diffP || diffR) notes.push('allocation row credits different people from the invoice lines');
-        R.people.push({ inv_no: i.inv_no, client: i.client_name, lines: 'prep ' + ([...lp].join('/') || '—') + ' · rev ' + ([...lr].join('/') || '—'),
-          sheet: rows.length ? 'prep ' + ([...ap].join('/') || '(blank)') + ' · rev ' + ([...ar].join('/') || '(blank)') : '(no allocation row)', note: notes.join('; ') });
+        const pr = { inv_no: i.inv_no, client: i.client_name, lines: 'prep ' + ([...lp].join('/') || '—') + ' · rev ' + ([...lr].join('/') || '—'),
+          sheet: rows.length ? 'prep ' + ([...ap].join('/') || '(blank)') + ' · rev ' + ([...ar].join('/') || '(blank)') : '(no allocation row)', note: notes.join('; ') };
+        pr.sig = [pr.inv_no, pr.lines, pr.sheet, pr.note].join('|');
+        R.people.push(pr);
       }
     });
-    if (R.people.length) R.issues++;
+    if (_peopleOpen(R.people).length) R.issues++;
   }
 
   // Settings sync — every SYNCED_BLOBS key, this browser vs the Sheet.
@@ -16621,8 +16623,10 @@ function renderSyncTally(R) {
   // 4b. People
   html += card('4b · People: invoice lines vs allocation rows',
     'The preparer / reviewer each invoice line names, against who the allocation row in the Sheet credits. To fix one: open the invoice, check Preparer, Reviewer and Allocation Setup show the right person (pick again if needed), then save.',
-    (R.people || []).length ? bad(R.people.length + ' invoice' + (R.people.length === 1 ? '' : 's')) : ok,
-    (R.people || []).length ? `<table>${th([['Invoice'], ['Client'], ['Invoice lines'], ['Sheet allocation'], ['Issue']])}<tbody>${R.people.map(x => `<tr>${td(x.inv_no, 0, 1)}${td(_stEsc(x.client))}${td(_stEsc(x.lines))}${td(bad(_stEsc(x.sheet)))}${td(_stEsc(x.note))}</tr>`).join('')}</tbody></table>` : none('Every invoice line and its allocation row name the same people.'));
+    _peopleOpen(R.people).length ? bad(_peopleOpen(R.people).length + ' invoice' + (_peopleOpen(R.people).length === 1 ? '' : 's')) : ok,
+    (R.people || []).length ? `<table>${th([['Invoice'], ['Client'], ['Invoice lines'], ['Sheet allocation'], ['Issue'], ['']])}<tbody>${R.people.map(x => { const acc = _peopleIsAccepted(x), A = _peopleAccepted()[x.inv_no] || {};
+      const canAcc = !!(SESSION && SESSION.user && (SESSION.user.name === 'Principal' || SESSION.user.role === 'admin'));
+      return `<tr style="${acc ? 'opacity:.6' : ''}">${td(x.inv_no, 0, 1)}${td(_stEsc(x.client))}${td(_stEsc(x.lines))}${td(acc ? _stEsc(x.sheet) : bad(_stEsc(x.sheet)))}${td(_stEsc(x.note))}${td((canAcc ? `<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px;border:1px solid var(--border)" onclick="markPeopleAccepted('${_stEsc(x.inv_no)}', ${acc ? 'false' : 'true'})">${acc ? 'Undo' : '✓ Accept'}</button>` : '') + (acc ? '<br><span style="color:var(--text3);font-size:10px">accepted ' + _stEsc(A.by || '') + ' ' + _stEsc(String(A.at || '').slice(0, 10)) + '</span>' : ''), 1)}</tr>`; }).join('')}</tbody></table>` : none('Every invoice line and its allocation row name the same people.'));
 
   // 5. Settings sync
   const stLabel = { same: ok, empty: '<span style="color:var(--text3)">empty both sides</span>', pending: bad('Not yet uploaded'), differs: bad('This browser differs'), 'local-only': bad('Only in this browser'), 'sheet-only': warn('Only in Sheet (will download)') };
@@ -17463,6 +17467,23 @@ async function applyFollowMaster() {
   }
   toast(ok + ' invoice(s) now follow the master' + (fails.length ? ' · failed: ' + fails.join('; ') : ''), fails.length ? 'error' : 'success');
   loadSyncTally();
+}
+
+// Section 4b items the Principal has accepted (e.g. INV260506: payouts use the lines; re-saving
+// would lose its paid ticks). Keyed by invoice; reappears if the difference changes. Synced.
+const PEOPLE_ACCEPTED_KEY = 'seraya_people_accepted_v1';
+function _peopleAccepted() { try { return JSON.parse(localStorage.getItem(PEOPLE_ACCEPTED_KEY) || '{}') || {}; } catch(e) { return {}; } }
+function _peopleIsAccepted(x) { const a = _peopleAccepted()[x.inv_no]; return !!(a && a.sig === x.sig); }
+function _peopleOpen(list) { return (list || []).filter(x => !_peopleIsAccepted(x)); }
+function markPeopleAccepted(invNo, on) {
+  const R = _SYNC_TALLY_LAST, row = R && (R.people || []).find(x => x.inv_no === invNo);
+  if (!row) return;
+  const m = _peopleAccepted();
+  if (on) m[invNo] = { sig: row.sig, at: new Date().toISOString(), by: (SESSION && SESSION.user && SESSION.user.name) || '' };
+  else delete m[invNo];
+  localStorage.setItem(PEOPLE_ACCEPTED_KEY, JSON.stringify(m));
+  renderSyncTally(R);
+  try { _autoCheckFromReport(R); } catch(e) {}
 }
 
 // Differences the Principal has looked at and accepted. Keyed by invoice; the stored
@@ -24018,6 +24039,7 @@ const SYNCED_BLOBS = [
   { settingsKey: '_master_reviewed_blob',     lsKey: 'seraya_master_reviewed_v1' },
   { settingsKey: '_credit_terms_blob',        lsKey: 'seraya_credit_terms_v1' },
   { settingsKey: '_recurring_skip_blob',      lsKey: 'seraya_recurring_skip_v1' },
+  { settingsKey: '_people_accepted_blob',     lsKey: 'seraya_people_accepted_v1' },
 ];
 
 // Keep references to original Storage methods — used internally so we don't
