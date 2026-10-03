@@ -100,6 +100,17 @@
     --amber: #E0A52E; --amber-bg: #3A2F14; --red: #FF6B6B; --red-bg: #3D1A1A;
     --blue: #5DA9E9; --blue-bg: #14283D; --purple: #9B8BE0; --purple-bg: #262338;
   }
+  /* ── Payment Analysis charts (dataviz reference palette, slots 1–2) ── */
+  .pa-root { --pa-s1: #2a78d6; --pa-s2: #eb6834; --pa-grid: var(--border); }
+  [data-theme="dark"] .pa-root, [data-theme="operator"] .pa-root, [data-theme="navy"] .pa-root { --pa-s1: #3987e5; --pa-s2: #d95926; }
+  .pa-root svg text { fill: var(--text3); font-size: 11px; }
+  .pa-root .pa-sec { margin-bottom: 18px; }
+  .pa-root .pa-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .pa-root .pa-legend { display: flex; gap: 14px; font-size: 12px; color: var(--text2); padding: 4px 12px 0; }
+  .pa-root .pa-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .pa-root table td, .pa-root table th { font-size: 12px; }
+  .pa-root .num { text-align: right; font-family: 'DM Mono', monospace; white-space: nowrap; }
+  .pa-root svg { max-width: 900px; }
   /* ── Theme swatch picker ── */
   .theme-card{border:1px solid var(--border);border-radius:9px;padding:7px;cursor:pointer;transition:all .12s;background:var(--surface)}
   .theme-card:hover{border-color:var(--brand);transform:translateY(-1px)}
@@ -633,6 +644,9 @@
       </div>
       <div class="nav-item" onclick="showPage('aging')">
         <span class="icon">⏱</span><span>Debtor Aging</span>
+      </div>
+      <div class="nav-item" onclick="showPage('payment-analysis')">
+        <span class="icon">◔</span><span>Payment Analysis</span>
       </div>
       <div class="nav-item" onclick="showPage('retention')">
         <span class="icon">◑</span><span>Retention Recon</span>
@@ -1406,6 +1420,20 @@
       </div>
       <div id="ag-tie" style="font-size:12px;margin-bottom:12px"></div>
       <div class="card"><div style="overflow-x:auto" id="ag-matrix"><div style="padding:30px;text-align:center;color:var(--text3)">Loading…</div></div></div>
+    </div>
+
+    <!-- ══ PAYMENT ANALYSIS ══ (added 2026-10-03) -->
+    <div class="page pa-root" id="page-payment-analysis">
+      <div class="page-header">
+        <div class="page-title">Payment Analysis</div>
+        <div class="page-sub">How fast clients pay, billing against collections, spending and payouts. Read-only.</div>
+      </div>
+      <div class="card" style="padding:12px 16px;margin-bottom:16px;display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end">
+        <div><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:3px">Year</label><select id="pa-year" onchange="renderPaymentAnalysis()" style="padding:5px 8px"></select></div>
+        <div><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:3px">Debtor</label><select id="pa-group" onchange="renderPaymentAnalysis()" style="padding:5px 8px"><option value="client">End client</option><option value="billing">Billing party</option></select></div>
+      </div>
+      <div id="pa-body"><div style="padding:30px;text-align:center;color:var(--text3)">Loading…</div></div>
+      <div id="pa-tip" role="tooltip" style="position:fixed;display:none;pointer-events:none;z-index:900;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 9px;font-size:12px;box-shadow:var(--shadow-md);max-width:260px"></div>
     </div>
 
     <!-- ══ RETENTION RECON ══ -->
@@ -3368,6 +3396,7 @@ function _showPageLoader(id) {
   else if (id === 'balance-sheet')  loadBalanceSheet();
   else if (id === 'sales-analysis') loadSalesAnalysis();
   else if (id === 'aging')          loadAging();
+  else if (id === 'payment-analysis') loadPaymentAnalysis();
   else if (id === 'retention')      loadRetention();
   else if (id === 'coa')            loadCOA();
   else if (id === 'reminders')      renderReminders();
@@ -3401,6 +3430,7 @@ function showPage(id) {
   if (id === 'balance-sheet')     loadBalanceSheet();
   if (id === 'sales-analysis')    loadSalesAnalysis();
   if (id === 'aging')             loadAging();
+  if (id === 'payment-analysis')  loadPaymentAnalysis();
   if (id === 'retention')         loadRetention();
   if (id === 'coa')               loadCOA();
   if (id === 'reminders')         { (async () => { await loadClients(); renderReminders(); })(); }
@@ -21284,6 +21314,279 @@ function printAging() {
   if (!w) { toast('Allow pop-ups to print the aging report.', 'error'); return; }
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Debtor aging as at ${R.asAt}</title><style>body{font:11px Arial,sans-serif;margin:16px;color:#111}h2{font-size:15px;margin:0 0 4px}table{border-collapse:collapse;width:100%}th,td{padding:3px 6px;border-bottom:1px solid #ddd}th{text-align:left;background:#f3f3f3}tfoot td{border-top:2px solid #333}a{color:#111;text-decoration:none}tr{break-inside:avoid}</style></head><body><h2>Seraya Data Solution — Debtor aging as at ${formatDate(R.asAt)}</h2><div style="margin-bottom:8px;color:#555">Aged from ${R.basis === 'due' ? 'due date (invoice date + credit terms)' : 'invoice date'} · grouped by ${R.group === 'client' ? 'end client' : 'billing party'} · printed ${new Date().toLocaleString('en-MY')}</div>${tbl}</body></html>`);
   w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch(e) {} }, 300);
+}
+
+
+// ── Payment Analysis (added 2026-10-03) ─────────────────────────────────────
+// Pure builder + SVG charts (no library). Receipts are linked to invoices with the same rule
+// as the aging report (_linkReceipts). Person payouts: _isPersonPayoutVoucher vouchers only;
+// earned per person = invoice lines (_bucketForLine) or, for legacy invoices, allocation rows.
+function _linkReceipts(invoices, receipts) {
+  const dead = i => String(i.status || '').toLowerCase() === 'cancelled' || isDeleted('invoices', String(i.inv_id || ''));
+  const byId = {}, liveByNo = {};
+  (invoices || []).forEach(i => {
+    if (i.inv_id) byId[String(i.inv_id)] = i;
+    const no = String(i.inv_no || '').trim();
+    if (no && !dead(i) && !liveByNo[no]) liveByNo[no] = i;
+  });
+  const voidAuto = (typeof computeVoidReceiptIds === 'function') ? computeVoidReceiptIds(receipts || []) : new Set();
+  const links = [], unlinked = [];
+  (receipts || []).forEach(r => {
+    if (!_agReceiptVisible(r) || voidAuto.has(String(r.receipt_id || ''))) return;
+    const day = _agDay(r.date);
+    if (day == null) return;
+    let inv = byId[String(r.inv_id || '')];
+    if (inv && dead(inv)) inv = liveByNo[String(inv.inv_no || '').trim()] || null;
+    if (!inv) inv = liveByNo[String(r.inv_no || '').trim()] || null;
+    if (!inv || dead(inv)) { unlinked.push({ r, day, amt: parseFloat(r.amount) || 0 }); return; }
+    links.push({ r, inv, day, amt: parseFloat(r.amount) || 0 });
+  });
+  return { links, unlinked, dead };
+}
+
+const PA_PEOPLE = ['KC', 'Koay', 'ET', 'Ivy', 'Cecilia'];
+const PA_PAYEE = { KC: ['kc', 'ho', 'w'], Koay: ['koay', 'txy', 'koay ph'], ET: ['et', 'qet'], Ivy: ['ivy'], Cecilia: ['cecilia', 'prestige e-biz', 'prestige e-biz sdn. bhd.', 'prestige e-biz sdn bhd'] };
+function _paMonth(day) { return _agIso(day).slice(0, 7); }
+function _paMedian(a) { if (!a.length) return null; const b = a.slice().sort((x, y) => x - y), m = Math.floor(b.length / 2); return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; }
+function _paCatLabel(cat) {
+  const c = String(cat || '').toLowerCase().trim();
+  try { const a = getCOA().find(x => (x.mapsFrom || []).map(m => String(m).toLowerCase()).includes(c)); if (a) return a.code + ' ' + a.name; } catch(e) {}
+  return c || '(no category)';
+}
+
+function buildPaymentAnalysis(D, opts) {
+  opts = opts || {};
+  const r2 = n => Math.round(n * 100) / 100;
+  const year = String(opts.year || new Date().getFullYear());
+  const todayDay = _agDay(opts.today || _agLocalToday());
+  const group = opts.group || 'client';
+  const L = _linkReceipts(D.invoices, D.receipts);
+  const live = (D.invoices || []).filter(i => !L.dead(i) && (parseFloat(i.amount) || 0) > 0 && _agDay(i.date || i.inv_date) != null);
+  const byInv = {};
+  L.links.forEach(x => { (byInv[x.inv.inv_id] = byInv[x.inv.inv_id] || []).push(x); });
+
+  // 1. Days to pay (fully paid invoices; the receipt that completes payment).
+  const paidInv = [];
+  live.forEach(i => {
+    const amt = parseFloat(i.amount) || 0, iday = _agDay(i.date || i.inv_date);
+    const rs = (byInv[i.inv_id] || []).slice().sort((a, b) => a.day - b.day);
+    let cum = 0, done = null;
+    for (const x of rs) { cum += x.amt; if (cum >= amt - 0.005) { done = x.day; break; } }
+    if (done == null) return;
+    const billing = String(i.billing_party || '').trim();
+    paidInv.push({ inv_no: i.inv_no, client: i.client_name || '', billing: billing || 'Direct', days: Math.max(0, done - iday), iday, paidDay: done, amount: amt });
+  });
+  const stat = arr => { const d = arr.map(x => x.days); return { n: d.length, avg: d.length ? r2(d.reduce((t, v) => t + v, 0) / d.length) : null, median: _paMedian(d), slowest: arr.reduce((m, x) => (!m || x.days > m.days) ? x : m, null) }; };
+  const dtp = { all: stat(paidInv), groups: [], quarters: [] };
+  const gmap = {};
+  paidInv.forEach(x => { const k = group === 'billing' ? x.billing : x.client; (gmap[k] = gmap[k] || []).push(x); });
+  dtp.groups = Object.keys(gmap).map(k => Object.assign({ key: k, invoices: gmap[k] }, stat(gmap[k]))).sort((a, b) => b.avg - a.avg || a.key.localeCompare(b.key));
+  dtp.groups.forEach(g => { g.slow = g.avg > 60; });
+  const qmap = {};
+  paidInv.forEach(x => { const d = _agIso(x.iday); const q = d.slice(0, 4) + ' Q' + (Math.floor((+d.slice(5, 7) - 1) / 3) + 1); (qmap[q] = qmap[q] || []).push(x); });
+  dtp.quarters = Object.keys(qmap).sort().map(q => Object.assign({ q }, stat(qmap[q])));
+
+  // 2. Billed vs collected by month (selected year) + running debtor balance (all history).
+  const months = []; for (let m = 1; m <= 12; m++) months.push(year + '-' + String(m).padStart(2, '0'));
+  const billed = {}, coll = {};
+  live.forEach(i => { const k = _paMonth(_agDay(i.date || i.inv_date)); billed[k] = (billed[k] || 0) + (parseFloat(i.amount) || 0); });
+  L.links.forEach(x => { const k = _paMonth(x.day); coll[k] = (coll[k] || 0) + x.amt; });
+  const allKeys = [...new Set([...Object.keys(billed), ...Object.keys(coll), ...months])].sort();
+  let run = 0; const balance = {};
+  allKeys.forEach(k => { run += (billed[k] || 0) - (coll[k] || 0); balance[k] = r2(run); });
+  const curMonth = _paMonth(todayDay);
+  const cvb = months.map(k => ({ m: k, billed: r2(billed[k] || 0), collected: r2(coll[k] || 0), balance: k <= curMonth ? balance[k] : null }));
+  const unlinkedYear = L.unlinked.filter(x => _agIso(x.day).slice(0, 4) === year);
+  const cvbTot = { billed: r2(cvb.reduce((t, x) => t + x.billed, 0)), collected: r2(cvb.reduce((t, x) => t + x.collected, 0)),
+    unlinkedN: unlinkedYear.length, unlinkedAmt: r2(unlinkedYear.reduce((t, x) => t + x.amt, 0)), balanceNow: balance[curMonth] != null ? balance[curMonth] : r2(run) };
+
+  // 3. Spending by category (vouchers), selected year vs the same months last year.
+  const vis = (D.vouchers || []).filter(v => !String(v.description || '').startsWith('__VOID__') && !isDeleted('vouchers', String(v.voucher_id || '')) && !isVoided('vouchers', String(v.voucher_id || '')) && _agDay(v.date) != null);
+  const ly = String(+year - 1);
+  const cutMD = year === _agLocalToday().slice(0, 4) ? _agLocalToday().slice(5) : '12-31';
+  const cats = {}, payees = {};
+  vis.forEach(v => {
+    const d = _agIso(_agDay(v.date)), y = d.slice(0, 4), amt = parseFloat(v.amount) || 0;
+    if (y !== year && y !== ly) return;
+    const k = _paCatLabel(v.category);
+    const c = cats[k] = cats[k] || { label: k, months: {}, ytd: 0, lastYtd: 0, total: 0 };
+    if (y === year) { c.months[d.slice(0, 7)] = (c.months[d.slice(0, 7)] || 0) + amt; c.total += amt; if (d.slice(5) <= cutMD) c.ytd += amt;
+      const pk = String(v.payee || '(blank)').trim(); payees[pk] = (payees[pk] || 0) + amt; }
+    else if (d.slice(5) <= cutMD) c.lastYtd += amt;
+  });
+  const spend = Object.values(cats).filter(c => c.total || c.lastYtd).map(c => Object.assign(c, { ytd: r2(c.ytd), lastYtd: r2(c.lastYtd), total: r2(c.total) })).sort((a, b) => b.ytd - a.ytd || b.total - a.total);
+  const topPayees = Object.keys(payees).map(k => ({ payee: k, amount: r2(payees[k]) })).sort((a, b) => b.amount - a.amount).slice(0, 10);
+
+  // 4. Payouts per person: paid (payout vouchers) and earned (invoices) per month.
+  const allocBy = {};
+  (D.allocations || []).forEach(a => { if (String(a.inv_no || '').startsWith('_DUP_') || isVoided('allocations', String(a.alloc_id || ''))) return; (allocBy[String(a.inv_id)] = allocBy[String(a.inv_id)] || []).push(a); });
+  const pay = {}; PA_PEOPLE.forEach(p => { pay[p] = { earned: {}, paid: {}, earnedAll: 0, paidAll: 0 }; });
+  live.forEach(i => {
+    const e = { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 };
+    try {
+      const lines = _parseInvLines(i);
+      if (lines.length) lines.forEach(l => { const b = _bucketForLine(l, i) || {}; PA_PEOPLE.forEach(k => { e[k] += +b[k] || 0; }); e.Cecilia += +b.ceciliaFee || 0; });
+      else (allocBy[String(i.inv_id)] || []).forEach(a => _allocPeople(a, e));
+    } catch(err) {}
+    const k = _paMonth(_agDay(i.date || i.inv_date));
+    PA_PEOPLE.forEach(p => { if (Math.abs(e[p]) > 0.005) { pay[p].earned[k] = (pay[p].earned[k] || 0) + e[p]; pay[p].earnedAll += e[p]; } });
+  });
+  vis.forEach(v => {
+    if (!_isPersonPayoutVoucher(v)) return;
+    const payee = _payoutPayee(v);
+    const p = PA_PEOPLE.find(x => PA_PAYEE[x].includes(payee));
+    if (!p) return;
+    const k = _paMonth(_agDay(v.date)), amt = parseFloat(v.amount) || 0;
+    pay[p].paid[k] = (pay[p].paid[k] || 0) + amt; pay[p].paidAll += amt;
+  });
+  const payouts = PA_PEOPLE.map(p => ({ person: p, months: months.map(m => ({ m, earned: r2(pay[p].earned[m] || 0), paid: r2(pay[p].paid[m] || 0) })),
+    earnedYear: r2(months.reduce((t, m) => t + (pay[p].earned[m] || 0), 0)), paidYear: r2(months.reduce((t, m) => t + (pay[p].paid[m] || 0), 0)),
+    owed: r2(pay[p].earnedAll - pay[p].paidAll) }));
+
+  return { year, group, dtp, cvb, cvbTot, spend, topPayees, payouts, months };
+}
+
+// ── charts ──
+function _paNice(max) { if (max <= 0) return 1; const e = Math.pow(10, Math.floor(Math.log10(max))); const f = max / e; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * e; }
+function _paK(v) { const a = Math.abs(v); return a >= 1000 ? (v / 1000).toLocaleString('en-MY', { maximumFractionDigits: 1 }) + 'k' : String(Math.round(v)); }
+function _paMoney(v) { return 'RM ' + (Math.round((v || 0) * 100) / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function _paMonLabel(m) { return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][+m.slice(5, 7) - 1]; }
+// Grouped columns. series: [{ name, color, values }]; tips: (i, si) → html.
+function _paColumns(cats, series, tip, opts) {
+  opts = opts || {};
+  const W = 720, H = 220, L = 46, R = 8, T = 10, B = 26, pw = W - L - R, ph = H - T - B;
+  const max = _paNice(Math.max(1, ...series.flatMap(s => s.values.map(v => v || 0))));
+  const band = pw / cats.length, n = series.length, gap = 2, bw = Math.min(24, (band * 0.7 - gap * (n - 1)) / n);
+  const y = v => T + ph - (v / max) * ph;
+  let g = '';
+  for (let k = 0; k <= 4; k++) { const v = max * k / 4, yy = y(v); g += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--pa-grid)" stroke-width="1"/><text x="${L - 6}" y="${yy + 4}" text-anchor="end">${_paK(v)}</text>`; }
+  cats.forEach((c, i) => {
+    const x0 = L + band * i + (band - (bw * n + gap * (n - 1))) / 2;
+    series.forEach((s, si) => {
+      const v = s.values[i] || 0, h = (v / max) * ph, x = x0 + si * (bw + gap), r = Math.min(4, bw / 2, h);
+      if (h > 0.5) g += `<path d="M${x},${T + ph} V${T + ph - h + r} Q${x},${T + ph - h} ${x + r},${T + ph - h} H${x + bw - r} Q${x + bw},${T + ph - h} ${x + bw},${T + ph - h + r} V${T + ph} Z" fill="${s.color}"/>`;
+    });
+    g += `<rect x="${L + band * i}" y="${T}" width="${band}" height="${ph}" fill="transparent" data-tip="${_stEsc(tip(i))}"/>`;
+    g += `<text x="${L + band * i + band / 2}" y="${H - 8}" text-anchor="middle">${_stEsc(opts.label ? opts.label(c) : c)}</text>`;
+  });
+  const legend = series.length > 1 ? `<div class="pa-legend">${series.map(s => `<span><i style="background:${s.color}"></i>${_stEsc(s.name)}</span>`).join('')}</div>` : '';
+  return legend + `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${_stEsc(opts.aria || '')}" style="display:block">${g}</svg>`;
+}
+function _paLine(cats, values, tip, opts) {
+  opts = opts || {};
+  const W = 720, H = 180, L = 46, R = 60, T = 12, B = 26, pw = W - L - R, ph = H - T - B;
+  const vals = values.filter(v => v != null);
+  const max = _paNice(Math.max(1, ...vals)), min = Math.min(0, ...vals);
+  const span = max - min || 1, y = v => T + ph - ((v - min) / span) * ph, step = pw / cats.length, x = i => L + step * i + step / 2;
+  let g = '';
+  for (let k = 0; k <= 4; k++) { const v = min + span * k / 4, yy = y(v); g += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--pa-grid)" stroke-width="1"/><text x="${L - 6}" y="${yy + 4}" text-anchor="end">${_paK(v)}</text>`; }
+  const pts = values.map((v, i) => v == null ? null : [x(i), y(v)]).filter(Boolean);
+  if (pts.length) g += `<path d="M${pts.map(p => p.join(',')).join(' L')}" fill="none" stroke="var(--pa-s1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  let lastI = -1; values.forEach((v, i) => { if (v != null) lastI = i; });
+  if (lastI >= 0) g += `<circle cx="${x(lastI)}" cy="${y(values[lastI])}" r="4.5" fill="var(--pa-s1)" stroke="var(--surface)" stroke-width="2"/><text x="${x(lastI) + 9}" y="${y(values[lastI]) + 4}" style="fill:var(--text2)">${_paK(values[lastI])}</text>`;
+  cats.forEach((c, i) => {
+    g += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle">${_stEsc(opts.label ? opts.label(c) : c)}</text>`;
+    if (values[i] != null) g += `<rect x="${L + step * i}" y="${T}" width="${step}" height="${ph}" fill="transparent" data-tip="${_stEsc(tip(i))}"/>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${_stEsc(opts.aria || '')}" style="display:block">${g}</svg>`;
+}
+function _paHBars(items, opts) {
+  opts = opts || {};
+  const rowH = 26, W = 720, L = 230, R = 90, H = items.length * rowH + 6;
+  const max = _paNice(Math.max(1, ...items.map(x => x.value)));
+  let g = '';
+  items.forEach((it, i) => {
+    const y0 = 3 + i * rowH, bh = 14, w = (it.value / max) * (W - L - R), r = Math.min(4, w);
+    g += `<text x="${L - 8}" y="${y0 + 15}" text-anchor="end" style="fill:var(--text2)">${_stEsc(it.label.length > 34 ? it.label.slice(0, 33) + '…' : it.label)}</text>`;
+    if (w > 0.5) g += `<path d="M${L},${y0 + 4} H${L + w - r} Q${L + w},${y0 + 4} ${L + w},${y0 + 4 + r} V${y0 + 4 + bh - r} Q${L + w},${y0 + 4 + bh} ${L + w - r},${y0 + 4 + bh} H${L} Z" fill="var(--pa-s1)"/>`;
+    g += `<text x="${L + w + 6}" y="${y0 + 15}" style="fill:var(--text2)">${_paK(it.value)}</text>`;
+    g += `<rect x="0" y="${y0}" width="${W}" height="${rowH}" fill="transparent" data-tip="${_stEsc(it.tip || '')}"/>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${_stEsc(opts.aria || '')}" style="display:block">${g}</svg>`;
+}
+function _paBindTips(root) {
+  const tip = document.getElementById('pa-tip');
+  if (!root || !tip || root._paTips) return;
+  root._paTips = true;
+  root.addEventListener('mousemove', e => {
+    const t = e.target && e.target.getAttribute && e.target.getAttribute('data-tip');
+    if (!t) { tip.style.display = 'none'; return; }
+    tip.innerHTML = t; tip.style.display = 'block';
+    const x = Math.min(e.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+    tip.style.left = x + 'px'; tip.style.top = (e.clientY + 14) + 'px';
+  });
+  root.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+}
+
+async function loadPaymentAnalysis() {
+  try { markPageSynced('payment-analysis'); } catch(e) {}
+  if (!(INVOICES || []).length) { try { await loadInvoices(); } catch(e) {} }
+  if (!(RECEIPTS || []).length || !(VOUCHERS || []).length) { try { await prefetchGlobals(); } catch(e) {} }
+  if (!(ALLOCATIONS || []).length) { try { await loadAllocations(); } catch(e) {} }
+  const ys = document.getElementById('pa-year');
+  if (ys && !ys.options.length) {
+    const years = new Set([String(new Date().getFullYear())]);
+    (INVOICES || []).forEach(i => { const d = _agDay(i.date); if (d != null) years.add(_agIso(d).slice(0, 4)); });
+    [...years].sort().reverse().forEach(y => { const o = document.createElement('option'); o.value = o.textContent = y; ys.appendChild(o); });
+  }
+  const gp = _agPref('pa_group'); if (gp) document.getElementById('pa-group').value = gp;
+  renderPaymentAnalysis();
+}
+function renderPaymentAnalysis() {
+  const host = document.getElementById('pa-body');
+  if (!host) return;
+  const year = (document.getElementById('pa-year') || {}).value || String(new Date().getFullYear());
+  const group = (document.getElementById('pa-group') || {}).value || 'client';
+  _agPref('pa_group', group);
+  const invs = (window.INVOICES_RAW || []).length ? window.INVOICES_RAW : INVOICES;
+  const A = window._PA_LAST = buildPaymentAnalysis({ invoices: invs, receipts: RECEIPTS, vouchers: VOUCHERS, allocations: ALLOCATIONS }, { year, group });
+  const esc = _stEsc, f = _paMoney, d1 = v => v == null ? '–' : (Math.round(v * 10) / 10).toLocaleString('en-MY');
+  const card = (title, sub, body) => `<div class="card pa-sec"><div class="card-header" style="align-items:flex-start"><div><div class="card-title">${title}</div><div style="font-size:11px;color:var(--text3);margin-top:2px;font-weight:400">${sub}</div></div></div><div style="padding:4px 4px 10px;overflow-x:auto">${body}</div></div>`;
+  const tile = (label, value, sub) => `<div class="metric-card"><div class="metric-label">${label}</div><div class="metric-value">${value}</div>${sub ? `<div class="metric-sub">${sub}</div>` : ''}</div>`;
+  let h = '';
+
+  // 1 Days to pay
+  const T = A.dtp.all;
+  const slow = A.dtp.groups.filter(g => g.slow);
+  h += `<div class="pa-tiles">${tile('Average days to pay', d1(T.avg), T.n + ' paid invoices (all years)')}${tile('Median days to pay', d1(T.median), 'half are paid faster')}${tile('Slowest', T.slowest ? T.slowest.days + 'd' : '–', T.slowest ? esc(T.slowest.inv_no + ' · ' + T.slowest.client) : '')}${tile('Slow payers (> 60 days avg)', slow.length, slow.slice(0, 3).map(g => esc(g.key)).join(', '))}</div>`;
+  const qs = A.dtp.quarters.slice(-8);
+  h += card('1 · Days to pay', 'Invoice date to the receipt that completes payment, for fully paid invoices. Grouped by ' + (group === 'billing' ? 'billing party' : 'end client') + '. Flag = average over 60 days.',
+    (qs.length ? `<div style="font-size:12px;color:var(--text2);padding:4px 12px">Average days to pay by quarter invoiced</div>` + _paColumns(qs.map(q => q.q), [{ name: 'Average days', color: 'var(--pa-s1)', values: qs.map(q => q.avg) }], i => `<strong>${esc(qs[i].q)}</strong><br>average ${d1(qs[i].avg)} days · median ${d1(qs[i].median)}<br>${qs[i].n} invoices`, { aria: 'Average days to pay by quarter' }) : '')
+    + (() => {
+      const thead = `<thead><tr><th>${group === 'billing' ? 'Billing party' : 'Client'}</th><th class="num">Paid invoices</th><th class="num">Average days</th><th class="num">Median</th><th>Slowest</th><th></th></tr></thead>`;
+      const row = g => `<tr><td>${esc(g.key)}</td><td class="num">${g.n}</td><td class="num"${g.slow ? ' style="font-weight:600"' : ''}>${d1(g.avg)}</td><td class="num">${d1(g.median)}</td><td style="font-family:'DM Mono',monospace">${g.slowest ? esc(g.slowest.inv_no) + ' · ' + g.slowest.days + 'd' : ''}</td><td>${g.slow ? '<span class="badge" style="background:var(--amber-bg);color:var(--amber)">⚠ slow payer</span>' : ''}</td></tr>`;
+      const top = A.dtp.groups.slice(0, 12), rest = A.dtp.groups.slice(12);
+      return `<div style="font-size:12px;color:var(--text2);padding:10px 12px 0">Slowest payers first</div><table style="margin-top:4px">${thead}<tbody>${top.map(row).join('')}</tbody></table>`
+        + (rest.length ? `<details style="padding:6px 12px;font-size:12px"><summary style="cursor:pointer">Show the other ${rest.length}</summary><table>${thead}<tbody>${rest.map(row).join('')}</tbody></table></details>` : '');
+    })());
+
+  // 2 Collections vs billing
+  const C = A.cvb, CT = A.cvbTot;
+  const ag = (() => { try { return buildAgingReport(invs, RECEIPTS, { asAt: _agLocalToday(), clients: (typeof CLIENTS !== 'undefined' ? CLIENTS : []) }); } catch(e) { return null; } })();
+  const tieTxt = ag && year === _agLocalToday().slice(0, 4)
+    ? (Math.abs(ag.totals.total - CT.balanceNow) <= 0.05 ? `<span style="color:var(--green)">✓ Debtor balance now ${f(CT.balanceNow)} = Debtor Aging total</span>` : `<span style="color:var(--amber)">Debtor balance (billed − collected) ${f(CT.balanceNow)} vs Debtor Aging ${f(ag.totals.total)} — difference is over-received invoices (${ag.overReceived.map(o => esc(o.inv_no)).join(', ') || 'none'})</span>`)
+    : '';
+  h += card('2 · Billing and collections by month — ' + esc(year), `Billed = invoice amounts by invoice date (incl. disbursements). Collected = receipts linked to an invoice, by receipt date. Year: billed ${f(CT.billed)} · collected ${f(CT.collected)}${CT.unlinkedN ? ' · ' + CT.unlinkedN + ' receipt(s) not linked to an invoice (' + f(CT.unlinkedAmt) + ') left out' : ''}. ${tieTxt}`,
+    _paColumns(C.map(x => x.m), [{ name: 'Billed', color: 'var(--pa-s1)', values: C.map(x => x.billed) }, { name: 'Collected', color: 'var(--pa-s2)', values: C.map(x => x.collected) }],
+      i => `<strong>${_paMonLabel(C[i].m)} ${esc(year)}</strong><br>Billed ${f(C[i].billed)}<br>Collected ${f(C[i].collected)}${C[i].balance != null ? '<br>Debtors at month-end ' + f(C[i].balance) : ''}`, { label: _paMonLabel, aria: 'Billed and collected by month' })
+    + `<div style="font-size:12px;color:var(--text2);padding:10px 12px 0">Debtor balance at month-end (billed − collected, all years to date)</div>`
+    + _paLine(C.map(x => x.m), C.map(x => x.balance), i => `<strong>${_paMonLabel(C[i].m)} ${esc(year)}</strong><br>Debtors ${f(C[i].balance)}`, { label: _paMonLabel, aria: 'Debtor balance at month-end' })
+    + `<details style="padding:6px 12px;font-size:12px"><summary style="cursor:pointer">Table</summary><table><thead><tr><th>Month</th><th class="num">Billed</th><th class="num">Collected</th><th class="num">Debtors at month-end</th></tr></thead><tbody>${C.map(x => `<tr><td>${_paMonLabel(x.m)} ${esc(year)}</td><td class="num">${f(x.billed)}</td><td class="num">${f(x.collected)}</td><td class="num">${x.balance == null ? '' : f(x.balance)}</td></tr>`).join('')}</tbody></table></details>`);
+
+  // 3 Spending by category
+  const ly = String(+year - 1), cut = year === _agLocalToday().slice(0, 4) ? 'to ' + _agLocalToday().slice(8) + ' ' + _paMonLabel(_agLocalToday()) : 'full year';
+  const S = A.spend.filter(x => x.ytd > 0);
+  h += card('3 · Spending by category — ' + esc(year), `Payment vouchers by category (chart of accounts), ${esc(year)} ${cut}, against the same period of ${esc(ly)} where vouchers exist.`,
+    (S.length ? _paHBars(S.map(x => ({ label: x.label, value: x.ytd, tip: `<strong>${esc(x.label)}</strong><br>${esc(year)}: ${f(x.ytd)}<br>${esc(ly)} same period: ${f(x.lastYtd)}` })), { aria: 'Spending by category' }) : '<div style="padding:12px;color:var(--text3);font-size:12px">No vouchers in ' + esc(year) + '.</div>')
+    + `<details style="padding:6px 12px;font-size:12px"><summary style="cursor:pointer">By month</summary><table><thead><tr><th>Category</th>${A.months.map(m => `<th class="num">${_paMonLabel(m)}</th>`).join('')}<th class="num">${esc(year)}</th><th class="num">${esc(ly)} same period</th></tr></thead><tbody>${A.spend.map(x => `<tr><td>${esc(x.label)}</td>${A.months.map(m => `<td class="num">${x.months[m] ? _paK(x.months[m]) : ''}</td>`).join('')}<td class="num">${f(x.ytd)}</td><td class="num">${x.lastYtd ? f(x.lastYtd) : '–'}</td></tr>`).join('')}</tbody></table></details>`
+    + `<div style="font-size:12px;font-weight:600;padding:8px 12px 2px">Top payees ${esc(year)}</div><table><tbody>${A.topPayees.map(x => `<tr><td>${esc(x.payee)}</td><td class="num">${f(x.amount)}</td></tr>`).join('')}</tbody></table>`);
+
+  // 4 Payouts per person
+  h += card('4 · Payouts per person — ' + esc(year), 'Paid = person-payout vouchers (wages, commission, Cosec) by voucher date. Earned = each person\'s share of invoices by invoice date (invoice lines, or the allocation row for older invoices). Earned − paid is all years to date and indicative — the Payout page is where amounts are approved.',
+    `<table><thead><tr><th>Person</th>${A.months.map(m => `<th class="num">${_paMonLabel(m)}</th>`).join('')}<th class="num">Earned ${esc(year)}</th><th class="num">Paid ${esc(year)}</th><th class="num">Earned − paid (to date)</th></tr></thead><tbody>${A.payouts.map(p => `<tr><td><strong>${esc(p.person)}</strong></td>${p.months.map(m => `<td class="num" title="earned ${f(m.earned)}">${m.paid ? _paK(m.paid) : '<span style="color:var(--text3)">–</span>'}</td>`).join('')}<td class="num">${f(p.earnedYear)}</td><td class="num">${f(p.paidYear)}</td><td class="num">${f(p.owed)}</td></tr>`).join('')}</tbody></table><div style="font-size:11px;color:var(--text3);padding:6px 12px">Monthly cells show amounts paid; hover a cell for the amount earned that month.</div>`);
+
+  host.innerHTML = h;
+  _paBindTips(document.getElementById('page-payment-analysis'));
 }
 
 // Note: loadRetention() is defined in the first <script> block (around line 1149)
