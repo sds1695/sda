@@ -1535,6 +1535,7 @@
       <div id="st-summary"></div>
       <div id="st-fix"></div>
       <div id="st-body"></div>
+      <div id="st-master"></div>
     </div>
 
     <!-- ══ CLIENT DEADLINES ══ -->
@@ -15993,17 +15994,19 @@ async function loadSyncTally() {
   head.innerHTML = '';
   out.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text3)">Reading the Google Sheet… (6 tables)</div>';
 
-  const names = ['invoices', 'receipts', 'vouchers', 'allocations', 'settings', 'gl', 'backend'];
+  const names = ['invoices', 'receipts', 'vouchers', 'allocations', 'settings', 'gl', 'backend', 'master'];
   const calls = await Promise.all([
     api({ action: 'get_invoices' }), api({ action: 'get_receipts' }), api({ action: 'get_vouchers' }),
     api({ action: 'get_allocations' }), api({ action: 'get_settings' }), api({ action: 'get_gl' }),
     api({ action: 'backend_info' }),
+    api({ action: 'get_master_ledger' }),
   ].map(p => Promise.resolve(p).catch(e => ({ ok: false, error: String(e) }))));
   const raw = {}, loadErr = [];
   names.forEach((n, i) => {
     const r = calls[i];
     if (r && r.ok) raw[n] = r.data;
     else if (n === 'backend') raw[n] = { _unknown: /unknown action/i.test((r && r.error) || ''), _error: (r && r.error) || 'no response' };
+    else if (n === 'master') raw[n] = { ok: false, error: (r && r.error) || 'no response' };
     else { raw[n] = null; loadErr.push(n + ': ' + ((r && r.error) || 'no response')); }
   });
 
@@ -16012,10 +16015,16 @@ async function loadSyncTally() {
   R.loadErrors = loadErr;
   R.backend = (raw.backend && !raw.backend._unknown && !raw.backend._error) ? raw.backend : (raw.backend || {});
   if (!(R.backend.patch1_idempotency && R.backend.patch2_pv_numbers && R.backend.patch4)) R.issues++;
+  R.master = raw.master && raw.master.ok !== false ? Object.assign({ ok: true }, raw.master) : (raw.master || { ok: false, error: 'not read' });
+  if (R.master.ok && raw.invoices) {
+    try { R.masterCheck = buildMasterCheck(R.master, raw.invoices); if (R.masterCheck.rows.length) R.issues++; }
+    catch(e) { R.master = { ok: false, error: 'check failed: ' + e.message }; }
+  }
   R.at = new Date().toISOString();
   _SYNC_TALLY_LAST = R;
   renderSyncTally(R);
   try { renderSyncFixPanel(R); } catch(e) { console.warn('fix panel failed', e); }
+  try { renderMasterCheck(R); } catch(e) { console.warn('master check failed', e); }
 }
 
 // Pure: raw Sheet data in → report object out (no DOM, no writes).
@@ -16424,7 +16433,8 @@ function renderSyncTally(R) {
 
 function downloadSyncTally() {
   if (!_SYNC_TALLY_LAST) return;
-  const blob = new Blob([JSON.stringify(_SYNC_TALLY_LAST, null, 2)], { type: 'application/json' });
+  const _out = Object.assign({}, _SYNC_TALLY_LAST, { master: _SYNC_TALLY_LAST.master ? { ok: _SYNC_TALLY_LAST.master.ok, file: _SYNC_TALLY_LAST.master.file, file_updated: _SYNC_TALLY_LAST.master.file_updated, read_at: _SYNC_TALLY_LAST.master.read_at, error: _SYNC_TALLY_LAST.master.error } : null });
+  const blob = new Blob([JSON.stringify(_out, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'sync-tally_' + _SYNC_TALLY_LAST.at.replace(/[:.]/g, '-').slice(0, 19) + '.json';
@@ -16642,6 +16652,132 @@ async function applySyncFixPlan() {
   try { await Promise.all([loadInvoices(), loadReceipts(), loadVouchers()]); } catch(e) {}
   try { await loadAllocations(); } catch(e) {}
   loadSyncTally();
+}
+
+
+// ════════════════════════════════════════════════════════════════════════
+// DASHBOARD vs MASTER (added 2026-10-03) — read-only.
+// Compares every live invoice with the master Excel (via the backend's
+// get_master_ledger, Patch 6): who gets how much (Due (to) person columns,
+// all rows of the invoice's block summed), the invoice total, and the
+// preparer typed in Allocation 2026 against the column its amount sits in.
+// The master prevails; each difference says which side to fix and where.
+// ════════════════════════════════════════════════════════════════════════
+const MASTER_DUE_COLS  = { Cecilia: 8, KC: 9, Koay: 10, ET: 11, Ivy: 12 };   // Due (to): I J K L M
+const MASTER_DUE_AMT   = 5;                                                   // Due (to): F (invoice amount)
+const MASTER_PREP_COLS = { 17: 'ET', 18: 'Koay', 19: 'Ivy', 21: 'KC' };       // Allocation 2026: R S T V
+const MASTER_TOL = 0.05;
+
+function _mNum(v) {
+  if (typeof v === 'number') return v;
+  const t = String(v == null ? '' : v).trim();
+  if (!t || t === '-') return 0;
+  const neg = /^\(.*\)$/.test(t) || /^-\d/.test(t);
+  const n = parseFloat(t.replace(/[(),\s-]/g, ''));
+  return isNaN(n) ? 0 : (neg ? -n : n);
+}
+function _mInvNo(v) { const m = String(v == null ? '' : v).trim().toUpperCase().match(/^INV\d+/); return m ? m[0] : ''; }
+function _colLetter(i) { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+
+function buildMasterCheck(M, invoices) {
+  const out = { rows: [], matched: 0, compared: 0, notInMaster: [] };
+  // Due (to): an invoice's block = its row plus following rows with blank date and number.
+  const due = {};
+  let cur = null;
+  (M.dueto || []).forEach((r, i) => {
+    const c0 = String(r[0] == null ? '' : r[0]).trim(), c1 = String(r[1] == null ? '' : r[1]).trim();
+    if (c0 || c1) {
+      cur = _mInvNo(c1) || null;
+      if (!cur) return;
+      due[cur] = due[cur] || { rows: [], amt: { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 }, total: 0, blocks: 0 };
+      due[cur].blocks++;
+    } else if (!cur) return;
+    due[cur].rows.push(i + 1);
+    Object.keys(MASTER_DUE_COLS).forEach(p => { due[cur].amt[p] += _mNum(r[MASTER_DUE_COLS[p]]); });
+    due[cur].total += _mNum(r[MASTER_DUE_AMT]);
+  });
+  // Allocation 2026: the invoice's first row — typed preparer (D) and the column holding the preparer amount.
+  const alloc = {};
+  (M.allocation || []).forEach((r, i) => {
+    const no = _mInvNo(r[1]);
+    if (!no || alloc[no]) return;
+    const hits = Object.keys(MASTER_PREP_COLS).filter(k => Math.abs(_mNum(r[+k])) > 0.005).map(k => MASTER_PREP_COLS[k]);
+    alloc[no] = { row: i + 1, typed: String(r[3] == null ? '' : r[3]).trim(), amtPerson: hits.length === 1 ? hits[0] : '' };
+  });
+  const r2 = n => Math.round(n * 100) / 100;
+  const fmtP = o => Object.keys(o).filter(k => Math.abs(o[k]) > 0.005).map(k => k + ' ' + r2(o[k]).toFixed(2)).join(' · ') || '—';
+  (invoices || []).forEach(inv => {
+    if (String(inv.status || '').toLowerCase() === 'cancelled' || isDeleted('invoices', String(inv.inv_id || ''))) return;
+    const no = _mInvNo(inv.inv_no);
+    if (!no) return;
+    const d = due[no], a = alloc[no];
+    if (!d) { out.notInMaster.push(no); return; }
+    out.compared++;
+    const dash = { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 };
+    const preps = {};
+    try {
+      _parseInvLines(inv).forEach(l => {
+        const b = _bucketForLine(l, inv) || {};
+        Object.keys(dash).forEach(k => { dash[k] += +b[k] || 0; });
+        const dd = b.__d || {};
+        if (dd.prepName && dd.prepAmt > 0.005) preps[_canonPerson(dd.prepName) === 'Koay PH' ? 'Koay' : _canonPerson(dd.prepName)] = 1;
+      });
+    } catch(e) {}
+    const issues = [], fix = [];
+    const diffPeople = Object.keys(dash).filter(k => Math.abs(dash[k] - d.amt[k]) > MASTER_TOL);
+    if (diffPeople.length) {
+      issues.push('amounts differ: ' + diffPeople.map(k => k + ' dashboard ' + r2(dash[k]).toFixed(2) + ' vs master ' + r2(d.amt[k]).toFixed(2)).join('; '));
+      fix.push('Dashboard: open ' + no + ' and check Preparer / Reviewer / Allocation Setup (master prevails) — or, if the master is wrong, Due (to) row ' + d.rows[0] + (d.rows.length > 1 ? '–' + d.rows[d.rows.length - 1] : '') + ', columns ' + diffPeople.map(k => _colLetter(MASTER_DUE_COLS[k])).join('/'));
+    }
+    if (d.total && Math.abs(d.total - (parseFloat(inv.amount) || 0)) > MASTER_TOL) {
+      issues.push('invoice total: dashboard ' + (parseFloat(inv.amount) || 0).toFixed(2) + ' vs master ' + r2(d.total).toFixed(2));
+      fix.push('Check the invoice amount (Due (to) column F rows ' + d.rows.join(', ') + ')');
+    }
+    if (d.blocks > 1) issues.push('entered ' + d.blocks + ' times in Due (to) (rows ' + d.rows.join(', ') + ') — check for a duplicate');
+    if (a) {
+      const typed = _canonPerson(a.typed);
+      if (a.amtPerson && typed && typed !== a.amtPerson) {
+        issues.push('Allocation 2026 says "' + a.typed + '" but the preparer amount is in the ' + a.amtPerson + ' column');
+        fix.push('Master: Allocation 2026 D' + a.row + ' → ' + a.amtPerson);
+      }
+      const mPrep = a.amtPerson || typed;
+      const dp = Object.keys(preps);
+      if (mPrep && dp.length && dp.indexOf(mPrep === 'Koay PH' ? 'Koay' : mPrep) < 0) {
+        issues.push('preparer: dashboard ' + dp.join('/') + ', master ' + mPrep);
+        if (!diffPeople.length) fix.push('Dashboard: set the preparer of ' + no + ' to ' + mPrep);
+      }
+    }
+    if (issues.length) out.rows.push({ inv_no: no, client: inv.client_name, dash: fmtP(dash), master: fmtP(d.amt), dueRows: d.rows, allocRow: a ? a.row : null, issues, fix });
+    else out.matched++;
+  });
+  return out;
+}
+
+function renderMasterCheck(R) {
+  const host = document.getElementById('st-master');
+  if (!host) return;
+  const M = R.master || {};
+  const esc = _stEsc;
+  const head = (st, sub) => `<div class="card-header" style="align-items:flex-start"><div><div class="card-title">9 · Dashboard vs Master</div><div style="font-size:11px;color:var(--text3);margin-top:2px;font-weight:400">${sub}</div></div><div style="margin-left:auto;white-space:nowrap">${st}</div></div>`;
+  if (!M.ok) {
+    const unk = /unknown action/i.test(M.error || '');
+    host.innerHTML = `<div class="card" style="margin-bottom:16px">${head('<span style="color:var(--amber);font-weight:600">Not checked</span>', unk ? 'Needs backend Patch 6 (read-only copy of the master). Paste apps-script\\READY_TO_PASTE\\4_SerayaPatches_REPLACE_ALL_v2_master_check.gs into the "Seraya Patches" file and deploy a new version.' : 'Could not read the master: ' + esc(M.error || 'no response'))}</div>`;
+    return;
+  }
+  const C = R.masterCheck || { rows: [], matched: 0, compared: 0, notInMaster: [] };
+  const st = C.rows.length ? `<span style="color:var(--red);font-weight:600">${C.rows.length} invoice${C.rows.length === 1 ? '' : 's'} differ</span>` : '<span style="color:var(--green);font-weight:600">✓ Tallied</span>';
+  const sub = `Master file: ${esc(M.file || '')} (saved ${esc(M.file_updated || '')}, read ${esc(M.read_at || '')}${M.cached ? ', cached' : ''}). ${C.compared} invoices compared · ${C.matched} match. People amounts come from Due (to) (all rows of each invoice); the master prevails. Differences of 5 sen or less are rounding and are ignored.`;
+  const rows = C.rows.map(x => `<tr>
+      <td style="font-size:12px;font-family:'DM Mono',monospace;white-space:nowrap;vertical-align:top">${esc(x.inv_no)}</td>
+      <td style="font-size:12px;vertical-align:top">${esc(x.client || '')}</td>
+      <td style="font-size:12px;vertical-align:top">${esc(x.dash)}</td>
+      <td style="font-size:12px;vertical-align:top">${esc(x.master)}<br><span style="color:var(--text3);font-size:11px">Due (to) row ${x.dueRows[0]}${x.dueRows.length > 1 ? '–' + x.dueRows[x.dueRows.length - 1] : ''}${x.allocRow ? ' · Allocation 2026 row ' + x.allocRow : ''}</span></td>
+      <td style="font-size:12px;vertical-align:top"><span style="color:var(--red)">${x.issues.map(esc).join('<br>')}</span>${x.fix.length ? '<br><strong>Fix:</strong> ' + x.fix.map(esc).join('<br>') : ''}</td>
+    </tr>`).join('');
+  const nim = C.notInMaster.length ? `<details style="padding:8px 12px;font-size:12px"><summary style="cursor:pointer">${C.notInMaster.length} dashboard invoice${C.notInMaster.length === 1 ? '' : 's'} not found in the master's Due (to)</summary><div style="margin-top:6px;font-family:'DM Mono',monospace;color:var(--text2)">${C.notInMaster.map(esc).join(', ')}</div></details>` : '';
+  host.innerHTML = `<div class="card" style="margin-bottom:16px">${head(st, sub)}
+    ${C.rows.length ? `<div style="overflow-x:auto"><table><thead><tr><th style="font-size:11px">Invoice</th><th style="font-size:11px">Client</th><th style="font-size:11px">Dashboard</th><th style="font-size:11px">Master</th><th style="font-size:11px">Difference and fix</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div style="padding:12px;font-size:12px;color:var(--text3);text-align:center">Every invoice found in the master matches it.</div>'}
+    ${nim}</div>`;
 }
 
 // ── Pending disbursements in the Client Registry (added 2026-10-02) ──────
