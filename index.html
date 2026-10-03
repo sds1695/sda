@@ -16192,7 +16192,8 @@ function buildSyncTally(raw) {
       stored.forEach(l => { const h = (l && l.horizontalAlloc) || {}; [h.prepName, h.revName, l && l.prepOvr, l && l.revOvr].forEach(n => { if (n && !_isKnownPerson(n)) unknown.push(String(n)); }); });
       const lp = new Set(), lr = new Set();
       (function () { try { return _parseInvLines(i); } catch(e) { return []; } })().forEach(l => {
-        if (!l || l.isDisb) return;
+        // Disbursement, custom-split and Cosec lines are paid by their own rules, not by the line's names.
+        if (!l || l.isDisb || l.customSplit || /^(cosec|disbursement)/i.test(String(l.lineType || ''))) return;
         const h = l.horizontalAlloc || {};
         const pn = nk(l.prepOvr || h.prepName), rn = nk(l.revOvr || h.revName);
         if (pn) lp.add(pn); if (rn) lr.add(rn);
@@ -16207,7 +16208,8 @@ function buildSyncTally(raw) {
         const notes = [];
         if (unknown.length) notes.push('not recognised: ' + [...new Set(unknown)].join(', '));
         if (blankPrep) notes.push('allocation row has a preparer amount but no preparer');
-        if (diffP || diffR) notes.push('allocation row credits different people from the invoice lines');
+        if ((diffP || diffR) && rows.length === 1 && (lp.size > 1 || lr.size > 1)) notes.push('invoice lines name more than one person but the Sheet holds one allocation row (saved before Patch 4) — payouts use the lines; re-save the invoice to store one row per person');
+        else if (diffP || diffR) notes.push('allocation row credits different people from the invoice lines');
         R.people.push({ inv_no: i.inv_no, client: i.client_name, lines: 'prep ' + ([...lp].join('/') || '—') + ' · rev ' + ([...lr].join('/') || '—'),
           sheet: rows.length ? 'prep ' + ([...ap].join('/') || '(blank)') + ' · rev ' + ([...ar].join('/') || '(blank)') : '(no allocation row)', note: notes.join('; ') });
       }
