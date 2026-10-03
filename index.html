@@ -16067,6 +16067,8 @@ async function runSyncTallyCheck(opts) {
   R.master = raw.master && raw.master.ok !== false ? Object.assign({ ok: true }, raw.master) : (raw.master || { ok: false, error: 'not read' });
   R.allocLoaded = !!(typeof ALLOCATIONS !== 'undefined' && (ALLOCATIONS || []).length);
   if (R.master.ok && raw.invoices && !R.allocLoaded) R.master = { ok: false, error: 'allocation rows not loaded yet — re-run the check' };
+  // Older invoices are compared through their allocation rows: without them every one would look unpaid.
+  if (R.master.ok && !(Array.isArray(raw.allocations) && raw.allocations.length)) R.master = { ok: false, error: 'the Allocations table did not load from the Sheet (' + (loadErr.find(e => /^allocations/.test(e)) || 'empty') + ') — click Re-run check' };
   if (R.master.ok && raw.invoices) {
     try { R.masterCheck = buildMasterCheck(R.master, raw.invoices, raw.allocations); if (_masterOpenRows(R.masterCheck).length) R.issues++; }
     catch(e) { R.master = { ok: false, error: 'check failed: ' + e.message }; }
