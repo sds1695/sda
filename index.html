@@ -16048,6 +16048,12 @@ async function runSyncTallyCheck(opts) {
   let calls;
   if (opts.sequential) { calls = []; for (const f of reqs) calls.push(await safe(f)); }
   else calls = await Promise.all(reqs.map(safe));
+  // A table that failed (often a timeout when several are asked for at once) is asked for again, one at a time.
+  for (let i = 0; i < reqs.length; i++) {
+    if (calls[i] && calls[i].ok) continue;
+    if (/unknown action/i.test((calls[i] && calls[i].error) || '')) continue;
+    for (let t = 0; t < 2 && !(calls[i] && calls[i].ok); t++) calls[i] = await safe(reqs[i]);
+  }
   const raw = {}, loadErr = [];
   // Invoice lines name their preparer / reviewer through the allocation rows (ALLOCATIONS):
   // compare only once those are loaded, or every preparer share would read as zero.
@@ -17489,7 +17495,7 @@ function renderMasterCheck(R) {
   const head = (st, sub) => `<div class="card-header" style="align-items:flex-start"><div><div class="card-title">9 · Dashboard vs Master</div><div style="font-size:11px;color:var(--text3);margin-top:2px;font-weight:400">${sub}</div></div><div style="margin-left:auto;white-space:nowrap">${st}</div></div>`;
   if (!M.ok) {
     const unk = /unknown action/i.test(M.error || '');
-    host.innerHTML = `<div class="card" style="margin-bottom:16px">${head('<span style="color:var(--amber);font-weight:600">Not checked</span>', unk ? 'Needs backend Patch 6 (read-only copy of the master). Paste apps-script\\READY_TO_PASTE\\4_SerayaPatches_REPLACE_ALL_v2_master_check.gs into the "Seraya Patches" file and deploy a new version.' : 'Could not read the master: ' + esc(M.error || 'no response'))}</div>`;
+    host.innerHTML = `<div class="card" style="margin-bottom:16px">${head('<span style="color:var(--amber);font-weight:600">Not checked</span>', unk ? 'Needs backend Patch 6 (read-only copy of the master). Paste apps-script\\READY_TO_PASTE\\4_SerayaPatches_REPLACE_ALL_v2_master_check.gs into the "Seraya Patches" file and deploy a new version.' : (/did not load|not loaded/.test(M.error || '') ? esc(M.error) : 'Could not read the master: ' + esc(M.error || 'no response')))}</div>`;
     return;
   }
   const C = R.masterCheck || { rows: [], matched: 0, compared: 0, notInMaster: [] };
