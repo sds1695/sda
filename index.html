@@ -1571,6 +1571,7 @@
       <div id="st-body"></div>
       <div id="st-master"></div>
       <div id="st-debtors"></div>
+      <div id="st-pvnos"></div>
     </div>
 
     <!-- ══ CLIENT DEADLINES ══ -->
@@ -16026,6 +16027,7 @@ async function loadSyncTally() {
   try { renderSyncFixPanel(R); } catch(e) { console.warn('fix panel failed', e); }
   try { renderMasterCheck(R); } catch(e) { console.warn('master check failed', e); }
   try { renderDebtorCheck(R); } catch(e) { console.warn('debtor check failed', e); }
+  try { renderPvCheck(R); } catch(e) { console.warn('pv check failed', e); }
   try { _autoCheckFromReport(R); } catch(e) {}
 }
 
@@ -16063,6 +16065,7 @@ async function runSyncTallyCheck(opts) {
     catch(e) { R.master = { ok: false, error: 'check failed: ' + e.message }; }
   }
   try { R.debtors = buildDebtorCheck(R); if (R.debtors.issue) R.issues++; } catch(e) { R.debtors = { ok: false, why: 'check failed: ' + e.message }; }
+  try { R.pvCheck = buildPvCheck(R.master, raw.vouchers); if (R.pvCheck.ok && R.pvCheck.changes.length) R.issues++; } catch(e) { R.pvCheck = { ok: false, why: 'check failed: ' + e.message }; }
   R.at = new Date().toISOString();
   return { R, raw };
 }
@@ -16084,6 +16087,8 @@ function syncTallyAreas(R) {
   if (!M.ok) a.push('master: not read');
   else if (R.masterCheck) { const n = _masterOpenRows(R.masterCheck).length; if (n) a.push('master: ' + n + ' invoice' + (n === 1 ? '' : 's')); }
   const TD = R.debtors || {};
+  const PC = R.pvCheck || {};
+  if (PC.ok && PC.changes.length) a.push('PV numbers: ' + PC.changes.length);
   if (TD.needsPatch7) a.push('trade debtors: needs Patch 7');
   else if (TD.issue) a.push('trade debtors');
   return a;
@@ -16147,8 +16152,8 @@ function renderRecurringDue() {
   el.innerHTML = `<div style="padding:10px 16px;border-radius:8px;border:1.5px solid var(--amber);background:var(--surface2)">
     <div style="font-weight:600;font-size:13px;margin-bottom:4px">🔁 Recurring payments to record</div>
     ${due.map((d, i) => `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;padding:4px 0;border-top:${i ? '1px solid var(--border)' : '0'}">
-      <div style="flex:1;min-width:220px"><strong>${_stEsc(d.bill.label)}</strong> ${_stEsc(d.period)} · ${f(d.amount)} · ${d.daysLate < 0 ? 'renews in ' + (-d.daysLate) + ' day' + (d.daysLate === -1 ? '' : 's') : d.daysLate === 0 ? '<span style="color:var(--amber);font-weight:600">renews today</span>' : '<span style="color:var(--red);font-weight:600">' + d.daysLate + ' days since renewal — no payment voucher</span>'}</div>
-      <button class="btn btn-secondary btn-sm" onclick="openRecurringVoucher(${i})">Create PV</button>
+      <div style="flex:1;min-width:220px"><strong>${_stEsc(d.bill.label)}</strong> ${_stEsc(d.period)} · ${f(d.amount)} · <span style="color:var(--text3)">draft ready: ${_stEsc(d.payee)} · ${_stEsc(d.bill.descLabel + ' ' + d.period)} · PV number given when raised</span> · ${d.daysLate < 0 ? 'renews in ' + (-d.daysLate) + ' day' + (d.daysLate === -1 ? '' : 's') : d.daysLate === 0 ? '<span style="color:var(--amber);font-weight:600">renews today</span>' : '<span style="color:var(--red);font-weight:600">' + d.daysLate + ' days since renewal — no payment voucher</span>'}</div>
+      <button class="btn btn-secondary btn-sm" onclick="openRecurringVoucher(${i})">Raise PV</button>
       <a href="#" style="font-size:11px;color:var(--text3)" onclick="skipRecurring(${i});return false" title="Not paid for this period (e.g. cancelled) — stop reminding">Not needed</a>
     </div>`).join('')}
   </div>`;
@@ -17091,6 +17096,108 @@ function buildDebtorCheck(R) {
   D.diff = D.master == null ? null : r2(D.dash - D.master);
   D.issue = D.master == null || Math.abs(D.diff) > MASTER_TOL || D.notInRecon.length > 0 || D.reconNotOutstanding.length > 0 || D.amountDiffers.length > 0;
   return D;
+}
+
+
+// ── 11 · PV numbers vs master (added 2026-10-04) ─────────────────────────────
+// Every live payment voucher is matched to a payment row of the master's GL 2026 tab
+// (A date, B PV no., C description, D amount). A row with no date and no PV number continues
+// the PV block above it. Match: same amount within 0/3/7 days (a row naming the payee wins a
+// tie), then several vouchers summing to one master row (a combined payment). The master
+// prevails: the dashboard shows the master's number through seraya_pvno_overrides (display
+// only — the voucher record is not changed). Applying is a Principal click; this check writes nothing.
+function _pvMasterDay(v) {
+  const t = String(v == null ? '' : v).trim();
+  const m = t.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
+  if (m) return Date.UTC(m[3].length === 2 ? 2000 + +m[3] : +m[3], +m[2] - 1, +m[1]) / 86400000;
+  return _agDay(t);
+}
+function buildPvCheck(M, vouchers) {
+  M = M || {};
+  if (!M.ok) return { ok: false, why: 'master not read' };
+  if (!M.gl2026) return { ok: false, needsPatch7: true };
+  const r2 = n => Math.round(n * 100) / 100;
+  let ovr = {};
+  try { ovr = JSON.parse(localStorage.getItem('seraya_pvno_overrides') || '{}') || {}; } catch(e) {}
+  const all = []; let prev = null;
+  M.gl2026.forEach((r, i) => {
+    const d = String(r[0] == null ? '' : r[0]).trim(), ref = String(r[1] == null ? '' : r[1]).trim(), desc = String(r[2] == null ? '' : r[2]), amt = r2(Math.abs(_mNum(r[3])));
+    const isPay = !/^INV/i.test(ref) && !/^\s*receipt/i.test(desc) && (/^PV/i.test(ref) || /^\s*payment/i.test(desc));
+    const x = { row: i + 1, day: _pvMasterDay(d), pv: ref.toUpperCase(), desc, amt, cont: false };
+    if (!d && !ref && isPay && prev) { x.day = prev.day; x.pv = prev.pv; x.cont = true; }
+    else if (!d && ref && isPay && prev) x.day = prev.day;   // own PV number, date of the block above
+    if (isPay && x.day != null && amt > 0) { all.push(x); if (!x.cont) prev = x; }
+    else if (d || ref) prev = null;
+  });
+  const vs = (vouchers || []).filter(v => !String(v.description || '').startsWith('__VOID__') && !isDeleted('vouchers', String(v.voucher_id || '')) && !isVoided('vouchers', String(v.voucher_id || ''))
+      && (parseFloat(v.amount) || 0) > 0 && _agDay(v.date) != null)
+    .map(v => ({ id: String(v.voucher_id || ''), no: String(v.voucher_no || ''), shown: String(ovr[v.voucher_no] || v.voucher_no || ''), day: _agDay(v.date), amt: r2(parseFloat(v.amount) || 0), payee: String(v.payee || ''), desc: String(v.description || '') }));
+  const names = v => [v.payee, _canonPerson(v.payee)].concat(v.payee === 'Ho' || v.payee === 'W' ? ['KC'] : []).concat(v.payee === 'TXY' ? ['Koay'] : []).concat(v.payee === 'QET' ? ['ET'] : []).filter(Boolean).map(s => String(s).toLowerCase());
+  const named = (m, v) => names(v).some(n => n.length > 1 && new RegExp('(^|[^a-z])' + n.replace(/[^a-z0-9]/g, '') + '([^a-z]|$)', 'i').test(m.desc));
+  const used = new Set();
+  [0, 3, 7].forEach(win => vs.forEach(v => {
+    if (v.m) return;
+    const c = all.filter(m => !used.has(m.row) && Math.abs(m.amt - v.amt) < 0.03 && Math.abs(m.day - v.day) <= win)
+      .sort((a, b) => (named(b, v) - named(a, v)) || Math.abs(a.day - v.day) - Math.abs(b.day - v.day));
+    if (c.length) { v.m = c[0]; v.how = 'same amount'; used.add(c[0].row); }
+  }));
+  all.filter(m => !used.has(m.row)).forEach(m => {
+    const cand = vs.filter(v => !v.m && Math.abs(v.day - m.day) <= 3), n = cand.length;
+    if (n < 2 || n > 14) return;
+    for (let mask = 1; mask < (1 << n); mask++) {
+      let t = 0; const pick = [];
+      for (let k = 0; k < n; k++) if (mask & (1 << k)) { t += cand[k].amt; pick.push(cand[k]); }
+      if (pick.length > 1 && Math.abs(t - m.amt) < 0.05) { pick.forEach(v => { v.m = m; v.how = 'part of a combined payment (' + pick.length + ' vouchers)'; }); used.add(m.row); break; }
+    }
+  });
+  const out = { ok: true, compared: vs.length, matched: 0, changes: [], masterBlank: [], noMatch: [], masterOnly: [], reused: [] };
+  vs.forEach(v => {
+    if (!v.m) { out.noMatch.push(v); return; }
+    out.matched++;
+    if (!v.m.pv) out.masterBlank.push(v);
+    else if (v.m.pv !== v.shown.toUpperCase()) out.changes.push(v);
+  });
+  out.masterOnly = all.filter(m => !used.has(m.row));
+  const days = {};
+  all.forEach(m => { if (m.pv) (days[m.pv] = days[m.pv] || new Set()).add(m.day); });
+  out.reused = Object.keys(days).filter(k => days[k].size > 1).map(k => ({ pv: k, dates: [...days[k]].sort().map(_agIso) }));
+  return out;
+}
+function renderPvCheck(R) {
+  const host = document.getElementById('st-pvnos');
+  if (!host) return;
+  const C = R.pvCheck || {}, esc = _stEsc, f = _stFmt;
+  const head = (st, sub) => `<div class="card-header" style="align-items:flex-start"><div><div class="card-title">11 · PV numbers vs master</div><div style="font-size:11px;color:var(--text3);margin-top:2px;font-weight:400">${sub}</div></div><div style="margin-left:auto;white-space:nowrap">${st}</div></div>`;
+  if (!C.ok) { host.innerHTML = `<div class="card" style="margin-bottom:16px">${head('<span style="color:var(--amber);font-weight:600">Not checked</span>', C.needsPatch7 ? 'Needs backend Patch 7.' : 'Could not check: ' + esc(C.why || ''))}</div>`; return; }
+  const canApply = !!(SESSION && SESSION.user && (SESSION.user.name === 'Principal' || SESSION.user.role === 'admin'));
+  const st = C.changes.length ? `<span style="color:var(--red);font-weight:600">${C.changes.length} to update</span>` : '<span style="color:var(--green);font-weight:600">✓ Tallied</span>';
+  const td = (v, r) => `<td style="font-size:12px;${r ? "text-align:right;font-family:'DM Mono',monospace" : ''}">${v}</td>`;
+  const tbl = (title, rows, cols) => rows.length ? `<div style="font-size:12px;font-weight:600;margin:10px 12px 4px">${title}</div><table><thead><tr>${cols.map(c => `<th style="font-size:11px;${c[2] ? 'text-align:right' : ''}">${c[0]}</th>`).join('')}</tr></thead><tbody>${rows.map(r => '<tr>' + cols.map(c => td(c[1](r), c[2])).join('') + '</tr>').join('')}</tbody></table>` : '';
+  const base = [['Date', v => formatDate(_agIso(v.day))], ['Payee', v => esc(v.payee)], ['Description', v => esc(v.desc.slice(0, 60))], ['Amount', v => f(v.amt), 1]];
+  let html = tbl('Dashboard number differs from the master (the master prevails)', C.changes,
+    [['Dashboard shows', v => `<span style="font-family:'DM Mono',monospace;color:var(--red)">${esc(v.shown)}</span>`], ['Master', v => `<strong style="font-family:'DM Mono',monospace">${esc(v.m.pv)}</strong>`]].concat(base).concat([['Master row', v => 'GL 2026 row ' + v.m.row + (/combined/.test(v.how) ? ' · ' + esc(v.how) : '')]]));
+  if (C.changes.length && canApply) html += `<div style="padding:8px 12px"><button class="btn btn-primary btn-sm" onclick="applyMasterPvNumbers()">Apply master PV numbers (${C.changes.length})</button> <span style="font-size:11px;color:var(--text3)">Changes only the number shown on the dashboard (and printed on the voucher); amounts, dates and payees stay as they are. The current list is backed up first.</span></div>`;
+  html += tbl('Master has no PV number for this payment — type one into the master (column B)', C.masterBlank,
+    [['Dashboard number', v => `<span style="font-family:'DM Mono',monospace">${esc(v.shown)}</span>`]].concat(base).concat([['Master row', v => 'GL 2026 row ' + v.m.row]]));
+  html += tbl('Dashboard payments not found in the master', C.noMatch, [['Dashboard number', v => esc(v.shown)]].concat(base));
+  html += tbl('Master payments not found on the dashboard', C.masterOnly, [['Master', m => esc(m.pv || '(blank)')], ['Date', m => formatDate(_agIso(m.day))], ['Description', m => esc(m.desc.slice(0, 70))], ['Amount', m => f(m.amt), 1], ['Row', m => m.row]]);
+  if (C.reused.length) html += `<div style="padding:8px 12px;font-size:12px;color:var(--text2)">The master uses the same PV number on different dates: ${C.reused.map(x => esc(x.pv) + ' (' + x.dates.map(formatDate).join(', ') + ')').join(' · ')} — check in the master.</div>`;
+  if (!C.changes.length && !C.masterBlank.length && !C.noMatch.length && !C.masterOnly.length) html = '<div style="padding:12px;font-size:12px;color:var(--text3);text-align:center">Every payment voucher carries the master\'s PV number.</div>' + html;
+  host.innerHTML = `<div class="card" style="margin-bottom:16px">${head(st, C.compared + ' payment vouchers compared with the master\'s GL 2026 tab · ' + C.matched + ' found. A master row without date and number continues the PV above it; several vouchers can make up one master payment.')}<div style="overflow-x:auto">${html}</div></div>`;
+}
+function applyMasterPvNumbers() {
+  const C = _SYNC_TALLY_LAST && _SYNC_TALLY_LAST.pvCheck;
+  if (!C || !C.ok || !C.changes.length) return;
+  if (!(SESSION && SESSION.user && (SESSION.user.name === 'Principal' || SESSION.user.role === 'admin'))) { toast('Only the Principal can apply PV numbers.', 'error'); return; }
+  if (!confirm('Show the master\'s PV number on ' + C.changes.length + ' payment voucher(s)?\n\n' + C.changes.slice(0, 12).map(v => v.shown + ' → ' + v.m.pv).join('\n') + (C.changes.length > 12 ? '\n…' : '') + '\n\nOnly the displayed number changes. The current list is backed up first.')) return;
+  const raw = localStorage.getItem('seraya_pvno_overrides') || '{}';
+  const bk = 'seraya_pvno_overrides_backup_' + new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  try { localStorage.setItem(bk, raw); } catch(e) {}
+  let o = {}; try { o = JSON.parse(raw) || {}; } catch(e) {}
+  C.changes.forEach(v => { if (v.no) o[v.no] = v.m.pv; });
+  localStorage.setItem('seraya_pvno_overrides', JSON.stringify(o));   // synced via _pvno_overrides_blob
+  toast(C.changes.length + ' PV numbers now follow the master (backup: ' + bk + ').', 'success');
+  loadSyncTally();
 }
 
 function renderDebtorCheck(R) {
