@@ -17353,14 +17353,27 @@ function buildFollowMasterPlan(C, invoices, allocations) {
     const cs = {};   // line index -> custom split
     const csFor = x => cs[x.i] || (cs[x.i] = { ET: x.b.ET, Koay: x.b.Koay, Ivy: x.b.Ivy, KC: x.b.KC, Cecilia: x.b.Cecilia, retain: x.b.retain, retainAbot: x.b.abot, claude: x.b.claude, ssm: x.b.ssm, ceciliaFee: x.b.ceciliaFee, disb: x.b.disb });
     let bad = '';
-    _FM_P.forEach(k => {
-      const d = delta[k];
+    // Reductions first (they free retain), then increases; each spread over lines as needed.
+    _FM_P.slice().sort((p1, p2) => delta[p1] - delta[p2]).forEach(k => {
+      let d = delta[k];
       if (Math.abs(d) <= 0.005 || bad) return;
-      const x = d < 0 ? fee.reduce((m, y) => (y.b[k] > m.b[k] ? y : m), fee[0]) : main;
-      const c = csFor(x);
-      c[k] = r2(c[k] + d); c.retain = r2(c.retain - d);
-      if (c[k] < -0.005) bad = k + ' would go below zero on "' + String(x.l.desc || '').slice(0, 30) + '"';
-      if (c.retain < -0.005) bad = 'Seraya retain on "' + String(x.l.desc || '').slice(0, 30) + '" would go below zero (' + c.retain.toFixed(2) + ')';
+      if (d < 0) {
+        fee.slice().sort((x, y) => (cs[y.i] ? cs[y.i][k] : y.b[k]) - (cs[x.i] ? cs[x.i][k] : x.b[k])).forEach(x => {
+          if (d > -0.005) return;
+          const c = csFor(x), take = Math.min(-d, c[k]);
+          if (take <= 0.005) return;
+          c[k] = r2(c[k] - take); c.retain = r2(c.retain + take); d = r2(d + take);
+        });
+        if (d < -0.005) bad = k + ' does not earn enough on this invoice\'s lines to take off ' + (-delta[k]).toFixed(2);
+      } else {
+        [main].concat(fee.filter(x => x !== main).sort((x, y) => (cs[y.i] ? cs[y.i].retain : y.b.retain) - (cs[x.i] ? cs[x.i].retain : x.b.retain))).forEach(x => {
+          if (d < 0.005) return;
+          const c = csFor(x), give = Math.min(d, Math.max(0, c.retain));
+          if (give <= 0.005) return;
+          c[k] = r2(c[k] + give); c.retain = r2(c.retain - give); d = r2(d - give);
+        });
+        if (d > 0.005) bad = 'Seraya retain on this invoice is not enough to give ' + k + ' +' + delta[k].toFixed(2);
+      }
     });
     if (bad) return skip(bad + ' — handle by hand');
     for (const i of Object.keys(cs)) {
