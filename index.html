@@ -16956,8 +16956,14 @@ function buildDebtorCheck(R) {
     return false;
   });
   const recon = {};
+  D.adjustments = []; D.adjusted = [];
   (M.outstanding_recon || []).forEach((r, i) => {
     const no = _mInvNo(r[0]);
+    // "Less: partial receipt …" lines below the list reduce the tab's total.
+    if (!no && /^\s*less\b/i.test(String(r[0] == null ? '' : r[0]))) {
+      for (let k = 1; k < r.length; k++) if (!blank(r[k])) { const v = _mNum(r[k]); D.adjustments.push({ label: String(r[0]).trim(), row: i + 1, amount: r2(v > 0 ? -v : v) }); break; }
+      return;
+    }
     if (!no || recon[no]) return;
     let amt = 0;
     for (let k = 2; k < r.length; k++) if (!blank(r[k])) { amt = _mNum(r[k]); break; }
@@ -16965,13 +16971,17 @@ function buildDebtorCheck(R) {
     D.recon.push(recon[no]);
     D.reconTotal += amt;
   });
-  D.reconTotal = r2(D.reconTotal);
+  D.reconTotal = r2(D.reconTotal + D.adjustments.reduce((t, a) => t + a.amount, 0));
   D.hasRecon = !!M.outstanding_recon;
   if (D.hasRecon) {
     Object.keys(outs).sort().forEach(no => {
       const o = outs[no], m = recon[_mInvNo(no)];
       if (!m) D.notInRecon.push(o);
-      else if (Math.abs(m.amount - o.out) > MASTER_TOL) D.amountDiffers.push({ inv_no: no, client: o.client, dash: o.out, master: m.amount, row: m.row });
+      else if (Math.abs(m.amount - o.out) > MASTER_TOL) {
+        const adj = D.adjustments.find(a => !a.used && Math.abs(m.amount + a.amount - o.out) <= MASTER_TOL);
+        if (adj) { adj.used = no; D.adjusted.push({ inv_no: no, master: m.amount, adj: adj.amount, row: adj.row, out: o.out }); }
+        else D.amountDiffers.push({ inv_no: no, client: o.client, dash: o.out, master: m.amount, row: m.row });
+      }
     });
     const outNos = new Set(Object.keys(outs).map(_mInvNo));
     D.recon.forEach(m => { if (!outNos.has(m.inv_no)) D.reconNotOutstanding.push(m); });
@@ -17000,7 +17010,7 @@ function renderDebtorCheck(R) {
     ${line('<strong>Dashboard</strong> — ' + D.count + ' invoices outstanding (amount − receipts)', D.dash)}
     ${line('<strong>Master</strong> — trade debtor', D.master, D.cell ? '<span style="color:var(--text3)">' + esc(D.cell) + '</span>' : '<span style="color:var(--red)">no row labelled "Trade debtor" in the Balance Sheet tab</span>')}
     ${line('Difference (dashboard − master)', D.diff, D.diff != null && Math.abs(D.diff) <= MASTER_TOL ? '<span style="color:var(--green)">✓</span>' : '')}
-    ${D.hasRecon ? line('Master Client Outstanding Recon tab — ' + D.recon.length + ' invoices listed', D.reconTotal, Math.abs(D.reconTotal - D.dash) <= MASTER_TOL ? '<span style="color:var(--green)">✓ = dashboard</span>' : '<span style="color:var(--amber)">update the tab by hand (list below)</span>') : ''}
+    ${D.hasRecon ? line('Master Client Outstanding Recon tab — ' + D.recon.length + ' invoices listed' + (D.adjustments.length ? ', less ' + D.adjustments.map(a => esc(a.label.slice(0, 40)) + ' ' + f(a.amount)).join(', ') : '') + (D.adjusted.length ? '<br><span style="color:var(--text3);font-size:11px">' + D.adjusted.map(a => esc(a.inv_no) + ' listed at ' + f(a.master) + ', less ' + f(-a.adj) + ' (tab row ' + a.row + ') = ' + f(a.out) + ' ✓').join('; ') + '</span>' : ''), D.reconTotal, Math.abs(D.reconTotal - D.dash) <= MASTER_TOL ? '<span style="color:var(--green)">✓ = dashboard</span>' : '<span style="color:var(--amber)">update the tab by hand (list below)</span>') : ''}
   </tbody></table>`;
   const tbl = (title, rows, cols) => rows.length ? `<div style="font-size:12px;font-weight:600;margin:10px 12px 4px">${title}</div><table><thead><tr>${cols.map(c => `<th style="font-size:11px;${c[2] ? 'text-align:right' : ''}">${c[0]}</th>`).join('')}</tr></thead><tbody>${rows.map(r => '<tr>' + cols.map(c => td(c[1](r), c[2])).join('') + '</tr>').join('')}</tbody></table>` : '';
   html += tbl('Outstanding on the dashboard but not in the master\'s Client Outstanding Recon tab — add them there', D.notInRecon,
