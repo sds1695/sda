@@ -16004,7 +16004,7 @@ async function loadSyncTally() {
   const raw = {}, loadErr = [];
   names.forEach((n, i) => {
     const r = calls[i];
-    if (r && r.ok) raw[n] = r.data;
+    if (r && r.ok) raw[n] = (n === 'master') ? r : r.data;
     else if (n === 'backend') raw[n] = { _unknown: /unknown action/i.test((r && r.error) || ''), _error: (r && r.error) || 'no response' };
     else if (n === 'master') raw[n] = { ok: false, error: (r && r.error) || 'no response' };
     else { raw[n] = null; loadErr.push(n + ': ' + ((r && r.error) || 'no response')); }
@@ -16017,7 +16017,7 @@ async function loadSyncTally() {
   if (!(R.backend.patch1_idempotency && R.backend.patch2_pv_numbers && R.backend.patch4)) R.issues++;
   R.master = raw.master && raw.master.ok !== false ? Object.assign({ ok: true }, raw.master) : (raw.master || { ok: false, error: 'not read' });
   if (R.master.ok && raw.invoices) {
-    try { R.masterCheck = buildMasterCheck(R.master, raw.invoices); if (R.masterCheck.rows.length) R.issues++; }
+    try { R.masterCheck = buildMasterCheck(R.master, raw.invoices, raw.allocations); if (R.masterCheck.rows.length) R.issues++; }
     catch(e) { R.master = { ok: false, error: 'check failed: ' + e.message }; }
   }
   R.at = new Date().toISOString();
@@ -16679,8 +16679,24 @@ function _mNum(v) {
 function _mInvNo(v) { const m = String(v == null ? '' : v).trim().toUpperCase().match(/^INV\d+/); return m ? m[0] : ''; }
 function _colLetter(i) { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
 
-function buildMasterCheck(M, invoices) {
+// People amounts of one saved allocation row (same rule as Invoice Breakdown's bucketAmts).
+function _allocPeople(a, into) {
+  const nk = n => { const c = _canonPerson(n); return c === 'Koay PH' ? 'Koay' : c; };
+  const pn = nk(a.preparer_name), rn = nk(a.reviewer_name);
+  if (pn && into.hasOwnProperty(pn)) into[pn] += parseFloat(a.preparer_amt || 0) || 0;
+  if (rn && into.hasOwnProperty(rn)) into[rn] += (parseFloat(a.reviewer_amt || 0) || 0) + (parseFloat(a.reviewer_top20 || 0) || 0);
+  into.KC += parseFloat(a.kc_commission || 0) || 0;
+  into.Koay += parseFloat(a.koay_commission || 0) || 0;
+  return pn;
+}
+
+function buildMasterCheck(M, invoices, allocations) {
   const out = { rows: [], matched: 0, compared: 0, notInMaster: [] };
+  const allocBy = {};
+  (allocations || []).forEach(a => {
+    if (String(a.inv_no || '').startsWith('_DUP_') || isVoided('allocations', String(a.alloc_id || ''))) return;
+    (allocBy[String(a.inv_id)] = allocBy[String(a.inv_id)] || []).push(a);
+  });
   // Due (to): an invoice's block = its row plus following rows with blank date and number.
   const due = {};
   let cur = null;
@@ -16715,13 +16731,21 @@ function buildMasterCheck(M, invoices) {
     out.compared++;
     const dash = { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 };
     const preps = {};
+    let src = 'lines';
     try {
-      _parseInvLines(inv).forEach(l => {
-        const b = _bucketForLine(l, inv) || {};
-        Object.keys(dash).forEach(k => { dash[k] += +b[k] || 0; });
-        const dd = b.__d || {};
-        if (dd.prepName && dd.prepAmt > 0.005) preps[_canonPerson(dd.prepName) === 'Koay PH' ? 'Koay' : _canonPerson(dd.prepName)] = 1;
-      });
+      const lines = _parseInvLines(inv);
+      if (lines.length) {
+        lines.forEach(l => {
+          const b = _bucketForLine(l, inv) || {};
+          Object.keys(dash).forEach(k => { dash[k] += +b[k] || 0; });
+          const dd = b.__d || {};
+          if (dd.prepName && dd.prepAmt > 0.005) preps[_canonPerson(dd.prepName) === 'Koay PH' ? 'Koay' : _canonPerson(dd.prepName)] = 1;
+        });
+      } else {
+        // Older invoices saved without line detail: the dashboard uses the allocation row.
+        src = 'allocation row';
+        (allocBy[String(inv.inv_id)] || []).forEach(a => { const pn = _allocPeople(a, dash); if (pn && parseFloat(a.preparer_amt || 0) > 0.005) preps[pn] = 1; });
+      }
     } catch(e) {}
     const issues = [], fix = [];
     const diffPeople = Object.keys(dash).filter(k => Math.abs(dash[k] - d.amt[k]) > MASTER_TOL);
@@ -16736,7 +16760,8 @@ function buildMasterCheck(M, invoices) {
     if (d.blocks > 1) issues.push('entered ' + d.blocks + ' times in Due (to) (rows ' + d.rows.join(', ') + ') — check for a duplicate');
     if (a) {
       const typed = _canonPerson(a.typed);
-      if (a.amtPerson && typed && typed !== a.amtPerson) {
+      const same = (x, y) => (x === 'Koay PH' ? 'Koay' : x) === (y === 'Koay PH' ? 'Koay' : y);
+      if (a.amtPerson && typed && !same(typed, a.amtPerson)) {
         issues.push('Allocation 2026 says "' + a.typed + '" but the preparer amount is in the ' + a.amtPerson + ' column');
         fix.push('Master: Allocation 2026 D' + a.row + ' → ' + a.amtPerson);
       }
@@ -16747,7 +16772,7 @@ function buildMasterCheck(M, invoices) {
         if (!diffPeople.length) fix.push('Dashboard: set the preparer of ' + no + ' to ' + mPrep);
       }
     }
-    if (issues.length) out.rows.push({ inv_no: no, client: inv.client_name, dash: fmtP(dash), master: fmtP(d.amt), dueRows: d.rows, allocRow: a ? a.row : null, issues, fix });
+    if (issues.length) out.rows.push({ inv_no: no, client: inv.client_name, dash: fmtP(dash) + (src !== 'lines' ? ' (from ' + src + ')' : ''), master: fmtP(d.amt), dueRows: d.rows, allocRow: a ? a.row : null, issues, fix });
     else out.matched++;
   });
   return out;
