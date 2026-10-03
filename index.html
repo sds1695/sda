@@ -16049,6 +16049,9 @@ async function runSyncTallyCheck(opts) {
   if (opts.sequential) { calls = []; for (const f of reqs) calls.push(await safe(f)); }
   else calls = await Promise.all(reqs.map(safe));
   const raw = {}, loadErr = [];
+  // Invoice lines name their preparer / reviewer through the allocation rows (ALLOCATIONS):
+  // compare only once those are loaded, or every preparer share would read as zero.
+  if (!(typeof ALLOCATIONS !== 'undefined' && (ALLOCATIONS || []).length) && typeof loadAllocations === 'function') { try { await loadAllocations(); } catch(e) {} }
   names.forEach((n, i) => {
     const r = calls[i];
     if (r && r.ok) raw[n] = (n === 'master') ? r : r.data;
@@ -16062,6 +16065,8 @@ async function runSyncTallyCheck(opts) {
   R.backend = (raw.backend && !raw.backend._unknown && !raw.backend._error) ? raw.backend : (raw.backend || {});
   if (!(R.backend.patch1_idempotency && R.backend.patch2_pv_numbers && R.backend.patch4)) R.issues++;
   R.master = raw.master && raw.master.ok !== false ? Object.assign({ ok: true }, raw.master) : (raw.master || { ok: false, error: 'not read' });
+  R.allocLoaded = !!(typeof ALLOCATIONS !== 'undefined' && (ALLOCATIONS || []).length);
+  if (R.master.ok && raw.invoices && !R.allocLoaded) R.master = { ok: false, error: 'allocation rows not loaded yet — re-run the check' };
   if (R.master.ok && raw.invoices) {
     try { R.masterCheck = buildMasterCheck(R.master, raw.invoices, raw.allocations); if (_masterOpenRows(R.masterCheck).length) R.issues++; }
     catch(e) { R.master = { ok: false, error: 'check failed: ' + e.message }; }
@@ -17353,6 +17358,8 @@ function buildFollowMasterPlan(C, invoices, allocations) {
     const cs = {};   // line index -> custom split
     const csFor = x => cs[x.i] || (cs[x.i] = { ET: x.b.ET, Koay: x.b.Koay, Ivy: x.b.Ivy, KC: x.b.KC, Cecilia: x.b.Cecilia, retain: x.b.retain, retainAbot: x.b.abot, claude: x.b.claude, ssm: x.b.ssm, ceciliaFee: x.b.ceciliaFee, disb: x.b.disb });
     let bad = '';
+    // Freeze every fee line at its current split first, so no line depends on the others any more.
+    raw.forEach((l, i) => { const amt = parseFloat(l.amt) || 0; if (!l.isDisb && amt > 0 && (raw.length > 1)) csFor({ i, l, b: _fmLineBuckets(l, inv), amt }); });
     // Reductions first (they free retain), then increases; each spread over lines as needed.
     _FM_P.slice().sort((p1, p2) => delta[p1] - delta[p2]).forEach(k => {
       let d = delta[k];
@@ -17382,11 +17389,22 @@ function buildFollowMasterPlan(C, invoices, allocations) {
       const sum = r2(Object.values(c).reduce((t, v) => t + v, 0));
       if (Math.abs(sum - (parseFloat(raw[i].amt) || 0)) > 0.02) return skip('split does not add up to the line (' + sum.toFixed(2) + ' vs ' + raw[i].amt + ')');
     }
-    const lines = raw.map((l, i) => cs[i] ? Object.assign({}, l, { alloc: 'custom', customSplit: cs[i] }) : l);
+    // Other lines can depend on the whole invoice (e.g. a commission base), so check with the
+    // NEW lines as context and put any remaining difference on the custom-split line.
     const ti = main.i;
-    // proof: recompute exactly as section 9 does
-    const after = { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 };
-    _parseInvLines(Object.assign({}, inv, { desc1: JSON.stringify(lines) })).forEach(l => { const bb = _bucketForLine(l, inv) || {}; Object.keys(after).forEach(k => { after[k] += +bb[k] || 0; }); after.Cecilia += +bb.ceciliaFee || 0; });
+    const calc = ls => { const ni = Object.assign({}, inv, { desc1: JSON.stringify(ls) }), t = { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 };
+      _parseInvLines(ni).forEach(l => { const bb = _bucketForLine(l, ni) || {}; Object.keys(t).forEach(k => { t[k] += +bb[k] || 0; }); t.Cecilia += +bb.ceciliaFee || 0; }); return t; };
+    const build = () => raw.map((l, i) => cs[i] ? Object.assign({}, l, { alloc: 'custom', customSplit: Object.fromEntries(Object.entries(cs[i]).filter(([, v]) => Math.abs(v) >= 0.005)) }) : l);
+    let lines = build(), after = calc(lines);
+    for (let it = 0; it < 6 && !bad; it++) {
+      const res = {}; _FM_P.forEach(k => { res[k] = r2(master[k] - after[k]); });
+      if (_FM_P.every(k => Math.abs(res[k]) <= 0.005)) break;
+      const c = cs[main.i] || cs[Object.keys(cs)[0]];
+      _FM_P.forEach(k => { if (Math.abs(res[k]) > 0.005) { c[k] = r2((c[k] || 0) + res[k]); c.retain = r2((c.retain || 0) - res[k]); } });
+      if (Object.values(c).some(v => v < -0.005)) bad = 'could not settle the split on the main line';
+      lines = build(); after = calc(lines);
+    }
+    if (bad) return skip(bad + ' — handle by hand');
     const off = Object.keys(after).filter(k => Math.abs(after[k] - master[k]) > MASTER_TOL);
     if (off.length) return skip('could not reach the master amounts (' + off.join(', ') + ')');
     out.ready.push({ inv_no: x.inv_no, inv_id: inv.inv_id, client: x.client, before: dash, after, master, delta, retain: r2(-moved), line: raw[ti].desc || ('line ' + (ti + 1)), desc1: JSON.stringify(lines), paidByLines, oldDesc1: inv.desc1 || '' });
@@ -17397,7 +17415,7 @@ function renderFollowMaster(R) {
   const host = document.getElementById('st-follow');
   if (!host) return;
   const C = R.masterCheck, canApply = !!(SESSION && SESSION.user && (SESSION.user.name === 'Principal' || SESSION.user.role === 'admin'));
-  if (!C || !R.master || !R.master.ok) { host.innerHTML = ''; return; }
+  if (!C || !R.master || !R.master.ok || !R.allocLoaded) { host.innerHTML = ''; return; }
   const raw = _SYNC_TALLY_RAW || {};
   const P = window._FOLLOW_PLAN = buildFollowMasterPlan(C, raw.invoices, raw.allocations);
   if (!P.ready.length && !P.skipped.length) { host.innerHTML = ''; return; }
