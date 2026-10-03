@@ -16709,6 +16709,12 @@ function buildMasterCheck(M, invoices, allocations) {
       due[cur] = due[cur] || { rows: [], amt: { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 }, total: 0, blocks: 0 };
       due[cur].blocks++;
     } else if (!cur) return;
+    else {
+      // A continuation row ("- MITRS", "- disbursements") has a description and nothing in C.
+      // Blank rows, totals rows and labelled summary rows end the block.
+      const c2 = String(r[2] == null ? '' : r[2]).trim(), c3 = String(r[3] == null ? '' : r[3]).trim();
+      if (!c3 || c2) { cur = null; return; }
+    }
     due[cur].rows.push(i + 1);
     Object.keys(MASTER_DUE_COLS).forEach(p => { due[cur].amt[p] += _mNum(r[MASTER_DUE_COLS[p]]); });
     due[cur].total += _mNum(r[MASTER_DUE_AMT]);
