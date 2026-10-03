@@ -1570,6 +1570,7 @@
       <div id="st-fix"></div>
       <div id="st-body"></div>
       <div id="st-master"></div>
+      <div id="st-follow"></div>
       <div id="st-debtors"></div>
       <div id="st-pvnos"></div>
     </div>
@@ -16026,6 +16027,7 @@ async function loadSyncTally() {
   renderSyncTally(R);
   try { renderSyncFixPanel(R); } catch(e) { console.warn('fix panel failed', e); }
   try { renderMasterCheck(R); } catch(e) { console.warn('master check failed', e); }
+  try { renderFollowMaster(R); } catch(e) { console.warn('follow master failed', e); }
   try { renderDebtorCheck(R); } catch(e) { console.warn('debtor check failed', e); }
   try { renderPvCheck(R); } catch(e) { console.warn('pv check failed', e); }
   try { _autoCheckFromReport(R); } catch(e) {}
@@ -17292,6 +17294,132 @@ function downloadMasterAdvice() {
   a.href = URL.createObjectURL(new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv' }));
   a.download = 'Dashboard-vs-Master_suggested-actions_' + new Date().toISOString().slice(0, 10) + '.csv';
   document.body.appendChild(a); a.click(); a.remove();
+}
+
+
+// ── Section 9: follow the master (added 2026-10-04, Peter: "yes follow master") ──
+// For each open difference where the people amounts differ, rewrite the invoice's LINES so
+// each person gets the master's amount: the largest fee line becomes a custom split holding
+// its current firm buckets (retain, Abot, Claude, SSM, Cecilia fee, disbursement) with the
+// person amounts moved to the master's; the net change goes to / comes from Seraya's retain.
+// Only the invoice lines (desc1) are written — allocation rows are never re-saved, because a
+// re-save replaces the row and the per-person "paid" ticks would no longer find it.
+// Single-line invoices are paid out from their allocation row: when that row already equals
+// the master, only the lines change (reports); when it does not, the invoice is left for
+// Allocation Setup and listed.
+const _FM_P = ['ET', 'Koay', 'Ivy', 'KC'];
+function _fmLineBuckets(l, inv) {
+  const t = { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0, retain: 0, abot: 0, disb: 0, ceciliaFee: 0, ssm: 0, claude: 0 };
+  _parseInvLines(Object.assign({}, inv, { desc1: JSON.stringify([l]) })).forEach(x => {
+    const b = _bucketForLine(x, inv) || {};
+    Object.keys(t).forEach(k => { t[k] += +b[k] || 0; });
+  });
+  return t;
+}
+function buildFollowMasterPlan(C, invoices, allocations) {
+  const r2 = n => Math.round(n * 100) / 100;
+  const out = { ready: [], skipped: [] };
+  const byNo = {};
+  (invoices || []).forEach(i => { if (String(i.status || '').toLowerCase() !== 'cancelled' && !isDeleted('invoices', String(i.inv_id || ''))) byNo[_mInvNo(i.inv_no)] = i; });
+  const parse = str => { const o = { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 }; Object.keys(o).forEach(k => { const m = String(str || '').match(new RegExp('\\b' + k + ' (-?[\\d.]+)')); if (m) o[k] = +m[1]; }); return o; };
+  _masterOpenRows(C).forEach(x => {
+    const kinds = (x.advice || []).map(a => a.kind);
+    if (kinds.some(k => k === 'twice' || k === 'lump' || k === 'total')) return;
+    const inv = byNo[x.inv_no];
+    const skip = why => out.skipped.push({ inv_no: x.inv_no, client: x.client, why });
+    if (!inv) return skip('invoice not found');
+    const master = parse(x.master), dash = parse(x.dash.replace(/\(from .*\)$/, ''));
+    const delta = {}; let moved = 0;
+    _FM_P.forEach(k => { delta[k] = r2(master[k] - dash[k]); moved += delta[k]; });
+    moved = r2(moved);
+    if (_FM_P.every(k => Math.abs(delta[k]) <= MASTER_TOL)) return skip('only the preparer name differs — no money; tick ✓ Reviewed');
+    if (Math.abs(master.Cecilia - dash.Cecilia) > MASTER_TOL) return skip('Cecilia differs — handle by hand');
+    let raw = [];
+    try { raw = JSON.parse(inv.desc1 || '[]'); } catch(e) {}
+    if (!Array.isArray(raw) || !raw.length) return skip('older invoice without line detail — change it in Allocation Setup');
+    const paidByLines = _parseInvLines(inv).length >= 2;
+    if (!paidByLines) {
+      const a = { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 };
+      (allocations || []).filter(r => String(r.inv_id) === String(inv.inv_id) && !String(r.inv_no || '').startsWith('_DUP_') && !isVoided('allocations', String(r.alloc_id || ''))).forEach(r => _allocPeople(r, a));
+      if (_FM_P.some(k => Math.abs(a[k] - master[k]) > MASTER_TOL))
+        return skip('paid out from its allocation row, which also differs (' + _FM_P.filter(k => Math.abs(a[k] - master[k]) > MASTER_TOL).map(k => k + ' ' + r2(a[k]).toFixed(2) + ' vs ' + master[k].toFixed(2)).join(', ') + ') — change it in Allocation Setup');
+    }
+    // Each person's change is made on one fee line: a reduction on the line where that person
+    // earns most, an increase on the largest fee line. The same line's retain takes the other side.
+    const fee = raw.map((l, i) => ({ i, l, b: _fmLineBuckets(l, inv), amt: parseFloat(l.amt) || 0 }))
+      .filter(x => !x.l.isDisb && x.b.ceciliaFee <= 0.005 && !/^(cosec|disbursement)/i.test(String(x.l.lineType || '')) && x.amt > 0);
+    if (!fee.length) return skip('no fee line to adjust');
+    const main = fee.reduce((m, x) => x.amt > m.amt ? x : m, fee[0]);
+    const cs = {};   // line index -> custom split
+    const csFor = x => cs[x.i] || (cs[x.i] = { ET: x.b.ET, Koay: x.b.Koay, Ivy: x.b.Ivy, KC: x.b.KC, Cecilia: x.b.Cecilia, retain: x.b.retain, retainAbot: x.b.abot, claude: x.b.claude, ssm: x.b.ssm, ceciliaFee: x.b.ceciliaFee, disb: x.b.disb });
+    let bad = '';
+    _FM_P.forEach(k => {
+      const d = delta[k];
+      if (Math.abs(d) <= 0.005 || bad) return;
+      const x = d < 0 ? fee.reduce((m, y) => (y.b[k] > m.b[k] ? y : m), fee[0]) : main;
+      const c = csFor(x);
+      c[k] = r2(c[k] + d); c.retain = r2(c.retain - d);
+      if (c[k] < -0.005) bad = k + ' would go below zero on "' + String(x.l.desc || '').slice(0, 30) + '"';
+      if (c.retain < -0.005) bad = 'Seraya retain on "' + String(x.l.desc || '').slice(0, 30) + '" would go below zero (' + c.retain.toFixed(2) + ')';
+    });
+    if (bad) return skip(bad + ' — handle by hand');
+    for (const i of Object.keys(cs)) {
+      const c = cs[i];
+      Object.keys(c).forEach(k => { c[k] = r2(c[k]); if (Math.abs(c[k]) < 0.005) delete c[k]; });
+      const sum = r2(Object.values(c).reduce((t, v) => t + v, 0));
+      if (Math.abs(sum - (parseFloat(raw[i].amt) || 0)) > 0.02) return skip('split does not add up to the line (' + sum.toFixed(2) + ' vs ' + raw[i].amt + ')');
+    }
+    const lines = raw.map((l, i) => cs[i] ? Object.assign({}, l, { alloc: 'custom', customSplit: cs[i] }) : l);
+    const ti = main.i;
+    // proof: recompute exactly as section 9 does
+    const after = { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 };
+    _parseInvLines(Object.assign({}, inv, { desc1: JSON.stringify(lines) })).forEach(l => { const bb = _bucketForLine(l, inv) || {}; Object.keys(after).forEach(k => { after[k] += +bb[k] || 0; }); after.Cecilia += +bb.ceciliaFee || 0; });
+    const off = Object.keys(after).filter(k => Math.abs(after[k] - master[k]) > MASTER_TOL);
+    if (off.length) return skip('could not reach the master amounts (' + off.join(', ') + ')');
+    out.ready.push({ inv_no: x.inv_no, inv_id: inv.inv_id, client: x.client, before: dash, after, master, delta, retain: r2(-moved), line: raw[ti].desc || ('line ' + (ti + 1)), desc1: JSON.stringify(lines), paidByLines, oldDesc1: inv.desc1 || '' });
+  });
+  return out;
+}
+function renderFollowMaster(R) {
+  const host = document.getElementById('st-follow');
+  if (!host) return;
+  const C = R.masterCheck, canApply = !!(SESSION && SESSION.user && (SESSION.user.name === 'Principal' || SESSION.user.role === 'admin'));
+  if (!C || !R.master || !R.master.ok) { host.innerHTML = ''; return; }
+  const raw = _SYNC_TALLY_RAW || {};
+  const P = window._FOLLOW_PLAN = buildFollowMasterPlan(C, raw.invoices, raw.allocations);
+  if (!P.ready.length && !P.skipped.length) { host.innerHTML = ''; return; }
+  const esc = _stEsc, f = n => (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n).toFixed(2);
+  const net = { ET: 0, Koay: 0, Ivy: 0, KC: 0 };
+  P.ready.forEach(r => _FM_P.forEach(k => { net[k] += r.paidByLines ? r.delta[k] : 0; }));
+  host.innerHTML = `<div class="card" style="margin-bottom:16px"><div class="card-header" style="align-items:flex-start"><div><div class="card-title">9a · Follow the master</div><div style="font-size:11px;color:var(--text3);margin-top:2px;font-weight:400">Rewrites each invoice's split so every person gets the master's amount (the difference goes to / from Seraya's retain). Only the invoice lines are written; allocation rows, amounts billed, receipts and "paid" ticks are not touched. Each invoice's old lines are kept in this browser as a backup.</div></div></div>
+    <div style="overflow-x:auto"><table><thead><tr><th style="font-size:11px">Invoice</th><th style="font-size:11px">Client</th><th style="font-size:11px">Change per person</th><th style="font-size:11px">Seraya retain</th><th style="font-size:11px">Payout</th></tr></thead><tbody>
+    ${P.ready.map(r => `<tr><td style="font-size:12px;font-family:'DM Mono',monospace">${esc(r.inv_no)}</td><td style="font-size:12px">${esc(r.client || '')}</td><td style="font-size:12px">${_FM_P.filter(k => Math.abs(r.delta[k]) > 0.005).map(k => k + ' ' + f(r.delta[k])).join(' · ')}</td><td style="font-size:12px;font-family:'DM Mono',monospace">${f(r.retain)}</td><td style="font-size:11px;color:var(--text3)">${r.paidByLines ? 'paid from the lines — earnings change' : 'paid from the allocation row (already = master) — reports only'}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div style="padding:8px 12px;font-size:12px">Net change to earnings: ${_FM_P.filter(k => Math.abs(net[k]) > 0.005).map(k => '<strong>' + k + ' ' + f(Math.round(net[k] * 100) / 100) + '</strong>').join(' · ') || 'none'}</div>
+    ${P.ready.length && canApply ? `<div style="padding:4px 12px 10px"><button class="btn btn-primary btn-sm" onclick="applyFollowMaster()">Follow the master on ${P.ready.length} invoice${P.ready.length === 1 ? '' : 's'}</button></div>` : ''}
+    ${P.skipped.length ? `<div style="padding:4px 12px 10px;font-size:12px"><div style="font-weight:600;margin-bottom:4px">Not changed automatically</div>${P.skipped.map(x => '<div><span style="font-family:\'DM Mono\',monospace">' + esc(x.inv_no) + '</span> ' + esc(x.client || '') + ' — ' + esc(x.why) + '</div>').join('')}</div>` : ''}
+  </div>`;
+}
+async function applyFollowMaster() {
+  const P = window._FOLLOW_PLAN;
+  if (!P || !P.ready.length) return;
+  if (!(SESSION && SESSION.user && (SESSION.user.name === 'Principal' || SESSION.user.role === 'admin'))) { toast('Only the Principal can do this.', 'error'); return; }
+  if (!confirm('Follow the master on ' + P.ready.length + ' invoice(s)?\n\n' + P.ready.map(r => r.inv_no + ': ' + _FM_P.filter(k => Math.abs(r.delta[k]) > 0.005).map(k => k + ' ' + (r.delta[k] > 0 ? '+' : '') + r.delta[k].toFixed(2)).join(', ')).join('\n') + '\n\nOnly the invoice lines change. Old lines are backed up in this browser.')) return;
+  let bk = {};
+  try { bk = JSON.parse(localStorage.getItem('seraya_follow_master_backup_v1') || '{}') || {}; } catch(e) {}
+  let ok = 0; const fails = [];
+  for (const r of P.ready) {
+    bk[r.inv_no] = { inv_id: r.inv_id, desc1: r.oldDesc1, at: new Date().toISOString() };
+    try { localStorage.setItem('seraya_follow_master_backup_v1', JSON.stringify(bk)); } catch(e) {}
+    let res;
+    try { res = await api({ action: 'save_invoice', data: { inv_id: r.inv_id, inv_no: r.inv_no, desc1: r.desc1 } }); } catch(e) { res = { ok: false, error: String(e) }; }
+    if (res && res.ok) {
+      ok++;
+      [INVOICES, window.INVOICES_RAW].forEach(arr => (arr || []).forEach(i => { if (String(i.inv_id) === String(r.inv_id)) i.desc1 = r.desc1; }));
+    } else fails.push(r.inv_no + ': ' + ((res && res.error) || 'no response'));
+  }
+  toast(ok + ' invoice(s) now follow the master' + (fails.length ? ' · failed: ' + fails.join('; ') : ''), fails.length ? 'error' : 'success');
+  loadSyncTally();
 }
 
 // Differences the Principal has looked at and accepted. Keyed by invoice; the stored
