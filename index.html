@@ -17023,6 +17023,10 @@ function _masterAdvice(c) {
   const inv = +c.invAmt || 0, mt = +c.dTotal || 0;
   if ((c.starts || []).length > 1) {
     const last = c.starts[c.starts.length - 1];
+    if (last - c.starts[c.starts.length - 2] <= 2) {
+      out.push({ kind: 'twice', text: 'Appears on rows ' + c.starts.join(' and ') + ' of Due (to), next to each other: check whether it is one invoice entered over two rows or a duplicate; delete row ' + last + ' only if it is a duplicate (Peter, in the master).' });
+      return out;
+    }
     out.push({ kind: 'twice', text: 'Entered ' + c.starts.length + ' times in Due (to) (rows ' + c.starts.join(' and ') + '): delete the stray master entry at row ' + last + ' (Peter, in the master).' });
     return out;
   }
@@ -17036,6 +17040,15 @@ function _masterAdvice(c) {
   }
   if (inv > 0 && mt > inv + MASTER_TOL && mt / inv >= 1.5) {
     out.push({ kind: 'lump', text: 'The master records a lump / grouped amount (RM' + r2(mt).toFixed(2) + ' vs this invoice RM' + inv.toFixed(2) + '). Usually accept (✓ Reviewed).' });
+    return out;
+  }
+  const dSum = people.reduce((t, k) => t + (c.dash[k] || 0), 0), mSum = people.reduce((t, k) => t + ((c.master || {})[k] || 0), 0);
+  if (deltas.length && dSum > 0 && mSum >= 1.5 * dSum && deltas.every(x => x.d < 0)) {
+    out.push({ kind: 'lump', text: 'The master pays out RM' + r2(mSum).toFixed(2) + ' on this invoice against RM' + r2(dSum).toFixed(2) + ' on the dashboard — a lump / grouped entry covering other invoices. Usually accept (✓ Reviewed).' });
+    return out;
+  }
+  if (!deltas.length && !c.prep && inv > 0 && mt > 0 && Math.abs(mt - inv) > MASTER_TOL) {
+    out.push({ kind: 'total', text: 'Invoice total differs (dashboard RM' + inv.toFixed(2) + ', master RM' + r2(mt).toFixed(2) + '; the people amounts agree). Check the invoice against the master Due (to) column F row ' + (c.rows || [])[0] + '; correct whichever side is wrong' + ok + '.' });
     return out;
   }
   if (c.prep) out.push({ kind: 'preparer', text: 'Set the dashboard preparer of ' + c.no + ' to ' + c.prep + ' (master)' + ok + '.' });
@@ -17080,7 +17093,7 @@ function markMasterReviewed(invNo, on) {
   try { _autoCheckFromReport(_SYNC_TALLY_LAST); } catch(e) {}
 }
 
-const _MASTER_KIND = { twice: 'entered twice', lump: 'lump / grouped', preparer: 'preparer', topup: 'RM20 top-up', split: 'split' };
+const _MASTER_KIND = { twice: 'entered twice', lump: 'lump / grouped', preparer: 'preparer', topup: 'RM20 top-up', split: 'split', total: 'invoice total' };
 function renderMasterCheck(R) {
   const host = document.getElementById('st-master');
   if (!host) return;
