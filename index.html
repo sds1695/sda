@@ -1373,13 +1373,29 @@
       </div>
     </div>
 
-    <!-- ══ DEBTOR AGING ══ -->
+    <!-- ══ DEBTOR AGING ══ (rebuilt 2026-10-03: as-at date, per debtor, credit terms) -->
     <div class="page" id="page-aging">
       <div class="page-header">
-        <div class="page-title">Debtor Aging Analysis</div>
-        <div class="page-sub">Outstanding invoices aged by days overdue from invoice date</div>
+        <div class="page-title">Debtor Aging</div>
+        <div class="page-sub">Outstanding at the as-at date, per debtor. Invoices dated on or before the date, less receipts dated on or before it.</div>
+        <div class="page-actions">
+          <button class="btn btn-secondary btn-sm" onclick="exportAgingCSV()">⬇ Export (Excel / CSV)</button>
+          <button class="btn btn-secondary btn-sm" onclick="printAging()">🖨 Print</button>
+        </div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-bottom:20px">
+      <div class="card" style="padding:12px 16px;margin-bottom:16px;display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end">
+        <div><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:3px">As at</label>
+          <input type="date" id="ag-asat" onchange="renderAging()" style="padding:5px 8px" />
+          <button class="btn btn-ghost btn-sm" onclick="setAgingAsAt('today')">Today</button>
+          <button class="btn btn-ghost btn-sm" onclick="setAgingAsAt('month')">Last month-end</button>
+          <button class="btn btn-ghost btn-sm" onclick="setAgingAsAt('dec')">31 Dec</button></div>
+        <div><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:3px">Debtor</label>
+          <select id="ag-group" onchange="renderAging()" style="padding:5px 8px"><option value="billing">Billing party</option><option value="client">End client</option></select></div>
+        <div><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:3px">Age from</label>
+          <select id="ag-basis" onchange="renderAging()" style="padding:5px 8px"><option value="invoice">Invoice date</option><option value="due">Due date (date + credit terms)</option></select></div>
+        <div style="font-size:11px;color:var(--text3);max-width:320px">Credit terms are set per client in the Client Registry (default <span id="ag-default-terms">0</span> days = cash on delivery).</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:12px">
         <div class="metric-card"><div class="metric-label">Current (0–30d)</div><div class="metric-value green" id="ag-current">—</div></div>
         <div class="metric-card"><div class="metric-label">31–60 days</div><div class="metric-value" id="ag-30" style="color:var(--blue)">—</div></div>
         <div class="metric-card"><div class="metric-label">61–90 days</div><div class="metric-value amber" id="ag-60">—</div></div>
@@ -1388,20 +1404,8 @@
         <div class="metric-card"><div class="metric-label">&gt; 1 year</div><div class="metric-value red" id="ag-365">—</div></div>
         <div class="metric-card" style="border-left:3px solid #0a7d3e"><div class="metric-label">Total Outstanding</div><div class="metric-value" id="ag-total" style="color:var(--text)">—</div><div id="ag-total-count" style="font-size:10px;color:var(--text3);margin-top:2px">— invoices</div></div>
       </div>
-      <div class="card">
-        <table>
-          <thead><tr>
-            <th onclick="setAgingSort('inv_no')"  style="cursor:pointer;user-select:none">Invoice <span class="ag-arrow" data-col="inv_no"></span></th>
-            <th onclick="setAgingSort('date')"    style="cursor:pointer;user-select:none">Date <span class="ag-arrow" data-col="date"></span></th>
-            <th onclick="setAgingSort('client')"  style="cursor:pointer;user-select:none">Client <span class="ag-arrow" data-col="client"></span></th>
-            <th onclick="setAgingSort('billing')" style="cursor:pointer;user-select:none">Billing Party <span class="ag-arrow" data-col="billing"></span></th>
-            <th onclick="setAgingSort('amount')"  style="cursor:pointer;user-select:none;text-align:right">Amount (RM) <span class="ag-arrow" data-col="amount"></span></th>
-            <th onclick="setAgingSort('days')"    style="cursor:pointer;user-select:none">Days <span class="ag-arrow" data-col="days"></span></th>
-            <th onclick="setAgingSort('bucket')"  style="cursor:pointer;user-select:none">Bucket <span class="ag-arrow" data-col="bucket"></span></th>
-          </tr></thead>
-          <tbody id="ag-tbody"></tbody>
-        </table>
-      </div>
+      <div id="ag-tie" style="font-size:12px;margin-bottom:12px"></div>
+      <div class="card"><div style="overflow-x:auto" id="ag-matrix"><div style="padding:30px;text-align:center;color:var(--text3)">Loading…</div></div></div>
     </div>
 
     <!-- ══ RETENTION RECON ══ -->
@@ -2140,6 +2144,7 @@
         <div class="form-field form-full"><label>Client Address (registered)</label><textarea id="cl-client-addr" rows="3"></textarea></div>
         <div class="form-field"><label>Year-end (MM-DD)</label><input type="text" id="cl-year-end" placeholder="e.g. Dec 31 (or 12-31)" maxlength="20" /></div>
         <div class="form-field"><label>Anniversary of Incorporation (DD Month)</label><input type="text" id="cl-inc-date" placeholder="e.g. 28 Feb (or 02-28)" maxlength="20" /></div>
+        <div class="form-field"><label>Credit terms (days)</label><input type="number" id="cl-terms" min="0" step="1" placeholder="0 = cash on delivery" /></div>
         <div class="form-field form-full">
           <label>Services this client uses (check all that apply)</label>
           <div id="cl-services-wrap" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px"></div>
@@ -7647,6 +7652,7 @@ function openClientModal(id) {
   }
   document.getElementById('cl-year-end').value = formatYearEnd(meta.year_end) || '';
   document.getElementById('cl-inc-date').value = meta.date_of_incorporation || '';
+  try { const t = id ? getCreditTerms()[id] : null; document.getElementById('cl-terms').value = t != null ? t : ''; } catch(e) {}
   if (id) {
     const c = CLIENTS.find(x => x.client_id === id);
     if (!c) return;
@@ -8555,6 +8561,7 @@ async function saveClient() {
   // even before a fresh fetch). Source of truth is still the Sheet.
   if (id) {
     setClientMeta(id, { services, year_end, date_of_incorporation: inc_date });
+    try { setCreditTerms(id, document.getElementById('cl-terms').value); } catch(e) {}
     try { setClientQuotationsLocal(id, quotations); } catch(e) { console.warn('quotations local mirror failed', e); }
   }
 
@@ -16048,6 +16055,8 @@ function _autoCheckCached() { try { return JSON.parse(localStorage.getItem(AUTOC
 function _autoCheckFromReport(R) {
   if (!R || !_autoCheckAllowed()) return null;
   const st = { at: R.at, areas: syncTallyAreas(R), loadErrors: R.loadErrors || [] };
+  const TD = R.debtors;
+  if (TD && TD.ok) st.td = { ok: true, dash: TD.dash, master: TD.master, cell: TD.cell };
   try { localStorage.setItem(AUTOCHECK_KEY, JSON.stringify(st)); } catch(e) {}
   renderAutoCheckCard(st);
   return st;
@@ -21082,139 +21091,199 @@ function deleteTeamMember(){
 // ── Recovered functions from backup ──
 
 // ── Aging sort state (persisted in-session) ──
-// Default sort: days desc (oldest first), so most overdue surface at the top.
-window.__AGING_SORT = window.__AGING_SORT || { col: 'days', dir: 'desc' };
-window.__AGING_ROWS = window.__AGING_ROWS || [];
-
-function setAgingSort(col) {
-  const s = window.__AGING_SORT;
-  if (s.col === col) s.dir = (s.dir === 'asc' ? 'desc' : 'asc');
-  else { s.col = col; s.dir = (col === 'days' || col === 'amount' || col === 'date') ? 'desc' : 'asc'; }
-  _renderAgingTable();
+// ── Debtor aging (rebuilt 2026-10-03) ─────────────────────────────────────
+// Pure builder (buildAgingReport) + page. As-at: invoices dated ≤ as-at that are not cancelled
+// or deleted; outstanding = amount − receipts dated ≤ as-at (receipt matched by inv_id first —
+// a cancelled copy resolves to the live invoice with the same number — then inv_no; __VOID__
+// and hidden receipts ignored). The invoice status field is not used (it reflects today).
+const CREDIT_TERMS_KEY = 'seraya_credit_terms_v1';   // { client_id: days } — synced via _credit_terms_blob
+const AG_BUCKETS = [['current', 'Current'], ['d30', '31–60'], ['d60', '61–90'], ['d90', '91–120'], ['d120', '121–365'], ['d365', '> 1 yr']];
+function getCreditTerms() { try { return JSON.parse(localStorage.getItem(CREDIT_TERMS_KEY) || '{}') || {}; } catch(e) { return {}; } }
+function setCreditTerms(clientId, days) {
+  if (!clientId) return;
+  const m = getCreditTerms();
+  const n = parseInt(days, 10);
+  if (isNaN(n) || n <= 0) delete m[clientId]; else m[clientId] = n;
+  try { localStorage.setItem(CREDIT_TERMS_KEY, JSON.stringify(m)); } catch(e) {}
+}
+function _agDefaultTerms() { const n = parseInt((typeof SETTINGS !== 'undefined' && SETTINGS && SETTINGS.payment_terms) || 0, 10); return isNaN(n) ? 0 : n; }
+// Day number of a date: 'YYYY-MM-DD…' as written, else any date string the Sheet returns ("Wed Feb 25 2026 00:00:00 GMT+0800") in local time.
+function _agDay(v) {
+  const t = String(v == null ? '' : v).trim();
+  const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);   // a timestamp ('…T16:00:00Z') goes through new Date (local day)
+  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000;
+  if (!t) return null;
+  const d = new Date(t);
+  return isNaN(d) ? null : Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000;
+}
+function _agIso(dayNo) { return new Date(dayNo * 86400000).toISOString().slice(0, 10); }
+function _agLocalToday() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function _agBucket(days) { return days <= 30 ? 'current' : days <= 60 ? 'd30' : days <= 90 ? 'd60' : days <= 120 ? 'd90' : days <= 365 ? 'd120' : 'd365'; }
+function _agReceiptVisible(r) {
+  const id = String(r.receipt_id || r.id || '');
+  const sup = window.RECEIPT_SUPPRESS_IDS || new Set();
+  if (String(r.notes || '').startsWith('__VOID__')) return false;
+  if (sup.has(id) || isDeleted('receipts', id) || isVoided('receipts', id) || isVoidedReceiptNo(r)) return false;
+  return true;
 }
 
-// Bucket ordinal — current → 1y+ — so sort-by-bucket is meaningful
-const _AG_BUCKET_ORD = { current:0, d30:1, d60:2, d90:3, d120:4, d365:5 };
-
-function _renderAgingTable() {
-  const tbody = document.getElementById('ag-tbody');
-  if (!tbody) return;
-  const rows = (window.__AGING_ROWS || []).slice();
-  const { col, dir } = window.__AGING_SORT;
-  const mul = (dir === 'asc' ? 1 : -1);
-  const getKey = r => {
-    switch (col) {
-      case 'inv_no':  return (r.inv_no || '').toString();
-      case 'date':    return r.date_iso || '';
-      case 'client':  return (r.client || '').toString().toLowerCase();
-      case 'billing': return (r.billing || '').toString().toLowerCase();
-      case 'amount':  return r.amt;
-      case 'days':    return r.days;
-      case 'bucket':  return _AG_BUCKET_ORD[r.bucket] ?? 99;
-      default:        return r.days;
-    }
-  };
-  rows.sort((a,b) => {
-    const ka = getKey(a), kb = getKey(b);
-    if (typeof ka === 'number' && typeof kb === 'number') return (ka - kb) * mul;
-    return String(ka).localeCompare(String(kb)) * mul;
+function buildAgingReport(invoices, receipts, opts) {
+  opts = opts || {};
+  const r2 = n => Math.round(n * 100) / 100;
+  const asAt = opts.asAt || _agLocalToday(), asDay = _agDay(asAt);
+  const terms = opts.terms || {}, defTerms = opts.defaultTerms || 0;
+  const clients = opts.clients || [];
+  const byName = {};
+  clients.forEach(c => { if (c && c.name) byName[String(c.name).trim().toLowerCase()] = c; });
+  const dead = i => String(i.status || '').toLowerCase() === 'cancelled' || isDeleted('invoices', String(i.inv_id || ''));
+  const byId = {}, liveByNo = {};
+  (invoices || []).forEach(i => {
+    if (i.inv_id) byId[String(i.inv_id)] = i;
+    const no = String(i.inv_no || '').trim();
+    if (no && !dead(i) && !liveByNo[no]) liveByNo[no] = i;
   });
-  tbody.innerHTML = rows.map(r => r.html).join('');
-  // Update arrow indicators
-  document.querySelectorAll('.ag-arrow').forEach(sp => {
-    sp.textContent = (sp.dataset.col === col) ? (dir === 'asc' ? '▲' : '▼') : '';
-    sp.style.color = 'var(--text3)';
-    sp.style.fontSize = '10px';
+  // Receipts dated ≤ as-at, per live invoice.
+  const voidAuto = (typeof computeVoidReceiptIds === 'function') ? computeVoidReceiptIds(receipts || []) : new Set();
+  const paid = {}, unlinked = [];
+  (receipts || []).forEach(r => {
+    if (!_agReceiptVisible(r) || voidAuto.has(String(r.receipt_id || ''))) return;
+    const d = _agDay(r.date);
+    if (d == null || d > asDay) return;
+    let inv = byId[String(r.inv_id || '')];
+    if (inv && dead(inv)) inv = liveByNo[String(inv.inv_no || '').trim()] || null;
+    if (!inv) inv = liveByNo[String(r.inv_no || '').trim()] || null;
+    if (!inv || dead(inv)) { unlinked.push(r); return; }
+    paid[inv.inv_id] = (paid[inv.inv_id] || 0) + (parseFloat(r.amount) || 0);
   });
+  const groups = {}, over = [];
+  const tot = { current: 0, d30: 0, d60: 0, d90: 0, d120: 0, d365: 0, total: 0, fees: 0, disb: 0, n: 0 };
+  (invoices || []).forEach(i => {
+    if (dead(i)) return;
+    const id = _agDay(i.date || i.inv_date);
+    if (id == null || id > asDay) return;
+    const amt = parseFloat(i.amount) || 0;
+    if (amt <= 0) return;
+    const recd = r2(paid[i.inv_id] || 0);
+    const out = r2(amt - recd);
+    if (out < -0.005) over.push({ inv_no: i.inv_no, client: i.client_name, amount: amt, received: recd });
+    if (out <= 0.005) return;
+    const cl = (i.client_id && clients.find(c => String(c.client_id) === String(i.client_id))) || byName[String(i.client_name || '').trim().toLowerCase()] || null;
+    const cid = cl ? String(cl.client_id) : String(i.client_id || '');
+    const t = (cid && terms[cid] != null) ? (parseInt(terms[cid], 10) || 0) : defTerms;
+    const dueDay = id + t;
+    const days = asDay - (opts.basis === 'due' ? dueDay : id);
+    const bucket = _agBucket(days);
+    const disbAmt = Math.min(Math.max(parseFloat(i.disb_amount) || 0, 0), amt);
+    const disb = r2(out * disbAmt / amt), fees = r2(out - disb);
+    const billing = String(i.billing_party || '').trim();
+    const key = opts.group === 'client' ? String(i.client_name || '(no client)').trim() : (billing || String(i.client_name || '(no client)').trim());
+    const g = groups[key] = groups[key] || { key, label: key, direct: opts.group !== 'client' && !billing, current: 0, d30: 0, d60: 0, d90: 0, d120: 0, d365: 0, total: 0, fees: 0, disb: 0, invoices: [] };
+    g[bucket] = r2(g[bucket] + out); g.total = r2(g.total + out); g.fees = r2(g.fees + fees); g.disb = r2(g.disb + disb);
+    g.invoices.push({ inv_no: i.inv_no, inv_id: i.inv_id, date: _agIso(id), due: _agIso(dueDay), terms: t, days, bucket, client: i.client_name || '', billing, amount: amt, received: recd, out, fees, disb });
+    tot[bucket] = r2(tot[bucket] + out); tot.total = r2(tot.total + out); tot.fees = r2(tot.fees + fees); tot.disb = r2(tot.disb + disb); tot.n++;
+  });
+  const rows = Object.values(groups).sort((x, y) => y.total - x.total || x.label.localeCompare(y.label));
+  rows.forEach(g => g.invoices.sort((x, y) => y.days - x.days));
+  return { asAt, basis: opts.basis || 'invoice', group: opts.group || 'billing', rows, totals: tot, overReceived: over, unlinked };
 }
 
+let _AG_LAST = null;
+const _AG_OPEN = new Set();
+function _agPref(k, v) { try { if (v === undefined) return localStorage.getItem('seraya_aging_' + k); localStorage.setItem('seraya_aging_' + k, v); } catch(e) { return null; } }
+function setAgingAsAt(which) {
+  const t = _agLocalToday(), el = document.getElementById('ag-asat');
+  if (!el) return;
+  if (which === 'today') el.value = t;
+  else if (which === 'month') { const d = new Date(); el.value = _agIso(_agDay(t) - d.getDate()); }
+  else if (which === 'dec') { const y = +t.slice(0, 4); el.value = (t.slice(5) === '12-31' ? y : y - 1) + '-12-31'; }
+  renderAging();
+}
 async function loadAging() {
-  try { markPageSynced('aging'); } catch(e){}
-  const tbody = document.getElementById('ag-tbody');
-  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text3)">Loading…</td></tr>';
-
-  const today = new Date();
-  const fmt   = n => 'RM ' + parseFloat(n||0).toLocaleString('en-MY',{minimumFractionDigits:2});
-  const buckets = {current:0, d30:0, d60:0, d90:0, d120:0, d365:0};
-
-  // Use cached globals — avoids concurrent JSONP timeout issues
-  const allInvoices = INVOICES.length ? INVOICES : ((await api({action:'get_invoices'})).data || []);
-  const allReceipts = RECEIPTS.length ? RECEIPTS : ((await api({action:'get_receipts'})).data || [])
-    .filter(r => !isDeleted('receipts',(r.receipt_id||r.id||'').toString()) && !(r.notes||'').startsWith('__VOID__'));
-
-  if (!allInvoices.length && !INVOICES.length) {
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--red)">Failed to load invoices</td></tr>`;
-    return;
+  try { markPageSynced('aging'); } catch(e) {}
+  const el = document.getElementById('ag-asat');
+  if (el && !el.value) el.value = _agLocalToday();
+  const g = document.getElementById('ag-group'), b = document.getElementById('ag-basis');
+  if (g && _agPref('group')) g.value = _agPref('group');
+  if (b && _agPref('basis')) b.value = _agPref('basis');
+  const host = document.getElementById('ag-matrix');
+  if (!(INVOICES || []).length) { try { await loadInvoices(); } catch(e) {} }
+  if (!(RECEIPTS || []).length) { try { const r = await api({ action: 'get_receipts' }); if (r && r.ok) RECEIPTS = r.data || []; } catch(e) {} }
+  if (!(INVOICES || []).length) { if (host) host.innerHTML = '<div style="padding:40px;text-align:center;color:var(--red)">Failed to load invoices</div>'; return; }
+  renderAging();
+}
+function renderAging() {
+  const host = document.getElementById('ag-matrix');
+  if (!host) return;
+  const asAt = (document.getElementById('ag-asat') || {}).value || _agLocalToday();
+  const group = (document.getElementById('ag-group') || {}).value || 'billing';
+  const basis = (document.getElementById('ag-basis') || {}).value || 'invoice';
+  _agPref('group', group); _agPref('basis', basis);
+  const dt = document.getElementById('ag-default-terms'); if (dt) dt.textContent = _agDefaultTerms();
+  const invs = (typeof INVOICES_RAW !== 'undefined' && (window.INVOICES_RAW || []).length) ? window.INVOICES_RAW : INVOICES;
+  const R = _AG_LAST = buildAgingReport(invs, RECEIPTS, { asAt, group, basis, terms: getCreditTerms(), defaultTerms: _agDefaultTerms(), clients: (typeof CLIENTS !== 'undefined' ? CLIENTS : []) });
+  const f = n => 'RM ' + (parseFloat(n) || 0).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const T = R.totals;
+  [['ag-current', 'current'], ['ag-30', 'd30'], ['ag-60', 'd60'], ['ag-90', 'd90'], ['ag-120', 'd120'], ['ag-365', 'd365'], ['ag-total', 'total']].forEach(([id, k]) => { const e = document.getElementById(id); if (e) e.textContent = f(T[k]); });
+  const cnt = document.getElementById('ag-total-count'); if (cnt) cnt.textContent = T.n + ' invoice' + (T.n === 1 ? '' : 's');
+  // Tie: the bucket columns add up to the total, and (as at today) the total equals the trade debtors.
+  const sumB = Math.round(AG_BUCKETS.reduce((t, [k]) => t + T[k], 0) * 100) / 100;
+  const tie = [];
+  tie.push(Math.abs(sumB - T.total) < 0.01 && Math.abs(T.fees + T.disb - T.total) < 0.01 ? '<span style="color:var(--green)">✓ Buckets and fees + disbursements add up to the total</span>' : '<span style="color:var(--red)">Buckets do not add up (' + f(sumB) + ')</span>');
+  if (asAt >= _agLocalToday()) {
+    const TD = (_SYNC_TALLY_LAST && _SYNC_TALLY_LAST.debtors) || (_autoCheckCached() || {}).td;
+    if (TD && TD.ok && TD.master != null) tie.push(Math.abs(TD.master - T.total) <= 0.05
+      ? '<span style="color:var(--green)">✓ = master trade debtor ' + f(TD.master) + '</span>'
+      : '<span style="color:var(--amber)">master trade debtor ' + f(TD.master) + ' (difference ' + f(T.total - TD.master) + ' — see Sync &amp; Tally section 10)</span>');
+    if (TD && TD.ok && TD.dash != null && Math.abs(TD.dash - T.total) > 0.05) tie.push('<span style="color:var(--amber)">Sync &amp; Tally trade debtors ' + f(TD.dash) + '</span>');
   }
-
-  // Build paid map (exclude deleted/voided receipts)
-  const rcPaidMap = {};
-  allReceipts.forEach(r => {
-    if (r.inv_no) rcPaidMap[r.inv_no] = r2((rcPaidMap[r.inv_no]||0) + parseFloat(r.amount||0));
+  if (R.overReceived.length) tie.push('<span style="color:var(--amber)">' + R.overReceived.length + ' invoice(s) received more than billed (' + R.overReceived.map(o => _stEsc(o.inv_no)).join(', ') + ') — not in the total</span>');
+  if (R.unlinked.length) tie.push('<span style="color:var(--amber)">' + R.unlinked.length + ' receipt(s) not linked to a live invoice</span>');
+  document.getElementById('ag-tie').innerHTML = tie.join(' · ');
+  if (!R.rows.length) { host.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">No outstanding debtors as at ' + formatDate(asAt) + '.</div>'; return; }
+  const num = (v, strong) => `<td style="text-align:right;font-family:'DM Mono',monospace;font-size:12px;${strong ? 'font-weight:600' : ''}${!v ? ';color:var(--text3)' : ''}">${v ? (Math.round(v * 100) / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '–'}</td>`;
+  const esc = _stEsc;
+  const head = `<thead><tr><th style="font-size:11px">${group === 'client' ? 'End client' : 'Billing party'}</th><th style="font-size:11px;text-align:right">Inv.</th>${AG_BUCKETS.map(([, l]) => `<th style="font-size:11px;text-align:right">${l}</th>`).join('')}<th style="font-size:11px;text-align:right">Total</th><th style="font-size:11px;text-align:right">Fees</th><th style="font-size:11px;text-align:right">Disb.</th></tr></thead>`;
+  const body = R.rows.map((g, gi) => {
+    const open = _AG_OPEN.has(g.key);
+    let h = `<tr style="cursor:pointer" onclick="toggleAgingRow(${gi})"><td style="font-size:12px"><span style="display:inline-block;width:12px;color:var(--text3)">${open ? '▾' : '▸'}</span><strong>${esc(g.label)}</strong>${g.direct ? ' <span style="font-size:10px;color:var(--text3)">direct</span>' : ''}</td><td style="text-align:right;font-size:12px">${g.invoices.length}</td>${AG_BUCKETS.map(([k]) => num(g[k])).join('')}${num(g.total, 1)}${num(g.fees)}${num(g.disb)}</tr>`;
+    if (open) h += g.invoices.map(x => `<tr style="background:var(--surface2)"><td style="font-size:11px;padding-left:28px"><a href="#" onclick="event.stopPropagation();try{openInvoiceByNo('${esc(x.inv_no)}')}catch(e){};return false" style="font-family:'DM Mono',monospace">${esc(x.inv_no)}</a> · ${formatDate(x.date)}${basis === 'due' || x.terms ? ' · due ' + formatDate(x.due) + (x.terms ? ' (' + x.terms + 'd)' : '') : ''} · ${esc(group === 'client' ? (x.billing || 'direct') : x.client)} · <strong>${x.days}d</strong>${x.received ? ' · billed ' + f(x.amount) + ', received ' + f(x.received) : ''}</td><td></td>${AG_BUCKETS.map(([k]) => num(x.bucket === k ? x.out : 0)).join('')}${num(x.out, 1)}${num(x.fees)}${num(x.disb)}</tr>`).join('');
+    return h;
+  }).join('');
+  const foot = `<tfoot><tr style="border-top:2px solid var(--border)"><td style="font-size:12px"><strong>Total</strong></td><td style="text-align:right;font-size:12px">${T.n}</td>${AG_BUCKETS.map(([k]) => num(T[k], 1)).join('')}${num(T.total, 1)}${num(T.fees, 1)}${num(T.disb, 1)}</tr></tfoot>`;
+  host.innerHTML = `<table id="ag-table">${head}<tbody>${body}</tbody>${foot}</table><div style="padding:8px 12px;font-size:11px;color:var(--text3)">As at ${formatDate(asAt)} · aged from ${basis === 'due' ? 'due date (invoice date + credit terms)' : 'invoice date'} · disbursement share = the invoice's disbursements applied pro rata to the unpaid balance. Click a debtor to see its invoices.</div>`;
+}
+function toggleAgingRow(i) {
+  const g = _AG_LAST && _AG_LAST.rows[i];
+  if (!g) return;
+  if (_AG_OPEN.has(g.key)) _AG_OPEN.delete(g.key); else _AG_OPEN.add(g.key);
+  renderAging();
+}
+function exportAgingCSV() {
+  const R = _AG_LAST; if (!R) return;
+  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const n = v => (Math.round((v || 0) * 100) / 100).toFixed(2);
+  const L = [q('Debtor aging as at ' + R.asAt + ' — aged from ' + (R.basis === 'due' ? 'due date' : 'invoice date')), ''];
+  L.push([R.group === 'client' ? 'End client' : 'Billing party', 'Invoice', 'Date', 'Due', 'Days', ...AG_BUCKETS.map(b => b[1]), 'Total', 'Fees', 'Disbursements'].map(q).join(','));
+  R.rows.forEach(g => {
+    L.push([g.label, '', '', '', '', ...AG_BUCKETS.map(([k]) => n(g[k])), n(g.total), n(g.fees), n(g.disb)].map(q).join(','));
+    g.invoices.forEach(x => L.push(['', x.inv_no, x.date, x.due, x.days, ...AG_BUCKETS.map(([k]) => x.bucket === k ? n(x.out) : ''), n(x.out), n(x.fees), n(x.disb)].map(q).join(',')));
   });
-
-  const outstanding = allInvoices.filter(i => i.status === 'outstanding' || i.status === 'partial');
-
-  // Always reset tile values before re-populating
-  const tileIds = ['ag-current','ag-30','ag-60','ag-90','ag-120','ag-365','ag-total'];
-  tileIds.forEach(id => { const el = document.getElementById(id); if (el) el.textContent = fmt(0); });
-  const totalCountEl = document.getElementById('ag-total-count');
-  if (totalCountEl) totalCountEl.textContent = '0 invoices';
-
-  if (!outstanding.length) {
-    window.__AGING_ROWS = [];
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text3)">No outstanding debtors. (${allInvoices.length} total invoices loaded)</td></tr>`;
-    return;
-  }
-
-  const rowData = outstanding.map(i => {
-    const idate = i.inv_date || i.date || '';
-    const days  = idate ? Math.floor((today - new Date(idate)) / 86400000) : 0;
-    const gross = parseFloat(i.amount||0); // invoice.amount already includes disb_amount
-    const amt   = r2(Math.max(0, gross - (rcPaidMap[i.inv_no]||0)));
-    let bucket, label, color;
-    if (days <= 30)       { bucket='current'; label='Current (0–30d)'; color='var(--green)'; }
-    else if (days <= 60)  { bucket='d30';     label='31–60 days';      color='var(--blue)'; }
-    else if (days <= 90)  { bucket='d60';     label='61–90 days';      color='var(--amber)'; }
-    else if (days <= 120) { bucket='d90';     label='91–120 days';     color='var(--red)'; }
-    else if (days <= 365) { bucket='d120';    label='121d–1 year';     color='var(--red)'; }
-    else                  { bucket='d365';    label='> 1 year';        color='#8b0000'; }
-    buckets[bucket] = r2(buckets[bucket] + amt);
-    const html = `<tr>
-      <td style="font-family:'DM Mono',monospace;font-size:12px">${i.inv_no}</td>
-      <td style="font-size:12px;color:var(--text2)">${formatDate(idate)}</td>
-      <td><strong>${i.client_name}</strong></td>
-      <td style="font-size:12px;color:var(--text2)">${i.billing_party||'—'}</td>
-      <td style="font-family:'DM Mono',monospace;text-align:right">${fmt(amt)}</td>
-      <td style="font-family:'DM Mono',monospace;font-weight:600;color:${color}">${days}d</td>
-      <td><span class="badge" style="background:${color}20;color:${color}">${label}</span></td>
-    </tr>`;
-    return {
-      inv_no:   i.inv_no,
-      date_iso: idate,
-      client:   i.client_name || '',
-      billing:  i.billing_party || '',
-      amt:      amt,
-      days:     days,
-      bucket:   bucket,
-      html:     html,
-    };
-  });
-
-  // Stash for sort handler & populate tiles (including new Total)
-  window.__AGING_ROWS = rowData;
-  document.getElementById('ag-current').textContent = fmt(buckets.current);
-  document.getElementById('ag-30').textContent      = fmt(buckets.d30);
-  document.getElementById('ag-60').textContent      = fmt(buckets.d60);
-  document.getElementById('ag-90').textContent      = fmt(buckets.d90);
-  document.getElementById('ag-120').textContent     = fmt(buckets.d120);
-  document.getElementById('ag-365').textContent     = fmt(buckets.d365);
-  const totalOut = r2(buckets.current + buckets.d30 + buckets.d60 + buckets.d90 + buckets.d120 + buckets.d365);
-  const totalEl  = document.getElementById('ag-total');
-  if (totalEl) totalEl.textContent = fmt(totalOut);
-  if (totalCountEl) totalCountEl.textContent = `${rowData.length} invoice${rowData.length===1?'':'s'}`;
-
-  _renderAgingTable();
+  const T = R.totals;
+  L.push(['Total', T.n + ' invoices', '', '', '', ...AG_BUCKETS.map(([k]) => n(T[k])), n(T.total), n(T.fees), n(T.disb)].map(q).join(','));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + L.join('\r\n')], { type: 'text/csv' }));
+  a.download = 'Debtor-aging_as-at_' + R.asAt + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function printAging() {
+  const R = _AG_LAST; if (!R) return;
+  const all = new Set(_AG_OPEN); R.rows.forEach(g => _AG_OPEN.add(g.key)); renderAging();
+  const tbl = document.getElementById('ag-table').outerHTML;
+  _AG_OPEN.clear(); all.forEach(k => _AG_OPEN.add(k)); renderAging();
+  const w = window.open('', '_blank');
+  if (!w) { toast('Allow pop-ups to print the aging report.', 'error'); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Debtor aging as at ${R.asAt}</title><style>body{font:11px Arial,sans-serif;margin:16px;color:#111}h2{font-size:15px;margin:0 0 4px}table{border-collapse:collapse;width:100%}th,td{padding:3px 6px;border-bottom:1px solid #ddd}th{text-align:left;background:#f3f3f3}tfoot td{border-top:2px solid #333}a{color:#111;text-decoration:none}tr{break-inside:avoid}</style></head><body><h2>Seraya Data Solution — Debtor aging as at ${formatDate(R.asAt)}</h2><div style="margin-bottom:8px;color:#555">Aged from ${R.basis === 'due' ? 'due date (invoice date + credit terms)' : 'invoice date'} · grouped by ${R.group === 'client' ? 'end client' : 'billing party'} · printed ${new Date().toLocaleString('en-MY')}</div>${tbl}</body></html>`);
+  w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch(e) {} }, 300);
 }
 
 // Note: loadRetention() is defined in the first <script> block (around line 1149)
@@ -23238,6 +23307,7 @@ const SYNCED_BLOBS = [
   { settingsKey: '_rem_todos_blob',           lsKey: 'seraya_rem_todos_v1',          v3: true },
   { settingsKey: '_rem_notes_blob',           lsKey: 'seraya_rem_notes_v1',          v3: true },
   { settingsKey: '_master_reviewed_blob',     lsKey: 'seraya_master_reviewed_v1' },
+  { settingsKey: '_credit_terms_blob',        lsKey: 'seraya_credit_terms_v1' },
 ];
 
 // Keep references to original Storage methods — used internally so we don't
