@@ -711,6 +711,7 @@
         <button class="btn btn-sm" id="recon-apply-btn" onclick="runReconSync()" style="background:#F9A825;color:#fff;font-weight:600;white-space:nowrap">Apply to GSheets</button>
         <button class="btn btn-sm" onclick="reconDismiss()" title="Dismiss if you have already verified GSheets is correct" style="background:transparent;border:1.5px solid #F9A825;color:#7D5A00;font-weight:500;white-space:nowrap">✓ Already done</button>
       </div>
+      <div id="dash-autocheck" style="margin:16px 0 0;display:none"></div>
       <div id="dash-acct-health" style="margin:16px 0 0"></div>
       <!-- ══ Scheduled Postings (recurring journals) ══ -->
       <div id="sched-due-banner" style="display:none;margin:16px 0 0;padding:14px 18px;border-radius:8px;background:#FFF8E1;border:1.5px solid #F9A825;align-items:center;gap:14px;flex-wrap:wrap"></div>
@@ -2803,6 +2804,7 @@ async function loadStartupSequence() {
   document.body.appendChild(warmEl);
   const _removeWarm = () => { const el = document.getElementById('startup-warm-msg'); if (el) el.remove(); };
 
+  try { renderAutoCheckCard(_autoCheckCached()); } catch(e) {}
   // Settings must come first (used by subsequent loaders)
   await loadSettings();
   // All data fetches run in PARALLEL — previously sequential (5 round-trips back-to-back).
@@ -2817,6 +2819,7 @@ async function loadStartupSequence() {
   ]);
   await loadDashboard();
   _removeWarm();
+  setTimeout(() => { runDashAutoCheck(false).catch(e => console.warn('[autocheck]', e)); }, 3000);
 
   // Run sales-order auto-scans now that CLIENTS and INVOICES are loaded.
   // Detects: (1) cosec retainers due within 30 days based on the last
@@ -15963,13 +15966,30 @@ async function loadSyncTally() {
   head.innerHTML = '';
   out.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text3)">Reading the Google Sheet… (6 tables)</div>';
 
+  const { R, raw } = await runSyncTallyCheck();
+  _SYNC_TALLY_RAW = raw;
+  _SYNC_TALLY_LAST = R;
+  renderSyncTally(R);
+  try { renderSyncFixPanel(R); } catch(e) { console.warn('fix panel failed', e); }
+  try { renderMasterCheck(R); } catch(e) { console.warn('master check failed', e); }
+  try { _autoCheckFromReport(R); } catch(e) {}
+}
+
+// Read everything Sync & Tally compares and build the report. Read-only: no DOM, no writes.
+// opts.sequential: one request at a time (the background check after boot).
+async function runSyncTallyCheck(opts) {
+  opts = opts || {};
   const names = ['invoices', 'receipts', 'vouchers', 'allocations', 'settings', 'gl', 'backend', 'master'];
-  const calls = await Promise.all([
-    api({ action: 'get_invoices' }), api({ action: 'get_receipts' }), api({ action: 'get_vouchers' }),
-    api({ action: 'get_allocations' }), api({ action: 'get_settings' }), api({ action: 'get_gl' }),
-    api({ action: 'backend_info' }),
-    api({ action: 'get_master_ledger' }),
-  ].map(p => Promise.resolve(p).catch(e => ({ ok: false, error: String(e) }))));
+  const reqs = [
+    () => api({ action: 'get_invoices' }), () => api({ action: 'get_receipts' }), () => api({ action: 'get_vouchers' }),
+    () => api({ action: 'get_allocations' }), () => api({ action: 'get_settings' }), () => api({ action: 'get_gl' }),
+    () => api({ action: 'backend_info' }),
+    () => api({ action: 'get_master_ledger' }),
+  ];
+  const safe = f => Promise.resolve().then(f).catch(e => ({ ok: false, error: String(e) }));
+  let calls;
+  if (opts.sequential) { calls = []; for (const f of reqs) calls.push(await safe(f)); }
+  else calls = await Promise.all(reqs.map(safe));
   const raw = {}, loadErr = [];
   names.forEach((n, i) => {
     const r = calls[i];
@@ -15979,7 +15999,6 @@ async function loadSyncTally() {
     else { raw[n] = null; loadErr.push(n + ': ' + ((r && r.error) || 'no response')); }
   });
 
-  _SYNC_TALLY_RAW = raw;
   const R = buildSyncTally(raw);
   R.loadErrors = loadErr;
   R.backend = (raw.backend && !raw.backend._unknown && !raw.backend._error) ? raw.backend : (raw.backend || {});
@@ -15990,10 +16009,90 @@ async function loadSyncTally() {
     catch(e) { R.master = { ok: false, error: 'check failed: ' + e.message }; }
   }
   R.at = new Date().toISOString();
-  _SYNC_TALLY_LAST = R;
-  renderSyncTally(R);
-  try { renderSyncFixPanel(R); } catch(e) { console.warn('fix panel failed', e); }
-  try { renderMasterCheck(R); } catch(e) { console.warn('master check failed', e); }
+  return { R, raw };
+}
+
+// The areas where the backend, dashboard and master differ (same tests that count R.issues).
+function syncTallyAreas(R) {
+  const a = [];
+  const B = R.backend || {};
+  if (!(B.patch1_idempotency && B.patch2_pv_numbers && B.patch4)) a.push('backend patches');
+  if ((R.tables || []).some(x => x.failed || !x.ok) || (R.dupIds || []).length) a.push('records');
+  if ((R.overrides || []).length) a.push('overrides');
+  if ((R.status || []).length || (R.overpaid || []).length || (R.mislinked || []).length) a.push('status');
+  if ((R.people || []).length) a.push('people');
+  if (R.settingsMissing || (R.blobs || []).some(b => ['pending', 'differs', 'local-only'].includes(b.state))) a.push('settings');
+  if ((R.localOnly || []).some(d => d.figures && d.n > 0)) a.push('browser-only data');
+  const G = R.gl;
+  if (!G || G.dupPost || G.toVoid || G.toHidden || G.orphan || (G.compare || []).some(c => Math.abs((c.gl || 0) - (c.dash || 0)) > 0.01)) a.push('GL tab');
+  const M = R.master || {};
+  if (!M.ok) a.push('master: not read');
+  else if (R.masterCheck) { const n = _masterOpenRows(R.masterCheck).length; if (n) a.push('master: ' + n + ' invoice' + (n === 1 ? '' : 's')); }
+  return a;
+}
+
+// ── Auto-check on the Dashboard (Principal only) ─────────────────────────────
+// Runs the Sync & Tally comparison in the background after every login / refresh and shows
+// one line above Accounting Health. Never writes anything. The last result is kept in this
+// browser so the card shows straight away on the next refresh.
+const AUTOCHECK_KEY = 'seraya_autocheck_v1';
+let _autoCheckRunning = false;
+function _autoCheckAllowed() { return !!(SESSION && SESSION.user && (SESSION.user.name === 'Principal' || SESSION.user.role === 'admin')); }
+function _autoCheckCached() { try { return JSON.parse(localStorage.getItem(AUTOCHECK_KEY) || 'null'); } catch(e) { return null; } }
+function _autoCheckFromReport(R) {
+  if (!R || !_autoCheckAllowed()) return null;
+  const st = { at: R.at, areas: syncTallyAreas(R), loadErrors: R.loadErrors || [] };
+  try { localStorage.setItem(AUTOCHECK_KEY, JSON.stringify(st)); } catch(e) {}
+  renderAutoCheckCard(st);
+  return st;
+}
+function renderAutoCheckCard(st) {
+  const el = document.getElementById('dash-autocheck');
+  if (!el) return;
+  if (!_autoCheckAllowed() || !st) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const areas = st.areas || [];
+  const when = st.at ? new Date(st.at) : null;
+  const sameDay = when && when.toDateString() === new Date().toDateString();
+  const t = when ? (sameDay ? '' : formatDate(st.at) + ' ') + when.toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit' }) : '';
+  const ok = !areas.length && when;
+  const title = !when ? 'Checking backend, dashboard and master…'
+    : ok ? 'Backend, dashboard and master tally'
+    : areas.length + (areas.length === 1 ? ' area differs' : ' areas differ') + ' — open Sync &amp; Tally';
+  const sub = [];
+  if (when) sub.push('checked ' + t);
+  if (st.running) sub.push(when ? 'checking again…' : 'reading the Sheet and the master…');
+  if (st.error) sub.push('<span style="color:var(--red)">last check failed: ' + _stEsc(st.error) + '</span>');
+  const masterNote = areas.some(x => /^master/.test(x)) ? '<div style="font-size:11px;color:var(--text3);margin-top:3px">The master is updated by hand (the dashboard never writes to it) — this tells you when it needs updating.</div>' : '';
+  el.style.display = '';
+  el.innerHTML = `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;border-radius:8px;border:1.5px solid ${!when ? 'var(--border)' : ok ? 'var(--green)' : 'var(--amber)'};background:var(--surface2)">
+      <div style="font-size:18px">${!when ? '⟳' : ok ? '✅' : '⚠️'}</div>
+      <div style="flex:1;min-width:220px">
+        <div style="font-weight:600;font-size:13px">${title}</div>
+        ${areas.length ? '<div style="font-size:12px;color:var(--amber);margin-top:2px">' + areas.map(_stEsc).join(' · ') + '</div>' : ''}
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">${sub.join(' · ')}${sub.length ? ' · ' : ''}read-only, nothing is changed</div>
+        ${masterNote}
+      </div>
+      ${areas.length ? `<button class="btn btn-secondary btn-sm" onclick="showPage('sync-tally')">Open Sync &amp; Tally</button>` : ''}
+      <a href="#" onclick="runDashAutoCheck(true);return false" style="font-size:12px;${st.running ? 'pointer-events:none;opacity:.5' : ''}">Re-check</a>
+    </div>`;
+}
+async function runDashAutoCheck(manual) {
+  if (!_autoCheckAllowed()) { renderAutoCheckCard(null); return; }
+  if (_autoCheckRunning) return;
+  _autoCheckRunning = true;
+  const prev = _autoCheckCached() || {};
+  renderAutoCheckCard(Object.assign({}, prev, { running: true, error: '' }));
+  try {
+    // Let the boot pull of synced settings finish first, so "settings" doesn't flag a copy mid-download.
+    if (_syncBootPullPromise) await Promise.race([_syncBootPullPromise.catch(() => {}), new Promise(r => setTimeout(r, 20000))]);
+    const { R } = await runSyncTallyCheck({ sequential: true });
+    _autoCheckFromReport(R);
+  } catch(e) {
+    console.warn('[autocheck] failed', e);
+    renderAutoCheckCard(Object.assign({}, prev, { running: false, error: e.message || String(e) }));
+  } finally {
+    _autoCheckRunning = false;
+  }
 }
 
 // Pure: raw Sheet data in → report object out (no DOM, no writes).
@@ -16213,6 +16312,7 @@ function buildSyncTally(raw) {
     });
     if (R.blobs.some(b => b.state === 'pending' || b.state === 'differs' || b.state === 'local-only')) R.issues++;
   } else {
+    R.settingsMissing = true;
     R.issues++;
   }
 
@@ -16783,6 +16883,7 @@ function markMasterReviewed(invNo, on) {
   else delete m[invNo];
   localStorage.setItem(MASTER_REVIEWED_KEY, JSON.stringify(m));   // synced via _master_reviewed_blob
   renderMasterCheck(_SYNC_TALLY_LAST);
+  try { _autoCheckFromReport(_SYNC_TALLY_LAST); } catch(e) {}
 }
 
 function renderMasterCheck(R) {
@@ -23261,16 +23362,20 @@ Storage.prototype.removeItem = function(key) {
 
 // Auto-pull on dashboard boot
 let _syncBootPullDone = false;
+let _syncBootPullPromise = null;
 async function ensureSyncBootPull() {
-  if (_syncBootPullDone) return;
+  if (_syncBootPullDone) return _syncBootPullPromise;
   _syncBootPullDone = true;
-  // Fresh device (no local wage_paid data) → the Sheet is authoritative, no question asked.
-  // Existing device → pending local changes are pushed; first run asks via a banner.
-  const isFreshDevice = !localStorage.getItem('seraya_wage_paid_v1');
-  await pullSyncedBlobs({ fresh: isFreshDevice });
-  try { renderReminders && renderReminders(); } catch(e){}
-  try { renderSalesOrders && renderSalesOrders(); } catch(e){}
-  try { renderPayoutView && renderPayoutView(); } catch(e){}
+  _syncBootPullPromise = (async () => {
+    // Fresh device (no local wage_paid data) → the Sheet is authoritative, no question asked.
+    // Existing device → pending local changes are pushed; first run asks via a banner.
+    const isFreshDevice = !localStorage.getItem('seraya_wage_paid_v1');
+    await pullSyncedBlobs({ fresh: isFreshDevice });
+    try { renderReminders && renderReminders(); } catch(e){}
+    try { renderSalesOrders && renderSalesOrders(); } catch(e){}
+    try { renderPayoutView && renderPayoutView(); } catch(e){}
+  })();
+  return _syncBootPullPromise;
 }
 
 // ──────────────────────────────────────────────────
