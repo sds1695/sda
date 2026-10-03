@@ -16017,7 +16017,7 @@ async function loadSyncTally() {
   if (!(R.backend.patch1_idempotency && R.backend.patch2_pv_numbers && R.backend.patch4)) R.issues++;
   R.master = raw.master && raw.master.ok !== false ? Object.assign({ ok: true }, raw.master) : (raw.master || { ok: false, error: 'not read' });
   if (R.master.ok && raw.invoices) {
-    try { R.masterCheck = buildMasterCheck(R.master, raw.invoices, raw.allocations); if (R.masterCheck.rows.length) R.issues++; }
+    try { R.masterCheck = buildMasterCheck(R.master, raw.invoices, raw.allocations); if (_masterOpenRows(R.masterCheck).length) R.issues++; }
     catch(e) { R.master = { ok: false, error: 'check failed: ' + e.message }; }
   }
   R.at = new Date().toISOString();
@@ -16732,9 +16732,11 @@ function buildMasterCheck(M, invoices, allocations) {
     out.compared++;
     const dash = { ET: 0, Koay: 0, Ivy: 0, KC: 0, Cecilia: 0 };
     const preps = {};
-    let src = 'lines';
+    let src = 'lines', cosec = false;
     try {
       const lines = _parseInvLines(inv);
+      cosec = lines.some(l => /^cosec/i.test(String(l.lineType || ''))) || /secretar|cosec|retainer/i.test(String(inv.desc1 || '') + ' ' + String(inv.desc2 || ''))
+        || (allocBy[String(inv.inv_id)] || []).some(a => /cosec/i.test(String(a.job_type || '')));
       if (lines.length) {
         lines.forEach(l => {
           const b = _bucketForLine(l, inv) || {};
@@ -16749,7 +16751,13 @@ function buildMasterCheck(M, invoices, allocations) {
         (allocBy[String(inv.inv_id)] || []).forEach(a => { const pn = _allocPeople(a, dash); if (pn && parseFloat(a.preparer_amt || 0) > 0.005) preps[pn] = 1; });
       }
     } catch(e) {}
-    const issues = [], fix = [];
+    const issues = [], fix = [], notes = [];
+    // Cosec retainer: the master puts Cecilia's quarterly fee on the invoice row; the dashboard
+    // pays it through the Cecilia retainer tracker (per client per quarter), not the invoice.
+    if (cosec && Math.abs(dash.Cecilia) < 0.005 && d.amt.Cecilia > 0.005) {
+      notes.push('Cecilia RM' + r2(d.amt.Cecilia).toFixed(2) + ' in the master is paid through the Cecilia retainer tracker');
+      dash.Cecilia = d.amt.Cecilia;
+    }
     const diffPeople = Object.keys(dash).filter(k => Math.abs(dash[k] - d.amt[k]) > MASTER_TOL);
     if (diffPeople.length) {
       issues.push('amounts differ: ' + diffPeople.map(k => k + ' dashboard ' + r2(dash[k]).toFixed(2) + ' vs master ' + r2(d.amt[k]).toFixed(2)).join('; '));
@@ -16776,10 +16784,28 @@ function buildMasterCheck(M, invoices, allocations) {
         if (!diffPeople.length) fix.push('Dashboard: set the preparer of ' + no + ' to ' + mPrep);
       }
     }
-    if (issues.length) out.rows.push({ inv_no: no, client: inv.client_name, dash: fmtP(dash) + (src !== 'lines' ? ' (from ' + src + ')' : ''), master: fmtP(d.amt), dueRows: d.rows, allocRow: a ? a.row : null, issues, fix });
+    if (issues.length) out.rows.push({ inv_no: no, client: inv.client_name, dash: fmtP(dash) + (src !== 'lines' ? ' (from ' + src + ')' : ''), master: fmtP(d.amt), dueRows: d.rows, allocRow: a ? a.row : null, issues, fix, notes,
+      sig: no + '|' + issues.join('|') });
     else out.matched++;
   });
   return out;
+}
+
+// Differences the Principal has looked at and accepted. Keyed by invoice; the stored
+// signature is the difference text, so if the difference changes it shows again.
+const MASTER_REVIEWED_KEY = 'seraya_master_reviewed_v1';
+function _masterReviewed() { try { return JSON.parse(localStorage.getItem(MASTER_REVIEWED_KEY) || '{}') || {}; } catch(e) { return {}; } }
+function _masterIsReviewed(row) { const r = _masterReviewed()[row.inv_no]; return !!(r && r.sig === row.sig); }
+function _masterOpenRows(C) { return ((C && C.rows) || []).filter(x => !_masterIsReviewed(x)); }
+function markMasterReviewed(invNo, on) {
+  const C = _SYNC_TALLY_LAST && _SYNC_TALLY_LAST.masterCheck;
+  const row = C && C.rows.find(x => x.inv_no === invNo);
+  if (!row) return;
+  const m = _masterReviewed();
+  if (on) m[invNo] = { sig: row.sig, at: new Date().toISOString(), by: (SESSION && SESSION.user && SESSION.user.name) || '' };
+  else delete m[invNo];
+  localStorage.setItem(MASTER_REVIEWED_KEY, JSON.stringify(m));   // synced via _master_reviewed_blob
+  renderMasterCheck(_SYNC_TALLY_LAST);
 }
 
 function renderMasterCheck(R) {
@@ -16794,19 +16820,24 @@ function renderMasterCheck(R) {
     return;
   }
   const C = R.masterCheck || { rows: [], matched: 0, compared: 0, notInMaster: [] };
-  const st = C.rows.length ? `<span style="color:var(--red);font-weight:600">${C.rows.length} invoice${C.rows.length === 1 ? '' : 's'} differ</span>` : '<span style="color:var(--green);font-weight:600">✓ Tallied</span>';
+  const open = _masterOpenRows(C), done = C.rows.filter(x => _masterIsReviewed(x));
+  const canTick = !!(SESSION && SESSION.user && (SESSION.user.name === 'Principal' || SESSION.user.role === 'admin'));
+  const st = open.length ? `<span style="color:var(--red);font-weight:600">${open.length} invoice${open.length === 1 ? '' : 's'} differ</span>` : '<span style="color:var(--green);font-weight:600">✓ Tallied</span>';
   const sub = `Master file: ${esc(M.file || '')} (saved ${esc(M.file_updated || '')}, read ${esc(M.read_at || '')}${M.cached ? ', cached' : ''}). ${C.compared} invoices compared · ${C.matched} match. People amounts come from Due (to) (all rows of each invoice); the master prevails. Differences of 5 sen or less are rounding and are ignored.`;
-  const rows = C.rows.map(x => `<tr>
+  const rowHtml = (x, reviewed) => `<tr style="${reviewed ? 'opacity:.6' : ''}">
       <td style="font-size:12px;font-family:'DM Mono',monospace;white-space:nowrap;vertical-align:top">${esc(x.inv_no)}</td>
       <td style="font-size:12px;vertical-align:top">${esc(x.client || '')}</td>
       <td style="font-size:12px;vertical-align:top">${esc(x.dash)}</td>
       <td style="font-size:12px;vertical-align:top">${esc(x.master)}<br><span style="color:var(--text3);font-size:11px">Due (to) row ${x.dueRows[0]}${x.dueRows.length > 1 ? '–' + x.dueRows[x.dueRows.length - 1] : ''}${x.allocRow ? ' · Allocation 2026 row ' + x.allocRow : ''}</span></td>
-      <td style="font-size:12px;vertical-align:top"><span style="color:var(--red)">${x.issues.map(esc).join('<br>')}</span>${x.fix.length ? '<br><strong>Fix:</strong> ' + x.fix.map(esc).join('<br>') : ''}</td>
-    </tr>`).join('');
+      <td style="font-size:12px;vertical-align:top"><span style="color:var(--red)">${x.issues.map(esc).join('<br>')}</span>${x.fix.length ? '<br><strong>Fix:</strong> ' + x.fix.map(esc).join('<br>') : ''}${(x.notes || []).length ? '<br><span style="color:var(--text3)">' + x.notes.map(esc).join('<br>') + '</span>' : ''}</td>
+      <td style="font-size:12px;vertical-align:top;white-space:nowrap;text-align:right">${canTick ? `<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px;border:1px solid var(--border)" onclick="markMasterReviewed('${esc(x.inv_no)}', ${reviewed ? 'false' : 'true'})">${reviewed ? 'Undo' : '✓ Reviewed'}</button>` : ''}${reviewed ? '<br><span style="color:var(--text3);font-size:10px">' + esc((_masterReviewed()[x.inv_no] || {}).by || '') + ' ' + esc(((_masterReviewed()[x.inv_no] || {}).at || '').slice(0, 10)) + '</span>' : ''}</td>
+    </tr>`;
+  const rows = open.map(x => rowHtml(x, false)).join('');
+  const doneHtml = done.length ? `<details style="padding:8px 12px;font-size:12px"><summary style="cursor:pointer">${done.length} reviewed difference${done.length === 1 ? '' : 's'} (accepted, hidden from the count)</summary><div style="overflow-x:auto;margin-top:6px"><table><tbody>${done.map(x => rowHtml(x, true)).join('')}</tbody></table></div></details>` : '';
   const nim = C.notInMaster.length ? `<details style="padding:8px 12px;font-size:12px"><summary style="cursor:pointer">${C.notInMaster.length} dashboard invoice${C.notInMaster.length === 1 ? '' : 's'} not found in the master's Due (to)</summary><div style="margin-top:6px;font-family:'DM Mono',monospace;color:var(--text2)">${C.notInMaster.map(esc).join(', ')}</div></details>` : '';
   host.innerHTML = `<div class="card" style="margin-bottom:16px">${head(st, sub)}
-    ${C.rows.length ? `<div style="overflow-x:auto"><table><thead><tr><th style="font-size:11px">Invoice</th><th style="font-size:11px">Client</th><th style="font-size:11px">Dashboard</th><th style="font-size:11px">Master</th><th style="font-size:11px">Difference and fix</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div style="padding:12px;font-size:12px;color:var(--text3);text-align:center">Every invoice found in the master matches it.</div>'}
-    ${nim}</div>`;
+    ${open.length ? `<div style="overflow-x:auto"><table><thead><tr><th style="font-size:11px">Invoice</th><th style="font-size:11px">Client</th><th style="font-size:11px">Dashboard</th><th style="font-size:11px">Master</th><th style="font-size:11px">Difference and fix</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div style="padding:12px;font-size:12px;color:var(--text3);text-align:center">' + (done.length ? 'No new differences — every remaining difference has been reviewed.' : 'Every invoice found in the master matches it.') + '</div>'}
+    ${doneHtml}${nim}</div>`;
 }
 
 // ── Pending disbursements in the Client Registry (added 2026-10-02) ──────
@@ -22967,6 +22998,7 @@ const SYNCED_BLOBS = [
   { settingsKey: '_deadlines_done_blob',      lsKey: 'seraya_deadlines_done_v1',     v3: true },
   { settingsKey: '_rem_todos_blob',           lsKey: 'seraya_rem_todos_v1',          v3: true },
   { settingsKey: '_rem_notes_blob',           lsKey: 'seraya_rem_notes_v1',          v3: true },
+  { settingsKey: '_master_reviewed_blob',     lsKey: 'seraya_master_reviewed_v1' },
 ];
 
 // Keep references to original Storage methods — used internally so we don't
