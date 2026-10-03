@@ -16150,6 +16150,7 @@ function buildSyncTally(raw) {
 
   // Browser-only data held on this device.
   SYNC_TALLY_LOCAL_ONLY.forEach(d => {
+    if (typeof _findSyncDef === 'function' && _findSyncDef(d.key)) return;   // now synced (section 5)
     let n = 0, size = 0;
     if (d.prefix) {
       for (let i = 0; i < localStorage.length; i++) {
@@ -22686,6 +22687,25 @@ const SYNCED_BLOBS = [
   { settingsKey: '_ib_ld_blob',               pattern: 'ib_ld_' },
   { settingsKey: '_notes_blob',               lsKey: 'seraya_notes_v1' },
   { settingsKey: '_job_inv_links_blob',       lsKey: 'seraya_job_inv_links_v1' },
+  // Added 3 Oct 2026 (infra Step 4) — firm data that used to live in one browser only.
+  // v3: each device is asked once which copy is correct (only the Principal can upload).
+  { settingsKey: '_claude_retain_blob',       pattern: 'claude_retain_',             v3: true },
+  { settingsKey: '_ret_ded_blob',             pattern: 'ret_ded_',                   v3: true },
+  { settingsKey: '_prep_pct_blob',            pattern: 'prep_pct_',                  v3: true },
+  { settingsKey: '_local_journals_blob',      lsKey: 'seraya_local_journals',        v3: true },
+  { settingsKey: '_schedules_blob',           lsKey: 'seraya_schedules',             v3: true },
+  { settingsKey: '_excel_snapshot_blob',      lsKey: 'seraya_excel_snapshot_v1',     v3: true },
+  { settingsKey: '_excel_line_snapshot_blob', lsKey: 'seraya_excel_line_snapshot_v1', v3: true },
+  { settingsKey: '_excel_vouchers_blob',      lsKey: 'seraya_excel_vouchers_v1',     v3: true },
+  { settingsKey: '_outstanding_invs_blob',    lsKey: 'seraya_outstanding_invs_v1',   v3: true },
+  { settingsKey: '_last_recon_cutoff_blob',   lsKey: 'seraya_last_recon_cutoff_v1',  v3: true },
+  { settingsKey: '_clients_deleted_blob',     lsKey: 'seraya_clients_deleted_v1',    v3: true },
+  { settingsKey: '_team_members_blob',        lsKey: 'seraya_team_members_v1',       v3: true },
+  { settingsKey: '_doc_content_blob',         lsKey: 'seraya_doc_content_v1',        v3: true },
+  { settingsKey: '_inv_line_presets_blob',    lsKey: 'seraya_inv_line_presets',      v3: true },
+  { settingsKey: '_deadlines_done_blob',      lsKey: 'seraya_deadlines_done_v1',     v3: true },
+  { settingsKey: '_rem_todos_blob',           lsKey: 'seraya_rem_todos_v1',          v3: true },
+  { settingsKey: '_rem_notes_blob',           lsKey: 'seraya_rem_notes_v1',          v3: true },
 ];
 
 // Keep references to original Storage methods — used internally so we don't
@@ -22723,6 +22743,7 @@ let _syncSuspended = false;   // suspend while pulling (so writes from pull don'
 const SETTINGS_CELL_MAX = 45000;
 const _SYNC_PENDING_KEY  = 'seraya_sync_pending_v1';
 const _SYNC_MIGRATED_KEY = 'seraya_sync_migrated_v2';
+const _SYNC_MIGRATED_V3  = 'seraya_sync_migrated_v3';   // per device: the blobs added on 3 Oct 2026
 function _syncPending() { try { return new Set(JSON.parse(localStorage.getItem(_SYNC_PENDING_KEY) || '[]')); } catch(e) { return new Set(); } }
 function _syncSetPending(set) { try { _origSetItem.call(localStorage, _SYNC_PENDING_KEY, JSON.stringify([...set])); } catch(e) {} }
 
@@ -22819,7 +22840,8 @@ function pushSyncedBlob(settingsKey) {
     const dirty = Array.from(_syncDirtyKeys);
     _syncDirtyKeys.clear();
     const changes = {};
-    dirty.forEach(k => { const def = SYNCED_BLOBS.find(b => b.settingsKey === k); if (def) changes[k] = _syncLocalValue(def); });
+    const v3ok = !!localStorage.getItem(_SYNC_MIGRATED_V3);
+    dirty.forEach(k => { const def = SYNCED_BLOBS.find(b => b.settingsKey === k); if (def && (!def.v3 || v3ok)) changes[k] = _syncLocalValue(def); });
     if (!Object.keys(changes).length) return;
     const res = await saveSettingsMerged(changes);
     if (res && res.ok) {
@@ -22858,13 +22880,18 @@ async function pullSyncedBlobs(opts) {
     if (!res || !res.ok || typeof res.data !== 'object') { _syncSuspended = false; return false; }
     SETTINGS = res.data;
     const pending  = _syncPending();
-    const migrated = !!localStorage.getItem(_SYNC_MIGRATED_KEY);
+    const migratedV2 = !!localStorage.getItem(_SYNC_MIGRATED_KEY);
+    const migratedV3 = !!localStorage.getItem(_SYNC_MIGRATED_V3);
     const conflicts = [];
     let applied = 0;
     SYNCED_BLOBS.forEach(def => {
+      const migrated   = def.v3 ? migratedV3 : migratedV2;
       const remoteRaw  = _readSettingValue(SETTINGS, def.settingsKey);
       const localRaw   = _syncLocalValue(def);
       const localEmpty = def.pattern ? localRaw === '{}' : !localRaw;
+      // Newly synced data held on this device: ask once, even if the Sheet has none yet,
+      // so the right device uploads it (an empty Sheet copy never overwrites it).
+      if (def.v3 && !migrated && !opts.fresh && !localEmpty && remoteRaw !== localRaw) { conflicts.push(def); return; }
       if (pending.has(def.settingsKey)) { _syncDirtyKeys.add(def.settingsKey); return; }   // local change not yet pushed
       if (remoteRaw === undefined || remoteRaw === null || remoteRaw === '') return;       // nothing remote — keep local
       if (remoteRaw === localRaw) return;
@@ -22874,7 +22901,12 @@ async function pullSyncedBlobs(opts) {
     _syncSuspended = false;
     if (_syncDirtyKeys.size) pushSyncedBlob();
     if (conflicts.length) _showSyncChoiceBanner(conflicts);
-    else if (!migrated) { try { _origSetItem.call(localStorage, _SYNC_MIGRATED_KEY, new Date().toISOString()); } catch(e) {} }
+    else {
+      try {
+        if (!migratedV2) _origSetItem.call(localStorage, _SYNC_MIGRATED_KEY, new Date().toISOString());
+        if (!migratedV3) _origSetItem.call(localStorage, _SYNC_MIGRATED_V3, new Date().toISOString());
+      } catch(e) {}
+    }
     if (applied > 0) console.log('[sync] applied', applied, 'change(s) from Sheet');
     return applied;
   } catch(e) {
@@ -22900,7 +22932,7 @@ function _showSyncChoiceBanner(defs) {
     + '<button id="sync-use-sheet" class="btn" style="font-size:12px">Use the Sheet\'s copy</button>'
     + '<button id="sync-later" class="btn" style="font-size:12px">Decide later</button></div>';
   document.body.appendChild(el);
-  const done = () => { try { _origSetItem.call(localStorage, _SYNC_MIGRATED_KEY, new Date().toISOString()); } catch(e) {} el.remove(); };
+  const done = () => { try { const t = new Date().toISOString(); _origSetItem.call(localStorage, _SYNC_MIGRATED_KEY, t); _origSetItem.call(localStorage, _SYNC_MIGRATED_V3, t); } catch(e) {} el.remove(); };
   const k = document.getElementById('sync-keep-local');
   if (k) k.onclick = () => {
     if (!confirm('Upload this browser\'s copy of: ' + names + '\n\nto the Google Sheet? Other browsers will then adopt it.')) return;
@@ -22923,7 +22955,8 @@ function _showSyncChoiceBanner(defs) {
   document.getElementById('sync-use-sheet').onclick = () => {
     if (!confirm('Replace this browser\'s copy of: ' + names + '\n\nwith the Google Sheet\'s copy? The page will reload.')) return;
     _syncSuspended = true;
-    defs.forEach(d => _syncApplyRemote(d, _readSettingValue(SETTINGS, d.settingsKey)));
+    defs.forEach(d => { const rv = _readSettingValue(SETTINGS, d.settingsKey); if (rv !== undefined && rv !== null && rv !== '') _syncApplyRemote(d, rv); });
+    try { const pend = _syncPending(); defs.forEach(d => pend.delete(d.settingsKey)); _syncSetPending(pend); } catch(e) {}
     _syncSuspended = false;
     done(); location.reload();
   };
