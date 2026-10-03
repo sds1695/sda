@@ -16687,6 +16687,7 @@ function _allocPeople(a, into) {
   if (rn && into.hasOwnProperty(rn)) into[rn] += (parseFloat(a.reviewer_amt || 0) || 0) + (parseFloat(a.reviewer_top20 || 0) || 0);
   into.KC += parseFloat(a.kc_commission || 0) || 0;
   into.Koay += parseFloat(a.koay_commission || 0) || 0;
+  into.Cecilia += parseFloat(a.cecilia_fee || 0) || 0;   // Due (to) puts her fee in her column
   return pn;
 }
 
@@ -16738,6 +16739,7 @@ function buildMasterCheck(M, invoices, allocations) {
         lines.forEach(l => {
           const b = _bucketForLine(l, inv) || {};
           Object.keys(dash).forEach(k => { dash[k] += +b[k] || 0; });
+          dash.Cecilia += +b.ceciliaFee || 0;   // Due (to) puts her fee in her column
           const dd = b.__d || {};
           if (dd.prepName && dd.prepAmt > 0.005) preps[_canonPerson(dd.prepName) === 'Koay PH' ? 'Koay' : _canonPerson(dd.prepName)] = 1;
         });
@@ -16761,12 +16763,14 @@ function buildMasterCheck(M, invoices, allocations) {
     if (a) {
       const typed = _canonPerson(a.typed);
       const same = (x, y) => (x === 'Koay PH' ? 'Koay' : x) === (y === 'Koay PH' ? 'Koay' : y);
-      if (a.amtPerson && typed && !same(typed, a.amtPerson)) {
-        issues.push('Allocation 2026 says "' + a.typed + '" but the preparer amount is in the ' + a.amtPerson + ' column');
-        fix.push('Master: Allocation 2026 D' + a.row + ' → ' + a.amtPerson);
+      const dp = Object.keys(preps);
+      // Column D is not always the preparer in older rows, so a typed name that disagrees with the
+      // amount column is only reported when the dashboard followed the typed name (as INV261002 did).
+      if (a.amtPerson && typed && !same(typed, a.amtPerson) && dp.some(x => same(x, typed))) {
+        issues.push('Allocation 2026 says "' + a.typed + '" but the preparer amount is in the ' + a.amtPerson + ' column, and the dashboard followed "' + a.typed + '"');
+        fix.push('Master: Allocation 2026 D' + a.row + ' → ' + a.amtPerson + '; dashboard: set the preparer of ' + no + ' to ' + a.amtPerson);
       }
       const mPrep = a.amtPerson || typed;
-      const dp = Object.keys(preps);
       if (mPrep && dp.length && dp.indexOf(mPrep === 'Koay PH' ? 'Koay' : mPrep) < 0) {
         issues.push('preparer: dashboard ' + dp.join('/') + ', master ' + mPrep);
         if (!diffPeople.length) fix.push('Dashboard: set the preparer of ' + no + ' to ' + mPrep);
