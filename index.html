@@ -11243,6 +11243,20 @@ function printInvoice() {
       const _built = parts.map(_safe).filter(Boolean).join(' - ');
       if (_built) _t = _built;
     }
+    // Sales order preview → "Sales Order - [Company Name] [FY]" (2026-10-06)
+    const _soInv = window._currentPreviewInv;
+    if (_soInv && _soInv._doc_title === 'SALES ORDER' && /sales order/i.test(_t)) {
+      let _fy = '';
+      for (const l of (Array.isArray(_soInv.line_items) ? _soInv.line_items : [])) {
+        const m = String((l && l.desc) || '').match(/FY\s*(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})/i);
+        if (m) { _fy = 'FY' + m[1].replace(/[\-\/]/g, '.'); break; }
+      }
+      if (!_fy && _soInv._fy_end) _fy = 'FY' + _soInv._fy_end;
+      if (!_fy && _soInv._period) _fy = String(_soInv._period).trim();
+      const _name = _splitCoNo(_soInv.client_name || _soInv.billing_party || '').name;
+      const _built = ('Sales Order - ' + _name + (_fy ? ' ' + _fy : '')).replace(/[\\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim();
+      if (_name) _t = _built;
+    }
   } catch(e) { /* keep default title */ }
   // Pull in user-adjusted layout overrides so the printed PDF matches preview
   const _layoutCSS = _layoutSettingsAsCSS();
@@ -13238,6 +13252,14 @@ function _soExpandPreset(t) {
   const name = cliSel && cliSel.value === '__new__'
     ? (document.getElementById('so-new-client').value || '').trim()
     : (cliSel && cliSel.value && opt ? (opt.dataset.name || opt.text) : '');
+  const ye = _soFyEnd(false) || ('31.12.' + new Date().getFullYear());
+  return String(t).replace(/\{\{client\}\}/g, name || '[client]').replace(/\{\{year_end\}\}/g, ye);
+}
+// FY end for this SO as dd.mm.yyyy: Period Covered ("FY Dec 2025" → 31.12.2025), else the
+// client's year end ("Dec 31") with the year from Period Covered or this year.
+// periodOnly=true → '' unless Period Covered names a month and year.
+function _soFyEnd(periodOnly) {
+  const cliSel = document.getElementById('so-client');
   let ye = '';
   const pm = String(document.getElementById('so-period').value || '').match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*(\d{4})\b/i);
   if (pm) {
@@ -13245,11 +13267,18 @@ function _soExpandPreset(t) {
     const last = new Date(Date.UTC(+pm[2], mo, 0)).getUTCDate();
     ye = last + '.' + String(mo).padStart(2, '0') + '.' + pm[2];
   }
-  if (!ye && cliSel && cliSel.value && cliSel.value !== '__new__' && typeof getClientMeta === 'function') {
-    try { ye = (getClientMeta(cliSel.value) || {}).year_end || ''; } catch(e) {}
+  if (!ye && !periodOnly && cliSel && cliSel.value && cliSel.value !== '__new__' && typeof getClientMeta === 'function') {
+    try {
+      const raw = String((getClientMeta(cliSel.value) || {}).year_end || '').trim();
+      const mm = raw.match(/^([A-Za-z]{3})[a-z]*\s+(\d{1,2})$/);
+      const yr = (String(document.getElementById('so-period').value || '').match(/(20\d{2})/) || [])[1] || new Date().getFullYear();
+      if (mm) {
+        const mo = 'janfebmaraprmayjunjulaugsepoctnovdec'.indexOf(mm[1].toLowerCase()) / 3 + 1;
+        if (mo >= 1) ye = mm[2] + '.' + String(mo).padStart(2, '0') + '.' + yr;
+      } else if (/^\d{1,2}\.\d{1,2}\.\d{4}$/.test(raw)) ye = raw;
+    } catch(e) {}
   }
-  if (!ye) ye = '31.12.' + new Date().getFullYear();
-  return String(t).replace(/\{\{client\}\}/g, name || '[client]').replace(/\{\{year_end\}\}/g, ye);
+  return ye;
 }
 
 function soAddLine() {
@@ -13397,6 +13426,9 @@ function soPreviewPDF() {
   const previewInvNo = (_editingSOId && (getSalesOrder(_editingSOId)||{}).so_no) || 'DRAFT (not saved)';
   const synthInv = {
     _doc_title:    'SALES ORDER',   // header says SALES ORDER, not INVOICE (2026-10-06)
+    _period:       patch.period_covered || '',
+    _fy_end:       _soFyEnd(true),   // for the PDF filename when no line states the FY
+    client_id:     patch.client_id,
     inv_no:        previewInvNo,
     date:          today.toISOString().slice(0,10),
     client_name:   patch.client_name,
