@@ -1934,6 +1934,7 @@
         <div class="form-field form-full">
           <label>Client</label>
           <select id="so-client"></select>
+          <input type="text" id="so-new-client" placeholder="New client name (added to the Client Registry on save)" autocomplete="off" style="display:none;margin-top:6px" />
         </div>
         <div class="form-field">
           <label>Billing Party</label>
@@ -13037,8 +13038,16 @@ function openSalesOrderModal(so_id) {
     .sort((a,b) => (a.name||'').localeCompare(b.name||''))
     .map(c => `<option value="${c.client_id}" data-name="${(c.name||'').replace(/"/g,'&quot;')}" data-bp="${(c.billing_party||'').replace(/"/g,'&quot;')}" data-baddr="${(c.billing_addr||'').replace(/"/g,'&quot;')}">${c.name}${c.reg_no?' ('+c.reg_no+')':''}</option>`)
     .join('');
+  // "+ New client…" lets the user type a client not yet in the registry; it is
+  // created in the Client Registry when the SO is saved (2026-10-06).
+  cliSel.insertAdjacentHTML('beforeend', '<option value="__new__">+ New client…</option>');
+  const newCli = document.getElementById('so-new-client');
+  if (newCli) { newCli.value = ''; newCli.style.display = 'none'; }
   // Refresh datalist of past line descriptions whenever the client changes
-  cliSel.onchange = () => _refreshSOLineDescDatalist();
+  cliSel.onchange = () => {
+    if (newCli) { newCli.style.display = cliSel.value === '__new__' ? '' : 'none'; if (cliSel.value === '__new__') newCli.focus(); }
+    _refreshSOLineDescDatalist();
+  };
 
   document.getElementById('so-id').value = so.so_id || '';
   document.getElementById('so-no').value = so.so_no || '(auto-generated on save)';
@@ -13195,7 +13204,9 @@ function _collectSOFromModal() {
   const cliSel = document.getElementById('so-client');
   const opt = cliSel.options[cliSel.selectedIndex];
   const client_id = cliSel.value;
-  const client_name = opt ? (opt.dataset.name || opt.text) : '';
+  const client_name = client_id === '__new__'
+    ? (document.getElementById('so-new-client').value || '').trim()   // preview only; save paths resolve it first
+    : (opt ? (opt.dataset.name || opt.text) : '');
   const lines = [];
   document.querySelectorAll('#so-lines-wrap .so-line').forEach(row => {
     const desc = row.querySelector('.so-l-desc').value.trim();
@@ -13221,7 +13232,52 @@ function _collectSOFromModal() {
   };
 }
 
-function soSave() {
+// If "+ New client…" is picked: reuse a registry client with the same name (case, dots and
+// spacing ignored), otherwise create it in the Client Registry. Leaves the dropdown on that client.
+let _soClientSaving = false;
+async function _soResolveNewClient() {
+  const cliSel = document.getElementById('so-client');
+  if (!cliSel || cliSel.value !== '__new__') return true;
+  const name = (document.getElementById('so-new-client').value || '').trim().replace(/\s+/g, ' ');
+  if (!name) { toast('Type the new client name.', 'error'); return false; }
+  const deleted = (typeof getDeletedClients === 'function' ? getDeletedClients() : []).map(String);
+  const live = () => (CLIENTS||[]).filter(c => !deleted.includes(String(c.client_id)));
+  let client = live().find(c => _njNorm(c.name || '') === _njNorm(name));
+  if (client) {
+    toast('"' + client.name + '" is already in the Client Registry — using it.', 'info');
+  } else {
+    if (_soClientSaving) return false;
+    _soClientSaving = true;
+    try {
+      const jt = document.getElementById('so-job-type').value || '';
+      const cRes = await api({ action: 'save_client', data: {
+        client_id:'', name, reg_no:'', type:'',
+        billing_party: (document.getElementById('so-billing-party').value || '').trim(),
+        billing_reg:'', billing_addr:'', client_addr:'', year_end:'',
+        services: JSON.stringify(jt ? [ jt.toLowerCase().replace(/[^a-z]/g,'') ] : []),
+        ar_date:'', quotations: JSON.stringify([])
+      }});
+      if (!(cRes && cRes.ok)) { toast('Could not add "' + name + '" to the Client Registry — ' + ((cRes && cRes.error) || 'no response') + '. Sales order not saved.', 'error'); return false; }
+      try { await loadClients(); } catch(e) {}
+      client = live().find(c => _njNorm(c.name || '') === _njNorm(name));
+      if (!client) { toast('"' + name + '" was sent to the Client Registry but has not come back yet — refresh, then pick it. Sales order not saved.', 'error'); return false; }
+      toast('New client "' + name + '" added to the Client Registry ✓', 'success');
+    } catch(e) {
+      console.warn('SO auto-create client', e);
+      toast('Could not add the new client — sales order not saved.', 'error'); return false;
+    } finally { _soClientSaving = false; }
+  }
+  const esc = v => String(v||'').replace(/"/g,'&quot;');
+  if (!Array.from(cliSel.options).some(o => o.value === String(client.client_id))) {
+    cliSel.insertAdjacentHTML('afterbegin', `<option value="${esc(client.client_id)}" data-name="${esc(client.name)}" data-bp="${esc(client.billing_party)}" data-baddr="${esc(client.billing_addr)}">${client.name}</option>`);
+  }
+  cliSel.value = String(client.client_id);
+  document.getElementById('so-new-client').style.display = 'none';
+  return true;
+}
+
+async function soSave() {
+  if (!(await _soResolveNewClient())) return;
   const patch = _collectSOFromModal();
   if (!patch.client_id) { toast('Pick a client first.', 'error'); return; }
   // Allow empty line_items — saving as draft. The Approve/Generate Invoice
@@ -13239,8 +13295,9 @@ function soSave() {
   renderSalesOrders();
 }
 
-function soSetStatus(newStatus) {
+async function soSetStatus(newStatus) {
   if (!_editingSOId) { toast('Save first before changing status.', 'error'); return; }
+  if (!(await _soResolveNewClient())) return;
   const patch = _collectSOFromModal();
   patch.status = newStatus;
   updateSalesOrder(_editingSOId, patch);
@@ -13290,6 +13347,7 @@ function soPreviewPDF() {
 // Convert a sales order into a real invoice via the existing save_invoice API.
 async function soGenerateInvoice() {
   if (!_editingSOId) { toast('Save the sales order first.', 'error'); return; }
+  if (!(await _soResolveNewClient())) return;
   const patch = _collectSOFromModal();
   if (!patch.client_id) { toast('Pick a client first.', 'error'); return; }
   if (!patch.amount || patch.amount <= 0) {
