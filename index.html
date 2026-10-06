@@ -10925,7 +10925,7 @@ function renderInvoicePDF(inv) {
           <img src="${LOGO}" alt="Seraya Data Solution" class="inv-logo">
         </div>
         <div class="inv-no-block">
-          <div class="inv-no-label">INVOICE</div>
+          <div class="inv-no-label">${inv._doc_title || 'INVOICE'}</div>
           <div class="inv-no-num"># ${inv.inv_no}</div>
         </div>
       </div>
@@ -13380,9 +13380,10 @@ function soPreviewPDF() {
   // Compose a synthetic INV-like object (the same shape renderInvoicePDF expects)
   const cli = (CLIENTS||[]).find(c => String(c.client_id) === String(patch.client_id));
   const today = new Date();
-  const previewInvNo = (_editingSOId && (getSalesOrder(_editingSOId)||{}).so_no) || 'DRAFT';
+  const previewInvNo = (_editingSOId && (getSalesOrder(_editingSOId)||{}).so_no) || 'DRAFT (not saved)';
   const synthInv = {
-    inv_no:        '[PREVIEW] ' + previewInvNo,
+    _doc_title:    'SALES ORDER',   // header says SALES ORDER, not INVOICE (2026-10-06)
+    inv_no:        previewInvNo,
     date:          today.toISOString().slice(0,10),
     client_name:   patch.client_name,
     billing_party: patch.billing_party || patch.client_name,
