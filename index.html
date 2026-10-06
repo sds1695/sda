@@ -11624,6 +11624,17 @@ function getSalesOrder(so_id) {
   return getAllSalesOrders().find(s => String(s.so_id) === String(so_id));
 }
 
+// SO number = SO + yymm of the issue month + running number for that month, like
+// invoices: SO261001, SO261002 … (2026-10-06). Older SO261006-097 style numbers are kept
+// as they are and don't count towards the new sequence.
+function _nextSONo(all, d) {
+  d = d || new Date();
+  const ym = String(d.getFullYear()).slice(-2) + String(d.getMonth() + 1).padStart(2, '0');
+  const re = new RegExp('^SO' + ym + '(\\d{2,3})$');
+  let max = 0;
+  (all || getAllSalesOrders()).forEach(x => { const m = re.exec(String(x.so_no || '').trim()); if (m) max = Math.max(max, +m[1]); });
+  return 'SO' + ym + String(max + 1).padStart(2, '0');
+}
 function addSalesOrder(so) {
   if (!so) return null;
   const all = getAllSalesOrders();
@@ -11631,7 +11642,7 @@ function addSalesOrder(so) {
   if (!so.so_id) so.so_id = 'SO_' + Date.now() + '_' + Math.floor(Math.random()*10000);
   if (!so.so_no) {
     const d = new Date();
-    so.so_no = 'SO' + String(d.getFullYear()).slice(-2) + String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0') + '-' + String(all.length+1).padStart(3,'0');
+    so.so_no = _nextSONo(all, d);
   }
   if (!so.created_at) so.created_at = new Date().toISOString();
   if (!so.status) so.status = 'pending';
@@ -13078,7 +13089,7 @@ function openSalesOrderModal(so_id) {
   };
 
   document.getElementById('so-id').value = so.so_id || '';
-  document.getElementById('so-no').value = so.so_no || '(auto-generated on save)';
+  document.getElementById('so-no').value = so.so_no || (_nextSONo() + ' (on save)');
   document.getElementById('so-status-display').value = SO_STATUS_LABELS[so.status] || so.status;
   cliSel.value = so.client_id || '';
   document.getElementById('so-billing-party').value = so.billing_party || '';
@@ -13440,7 +13451,7 @@ function soPreviewPDF() {
   // Compose a synthetic INV-like object (the same shape renderInvoicePDF expects)
   const cli = (CLIENTS||[]).find(c => String(c.client_id) === String(patch.client_id));
   const today = new Date();
-  const previewInvNo = (_editingSOId && (getSalesOrder(_editingSOId)||{}).so_no) || 'DRAFT (not saved)';
+  const previewInvNo = (_editingSOId && (getSalesOrder(_editingSOId)||{}).so_no) || _nextSONo();
   const synthInv = {
     _doc_title:    'SALES ORDER',   // header says SALES ORDER, not INVOICE (2026-10-06)
     _period:       patch.period_covered || '',
