@@ -13387,10 +13387,27 @@ async function soSave() {
   } else {
     const created = addSalesOrder(patch);
     _editingSOId = created.so_id;
-    toast(isDraft ? 'Sales order draft created ✓' : 'Sales order created ✓', 'success');
+    toast((isDraft ? 'Sales order draft created ✓ ' : 'Sales order created ✓ ') + (created.so_no || ''), 'success');
   }
   closeModal('modal-so');
   renderSalesOrders();
+  _soHighlightRow(_editingSOId);
+}
+
+// After a save, show the SO's tab, scroll its row into view and flash it — the list is
+// sorted by client, so a new SO can land mid-list and look "not saved" (2026-10-06).
+function _soHighlightRow(so_id) {
+  try {
+    const so = getSalesOrder(so_id);
+    if (!so) return;
+    if (so.status && so.status !== _soCurrentTab) switchSOTab(so.status);
+    const tr = [...document.querySelectorAll('#so-table-wrap tbody tr')].find(r => (r.cells[0] && r.cells[0].textContent.trim()) === so.so_no);
+    if (!tr) return;
+    tr.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    tr.style.transition = 'background-color 0.6s';
+    tr.style.backgroundColor = 'rgba(46,196,160,0.25)';
+    setTimeout(() => { tr.style.backgroundColor = ''; }, 4000);
+  } catch(e) { console.warn('[so highlight]', e); }
 }
 
 async function soSetStatus(newStatus) {
