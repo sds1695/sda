@@ -10880,6 +10880,19 @@ function previewInvoiceById(id) {
   openModal('modal-pdf');
 }
 
+// "STROMAB SHORE SDN. BHD. (Company No. 1028871-V)" → name + company no., so the
+// Bill To name stays short and the number prints on its own line (2026-10-06).
+// Also takes "Co. No.", "Reg. No.", "Registration No." and a bare "(1028871-V)" /
+// "(202001012345 (1234567-X))" at the end. Anything else is returned unchanged.
+function _splitCoNo(full) {
+  const t = String(full || '').trim();
+  let m = t.match(/^(.*?)[\s,–-]*[(\[]?\s*(?:company|co|registration|reg)\.?\s*(?:no|number)\.?\s*[:.]?\s*([0-9][0-9A-Za-z\s()\-]*?)\s*[)\]]?\s*$/i);
+  if (!m) m = t.match(/^(.*?)\s*\(\s*(\d{6,12}\s*(?:\(\s*\d+-[A-Za-z]\s*\))?|\d+-[A-Za-z])\s*\)\s*$/);
+  if (!m || !m[1].trim()) return { name: t, no: '' };
+  let no = m[2].trim();
+  if ((no.match(/\(/g) || []).length > (no.match(/\)/g) || []).length) no += ')';
+  return { name: m[1].trim().replace(/[\s,–-]+$/, ''), no };
+}
 function renderInvoicePDF(inv) {
   // Stash the full inv on window so printInvoice() can build a precise
   // filename (client + billing party + FY-from-line) instead of scraping DOM.
@@ -10944,7 +10957,8 @@ function renderInvoicePDF(inv) {
       <div class="inv-meta">
         <div class="inv-bill-block">
           <div class="inv-bill-label">Bill To:</div>
-          <div class="inv-bill-name">${inv.billing_party || inv.client_name}</div>
+          <div class="inv-bill-name">${_splitCoNo(inv.billing_party || inv.client_name).name}</div>
+          ${_splitCoNo(inv.billing_party || inv.client_name).no ? `<div class="inv-bill-addr">Company No. ${_splitCoNo(inv.billing_party || inv.client_name).no}</div>` : ''}
           <div class="inv-bill-addr">${stripPartyFromAddr(inv.billing_party || inv.client_name, inv.billing_addr || '').replace(/\n/g,'<br>')}</div>
         </div>
         <div class="inv-meta-right">
