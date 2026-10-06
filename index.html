@@ -16118,7 +16118,7 @@ function syncTallyAreas(R) {
 // a voucher exists. Nothing is saved automatically: "Create PV" opens a pre-filled voucher.
 const RECURRING_BILLS = [
   { id: 'claude', label: 'Claude subscription', day: 20, from: '2026-05-20', category: 'coa_5151',
-    cats: ['coa_5151', 'claude_subscription', 'claude', 'claude subscription'], text: /claude/i, payee: 'Koay', descLabel: 'Claude subscription' },
+    cats: ['coa_5151', 'claude_subscription', 'claude', 'claude subscription'], text: /claude/i, payee: 'Other', descLabel: 'Claude subscription' },
 ];
 const RECURRING_SKIP_KEY = 'seraya_recurring_skip_v1';   // { 'claude|2026-09-20': iso } — synced
 function _recurSkips() { try { return JSON.parse(localStorage.getItem(RECURRING_SKIP_KEY) || '{}') || {}; } catch(e) { return {}; } }
@@ -16150,7 +16150,7 @@ function buildRecurringDue(vouchers, today) {
       const key = b.id + '|' + _agIso(start);
       if (skips[key]) continue;
       out.push({ bill: b, key, start: _agIso(start), period: _recurPeriodText(start), daysLate: tDay - start,
-        amount: last ? parseFloat(last.v.amount) || 0 : 0, payee: (last && last.v.payee && last.v.payee !== 'Other') ? last.v.payee : b.payee });
+        amount: last ? parseFloat(last.v.amount) || 0 : 0, payee: b.payee });   // always the bill's default payee (Other), not the last voucher's
     }
   });
   return out;
