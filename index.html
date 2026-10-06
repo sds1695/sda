@@ -15253,9 +15253,12 @@ function renderVoucherRows(rows) {
   try { _pvNoOvr = JSON.parse(localStorage.getItem('seraya_pvno_overrides') || '{}'); } catch(e) {}
   // Sort per dropdown
   const _pvSort = document.getElementById('pv-sort')?.value || 'date-desc';
+  // Same-date vouchers are ordered by PV number (PV063.26 → year 26, no. 63), so newest-first
+  // shows the latest PV on top (2026-10-06).
+  const _pvKey = v => { const m = String(_pvNoOvr[v.voucher_no] || v.voucher_no || '').match(/(\d+)\.(\d{2})\s*$/); return m ? (+m[2]) * 100000 + (+m[1]) : -1; };
   rows = rows.slice().sort((a,b) => {
-    if (_pvSort === 'date-asc')      return new Date(a.date||0) - new Date(b.date||0);
-    if (_pvSort === 'date-desc')     return new Date(b.date||0) - new Date(a.date||0);
+    if (_pvSort === 'date-asc')      return ((_agDay(a.date) ?? 0) - (_agDay(b.date) ?? 0)) || (_pvKey(a) - _pvKey(b));
+    if (_pvSort === 'date-desc')     return ((_agDay(b.date) ?? 0) - (_agDay(a.date) ?? 0)) || (_pvKey(b) - _pvKey(a));
     if (_pvSort === 'amount-desc')   return parseFloat(b.amount||0) - parseFloat(a.amount||0);
     if (_pvSort === 'amount-asc')    return parseFloat(a.amount||0) - parseFloat(b.amount||0);
     if (_pvSort === 'payee-asc')     return (a.payee||'').localeCompare(b.payee||'');
@@ -15780,6 +15783,9 @@ async function openVoucherModal(isEdit) {
   pvClearCustomItems();
   document.getElementById('pv-modal-title').textContent = isEdit ? 'Edit Payment Voucher' : 'Payment Voucher';
   if (!isEdit) {
+    // New voucher: payee starts as Other; the user picks the person when issuing it (2026-10-06).
+    // Set before the await below so callers that pre-fill a payee straight after still win.
+    document.getElementById('pv-payee').value = 'Other';
     // Server-side sequence — mirrors saveInvoice()'s next_invoice_no pattern.
     // Added 2026-09-12 (see 2026-09-12_PV-Receipt-Numbering-Not-Server-Assigned.md)
     // to fix PV numbers going out of sequence across browsers/tabs, since the old
