@@ -13150,7 +13150,24 @@ function _soBuildLineRow(line) {
   line = line || { desc:'', amt:0, isDisb:false };
   const row = document.createElement('div');
   row.className = 'so-line';
-  row.style.cssText = 'display:grid;grid-template-columns:1fr 110px 80px 28px;gap:6px;align-items:center';
+  row.style.cssText = 'display:grid;grid-template-columns:1fr 110px 80px 28px;gap:6px;align-items:end';
+  // Category + "used before" dropdowns, same categories as invoice lines (2026-10-06).
+  const selCss = 'padding:5px 6px;border:1px solid var(--border);border-radius:5px;font-size:11px;background:var(--surface);color:var(--text1);min-width:0';
+  const cat = document.createElement('select');
+  cat.className = 'so-l-cat';
+  cat.title = 'Revenue category — carried to the invoice line';
+  cat.style.cssText = selCss + ';flex:0 0 42%';
+  cat.innerHTML = '<option value="">— category —</option>' + Object.keys(_LINE_TYPE_LABELS)
+    .map(k => `<option value="${k}">${_LINE_TYPE_LABELS[k]}</option>`).join('');
+  const hist = document.createElement('select');
+  hist.className = 'so-l-hist';
+  hist.title = 'Descriptions used before on invoices in this category';
+  hist.style.cssText = selCss + ';flex:1;color:var(--text2)';
+  const catRow = document.createElement('div');
+  catRow.style.cssText = 'display:flex;gap:6px';
+  catRow.appendChild(cat); catRow.appendChild(hist);
+  const descCol = document.createElement('div');
+  descCol.style.cssText = 'display:flex;flex-direction:column;gap:4px;min-width:0';
   const desc = document.createElement('input');
   desc.type = 'text';
   desc.className = 'so-l-desc';
@@ -13180,8 +13197,45 @@ function _soBuildLineRow(line) {
   del.innerHTML = '×';
   del.style.cssText = 'background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;padding:0;line-height:1';
   del.onclick = () => { row.remove(); soRecomputeTotal(); };
-  row.appendChild(desc); row.appendChild(amt); row.appendChild(disbLabel); row.appendChild(del);
+  const fillHist = () => { hist.innerHTML = _buildInvLineHistoryOptions(cat.value); hist.disabled = !cat.value; };
+  cat.value = line.lineType && _LINE_TYPE_LABELS[line.lineType] ? line.lineType : '';
+  fillHist();
+  cat.onchange = () => {
+    fillHist();
+    if (cat.value === 'Disbursement') { disbChk.checked = true; soRecomputeTotal(); }
+    // Empty line: start from the invoice preset for this category, filled with this SO's client / FY
+    if (!desc.value.trim()) {
+      const pr = _INV_PRESETS_BUILTIN.find(p => p.type === cat.value);
+      if (pr) desc.value = _soExpandPreset(pr.desc);
+    }
+  };
+  hist.onchange = () => { if (hist.value) desc.value = hist.value; hist.value = ''; };
+  descCol.appendChild(catRow); descCol.appendChild(desc);
+  row.appendChild(descCol); row.appendChild(amt); row.appendChild(disbLabel); row.appendChild(del);
   return row;
+}
+
+// {{client}} / {{year_end}} in an invoice preset → this SO's client and FY.
+// FY comes from Period Covered ("FY Dec 2025" → 31.12.2025), else the client's
+// year end, else 31.12 of this year (the invoice form's default).
+function _soExpandPreset(t) {
+  const cliSel = document.getElementById('so-client');
+  const opt = cliSel && cliSel.options[cliSel.selectedIndex];
+  const name = cliSel && cliSel.value === '__new__'
+    ? (document.getElementById('so-new-client').value || '').trim()
+    : (cliSel && cliSel.value && opt ? (opt.dataset.name || opt.text) : '');
+  let ye = '';
+  const pm = String(document.getElementById('so-period').value || '').match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*(\d{4})\b/i);
+  if (pm) {
+    const mo = 'janfebmaraprmayjunjulaugsepoctnovdec'.indexOf(pm[1].toLowerCase()) / 3 + 1;
+    const last = new Date(Date.UTC(+pm[2], mo, 0)).getUTCDate();
+    ye = last + '.' + String(mo).padStart(2, '0') + '.' + pm[2];
+  }
+  if (!ye && cliSel && cliSel.value && cliSel.value !== '__new__' && typeof getClientMeta === 'function') {
+    try { ye = (getClientMeta(cliSel.value) || {}).year_end || ''; } catch(e) {}
+  }
+  if (!ye) ye = '31.12.' + new Date().getFullYear();
+  return String(t).replace(/\{\{client\}\}/g, name || '[client]').replace(/\{\{year_end\}\}/g, ye);
 }
 
 function soAddLine() {
@@ -13212,8 +13266,9 @@ function _collectSOFromModal() {
     const desc = row.querySelector('.so-l-desc').value.trim();
     const amt = parseFloat(row.querySelector('.so-l-amt').value || '0') || 0;
     const isDisb = row.querySelector('.so-l-disb').checked;
+    const lineType = (row.querySelector('.so-l-cat') || {}).value || '';
     if (!desc && !amt) return;
-    lines.push({ desc, amt, isDisb });
+    lines.push(lineType ? { desc, amt, isDisb, lineType } : { desc, amt, isDisb });
   });
   const disb = parseFloat(document.getElementById('so-disb').value || '0') || 0;
   const total = lines.reduce((s,l) => s + (l.amt||0), 0) + disb;
