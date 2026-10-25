@@ -2157,7 +2157,7 @@
 <div class="modal-overlay" id="modal-client">
   <div class="modal" style="max-width:840px">
     <div class="modal-header">
-      <div class="modal-title">Client Details</div>
+      <div class="modal-title">Client Details <span id="cl-mode-hint" style="font-size:11px;font-weight:500;color:var(--text3);margin-left:8px"></span></div>
       <button class="modal-close" onclick="closeModal('modal-client')">✕</button>
     </div>
     <div class="modal-body">
@@ -2177,10 +2177,19 @@
         <div class="form-field"><label>Year-end (MM-DD)</label><input type="text" id="cl-year-end" placeholder="e.g. Dec 31 (or 12-31)" maxlength="20" /></div>
         <div class="form-field"><label>Anniversary of Incorporation (DD Month)</label><input type="text" id="cl-inc-date" placeholder="e.g. 28 Feb (or 02-28)" maxlength="20" /></div>
         <div class="form-field"><label>Credit terms (days)</label><input type="number" id="cl-terms" min="0" step="1" placeholder="0 = cash on delivery" /></div>
+        <div class="form-field form-full"><label>Directors &amp; Shareholders</label><textarea id="cl-officers" rows="3" placeholder="e.g. Directors: Tan Ah Kow, Lim Mei Ling&#10;Shareholders: Tan Ah Kow 60%, Lim Mei Ling 40%"></textarea></div>
         <div class="form-field form-full">
           <label>Services this client uses (check all that apply)</label>
           <div id="cl-services-wrap" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px"></div>
         </div>
+        <div class="form-field form-full cl-edit-only"><label>Reason for this change (optional, kept in the history)</label><input type="text" id="cl-change-note" placeholder="e.g. Change of name and registered address per SSM, 15 Oct 2026" /></div>
+      </div>
+
+      <!-- ── CHANGE HISTORY (Edit → Update log) ── -->
+      <div id="cl-history-sec" style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border)">
+        <div style="font-size:14px;font-weight:600">Change History</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">Every Edit → Update of the details above: when, by whom, and the old and new values.</div>
+        <div id="cl-history" style="margin-top:10px"></div>
       </div>
 
       <!-- ── QUOTATIONS / AGREED FEES ── -->
@@ -2231,8 +2240,9 @@
       </div>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="closeModal('modal-client')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveClient()">Save Client</button>
+      <button class="btn btn-secondary" id="cl-btn-close" onclick="clientCancelOrClose()">Close</button>
+      <button class="btn btn-primary" id="cl-btn-edit" onclick="setClientEditMode(true)">✎ Edit</button>
+      <button class="btn btn-primary" id="cl-btn-save" onclick="saveClient()">Save Client</button>
     </div>
   </div>
 </div>
@@ -7709,7 +7719,96 @@ function openClientModal(id) {
   try { renderClientFSTaxTracking(id); } catch(e) { console.warn('renderClientFSTaxTracking failed', e); }
   try { renderClientPendingDisb(id); } catch(e) { console.warn('renderClientPendingDisb failed', e); }
 
+  document.getElementById('cl-officers').value = (id && getClientOfficers()[id]) || '';
+  document.getElementById('cl-change-note').value = '';
+  try { renderClientHistory(id); } catch(e) { console.warn('renderClientHistory failed', e); }
+  setClientEditMode(!id);   // existing client opens view-only; a new client opens ready to type
+
   openModal('modal-client');
+}
+
+// ── Client details: view / edit mode + change history (26 Oct 2026) ──────
+const CLIENT_HISTORY_KEY  = 'seraya_client_history_v1';   // { client_id: [{ts, by, note, changes:[{label, from, to}]}] } — synced via _client_history_blob
+const CLIENT_OFFICERS_KEY = 'seraya_client_officers_v1';  // { client_id: 'directors / shareholders text' } — synced via _client_officers_blob
+const CL_DETAIL_FIELDS = [
+  ['cl-name', 'Client name'], ['cl-reg', 'Reg no.'], ['cl-type', 'Service type'],
+  ['cl-billing', 'Billing party'], ['cl-billing-reg', 'Billing party reg'],
+  ['cl-billing-addr', 'Billing address'], ['cl-client-addr', 'Client address (registered)'],
+  ['cl-year-end', 'Year-end'], ['cl-inc-date', 'Anniversary of incorporation'],
+  ['cl-terms', 'Credit terms (days)'], ['cl-officers', 'Directors & shareholders'],
+];
+function getClientHistory()  { try { return JSON.parse(localStorage.getItem(CLIENT_HISTORY_KEY) || '{}') || {}; } catch(e) { return {}; } }
+function getClientOfficers() { try { return JSON.parse(localStorage.getItem(CLIENT_OFFICERS_KEY) || '{}') || {}; } catch(e) { return {}; } }
+function setClientOfficers(clientId, text) {
+  if (!clientId) return;
+  const m = getClientOfficers();
+  if (text) m[clientId] = text; else delete m[clientId];
+  try { localStorage.setItem(CLIENT_OFFICERS_KEY, JSON.stringify(m)); } catch(e) {}
+}
+function addClientHistory(clientId, entry) {
+  if (!clientId) return;
+  const m = getClientHistory();
+  (m[clientId] = m[clientId] || []).push(entry);
+  try { localStorage.setItem(CLIENT_HISTORY_KEY, JSON.stringify(m)); } catch(e) {}
+}
+// Values of the detail fields as they would be saved (dates normalised the way saveClient does).
+function _clSnapshot() {
+  const o = {};
+  CL_DETAIL_FIELDS.forEach(([fid]) => { const el = document.getElementById(fid); o[fid] = el ? String(el.value || '').trim() : ''; });
+  o['cl-year-end'] = formatYearEnd(o['cl-year-end']) || '';
+  o['cl-inc-date'] = formatYearEnd(o['cl-inc-date']) || '';
+  o.services = Array.from(document.querySelectorAll('.cl-svc-chk:checked')).map(el => CLIENT_SERVICE_LABELS[el.value] || el.value).sort().join(', ');
+  return o;
+}
+function _clDiff(before, after) {
+  const out = [];
+  CL_DETAIL_FIELDS.concat([['services', 'Services']]).forEach(([k, label]) => {
+    if ((before[k] || '') !== (after[k] || '')) out.push({ label, from: before[k] || '', to: after[k] || '' });
+  });
+  return out;
+}
+function setClientEditMode(on) {
+  window._clEditing = !!on;
+  document.querySelectorAll('#modal-client .form-grid input, #modal-client .form-grid textarea, #modal-client .form-grid select').forEach(el => {
+    if (el.id === 'cl-change-note') return;
+    if (el.tagName === 'SELECT' || el.type === 'checkbox') el.disabled = !on;
+    else el.readOnly = !on;
+  });
+  document.querySelectorAll('#modal-client .cl-edit-only').forEach(el => { el.style.display = on ? '' : 'none'; });
+  const isNew = !editingClientId;
+  const btnEdit = document.getElementById('cl-btn-edit'), btnSave = document.getElementById('cl-btn-save'), btnClose = document.getElementById('cl-btn-close');
+  if (btnEdit) btnEdit.style.display = on ? 'none' : '';
+  if (btnSave) { btnSave.style.display = on ? '' : 'none'; btnSave.textContent = isNew ? 'Save Client' : 'Update'; }
+  if (btnClose) btnClose.textContent = (on && !isNew) ? 'Cancel edit' : (isNew ? 'Cancel' : 'Close');
+  const hint = document.getElementById('cl-mode-hint');
+  if (hint) hint.textContent = isNew ? '' : (on ? 'Editing — press Update to save' : 'View only — press Edit to change');
+  if (on) window._clBefore = _clSnapshot();
+}
+function clientCancelOrClose() {
+  if (window._clEditing && editingClientId) { openClientModal(editingClientId); return; }   // discard edits, back to view mode
+  closeModal('modal-client');
+}
+function renderClientHistory(id) {
+  const sec = document.getElementById('cl-history-sec'), box = document.getElementById('cl-history');
+  if (!sec || !box) return;
+  if (!id) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  const list = (getClientHistory()[id] || []).slice().reverse();
+  if (!list.length) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:12px;text-align:center;background:var(--surface2);border-radius:6px">No changes recorded yet. Changes made with Edit → Update will be listed here.</div>';
+    return;
+  }
+  const fmt = ts => { const d = new Date(ts); return isNaN(d) ? escHtml(ts) : d.toLocaleString('en-MY', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); };
+  const cell = v => v ? `<span style="white-space:pre-wrap">${escHtml(v)}</span>` : '<span style="color:var(--text3)">(blank)</span>';
+  box.innerHTML = list.map(h => `
+    <div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px">
+      <div style="font-size:12px;font-weight:600">${fmt(h.ts)}${h.by ? ' · ' + escHtml(h.by) : ''}</div>
+      ${h.note ? `<div style="font-size:12px;color:var(--text2);margin-top:2px">${escHtml(h.note)}</div>` : ''}
+      ${(h.changes || []).length ? `<table style="width:100%;font-size:12px;margin-top:6px;border-collapse:collapse">
+        <tr style="color:var(--text3);text-align:left"><th style="padding:3px 6px;width:24%">Field</th><th style="padding:3px 6px">Before</th><th style="padding:3px 6px">After</th></tr>
+        ${h.changes.map(c => `<tr style="border-top:1px solid var(--border);vertical-align:top"><td style="padding:4px 6px">${escHtml(c.label)}</td><td style="padding:4px 6px;color:var(--text3)">${cell(c.from)}</td><td style="padding:4px 6px">${cell(c.to)}</td></tr>`).join('')}
+      </table>` : ''}
+    </div>`).join('');
 }
 
 // ── Per-financial-year FS / Tax delivery history for the Client modal ──────
@@ -8572,7 +8671,7 @@ async function saveClient() {
 
   const res = await api({ action: 'save_client', data });
 
-  if (saveBtn) { saveBtn.textContent = 'Save Client'; saveBtn.disabled = false; }
+  if (saveBtn) { saveBtn.textContent = editingClientId ? 'Update' : 'Save Client'; saveBtn.disabled = false; }
 
   if (!res || !res.ok) {
     toast('Save FAILED — ' + ((res && res.error) || 'no response from server. Data NOT written to the Google Sheet. Please retry.'), 'error');
@@ -8598,6 +8697,17 @@ async function saveClient() {
     setClientMeta(id, { services, year_end, date_of_incorporation: inc_date });
     try { setCreditTerms(id, document.getElementById('cl-terms').value); } catch(e) {}
     try { setClientQuotationsLocal(id, quotations); } catch(e) { console.warn('quotations local mirror failed', e); }
+    try {
+      setClientOfficers(id, document.getElementById('cl-officers').value.trim());
+      const note = document.getElementById('cl-change-note').value.trim();
+      const by = (typeof SESSION !== 'undefined' && SESSION && SESSION.user && SESSION.user.name) || '';
+      const ts = new Date().toISOString();
+      if (!data.client_id) addClientHistory(id, { ts, by, note: note || 'Client created', changes: [] });
+      else {
+        const changes = _clDiff(window._clBefore || {}, _clSnapshot());
+        if (changes.length || note) addClientHistory(id, { ts, by, note, changes });
+      }
+    } catch(e) { console.warn('client history failed', e); }
   }
 
   toast('Client saved to Google Sheet ✓', 'success');
@@ -24234,6 +24344,8 @@ const SYNCED_BLOBS = [
   { settingsKey: '_credit_terms_blob',        lsKey: 'seraya_credit_terms_v1' },
   { settingsKey: '_recurring_skip_blob',      lsKey: 'seraya_recurring_skip_v1' },
   { settingsKey: '_people_accepted_blob',     lsKey: 'seraya_people_accepted_v1' },
+  { settingsKey: '_client_history_blob',      lsKey: 'seraya_client_history_v1' },
+  { settingsKey: '_client_officers_blob',     lsKey: 'seraya_client_officers_v1' },
 ];
 
 // Keep references to original Storage methods — used internally so we don't
