@@ -891,6 +891,7 @@
           <option value="Advisory">Advisory</option>
         </select>
       </div>
+      <div id="mbrs-drafts-panel" style="display:none"></div>
       <div id="inv-drafts-banner" style="display:none"></div>
       <div class="card">
         <table>
@@ -2747,7 +2748,7 @@ window.INV_STATUS_OVERRIDES = {
 // TIMED OUT recently (server may still have saved it), the user is asked before
 // it is sent again. request_id is also sent to the server so Apps Script can
 // dedupe on its side. Read actions are untouched.
-const _API_WRITE_RE = /^(save_|delete_|void_|recalc_|rebuild_)/;
+const _API_WRITE_RE = /^(save_|delete_|void_|recalc_|rebuild_|assign_)/;
 const _apiInflight = new Map();   // request_id -> Promise
 const _apiTimedOut = new Map();   // request_id -> timestamp of timeout
 function _apiReqId(payload) {
@@ -8783,11 +8784,15 @@ async function loadInvoices() {
   try { markPageSynced('invoices'); } catch(e){}
   const res = await api({ action: 'get_invoices' });
   if (res.ok) {
-    window.INVOICES_RAW = (res.data || []).slice();
-    INVOICES = res.data.filter(i => !isDeleted('invoices', (i.inv_id||i.id||'').toString()));
+    // MBRS drafts (no invoice number yet, Patch 9) are not invoices until numbered:
+    // kept out of every list and total, shown in the drafts panel instead.
+    window.DRAFT_INVOICES = (res.data || []).filter(i => _isDraftInv(i) && !isDeleted('invoices', (i.inv_id||i.id||'').toString()));
+    window.INVOICES_RAW = (res.data || []).filter(i => !_isDraftInv(i));
+    INVOICES = window.INVOICES_RAW.filter(i => !isDeleted('invoices', (i.inv_id||i.id||'').toString()));
     applyInvoiceOverrides();
     invalidateJtCache(); renderInvoices(); loadDashboard(); populateInvoiceDropdowns();
     try { _renderInvoiceDraftsBanner(); } catch(e) {}
+    try { _renderMbrsDrafts(); } catch(e) { console.warn('mbrs drafts panel failed', e); }
     try { runDataIntegrityChecks(); } catch(e) { console.warn('integrity check failed', e); }
     // After every invoice reload, clean up any pending SOs that are now
     // satisfied by an existing invoice. Catches the case where the user
@@ -9103,6 +9108,95 @@ function _renderInvoiceModalDraftsBanner() {
 }
 
 // Banner rendered above the invoices table when drafts exist.
+// ── MBRS draft invoices (Patch 9, 18 Nov 2026) ───────────────────────────────
+// The MBRS filer no longer picks invoice numbers. A priced MBRS job arrives here
+// as a draft (status 'draft', blank inv_no, draft_ref DRAFT-yymmdd-NN). Peter keys
+// the number below; the backend saves it and the MBRS filer copies it into the
+// master Excel (Inv - Raw data, Allocation 2026, Due (to), GL 2026) within 15 min.
+function _isDraftRef(v) { return /^DRAFT-\d{6}-\d{2,}$/.test(String(v || '').trim()); }
+function _isDraftInv(i) { return !!i && String(i.status || '').toLowerCase() === 'draft'; }
+
+// Next free numbers for this month, from issued invoices: INVyymmNN.
+function _suggestInvNos(n, when) {
+  const d = when || new Date();
+  const prefix = 'INV' + String(d.getFullYear()).slice(-2) + String(d.getMonth() + 1).padStart(2, '0');
+  let max = 0;
+  (INVOICES || []).forEach(i => {
+    const no = String(i.inv_no || '').trim().toUpperCase();
+    if (no.startsWith(prefix)) { const k = parseInt(no.slice(prefix.length), 10); if (!isNaN(k) && k > max) max = k; }
+  });
+  const out = [];
+  for (let k = 1; k <= n; k++) out.push(prefix + String(max + k).padStart(2, '0'));
+  return out;
+}
+
+function _draftPeople(inv) {
+  try {
+    const l = JSON.parse(inv.desc1 || '[]')[0] || {};
+    const h = l.horizontalAlloc || {};
+    return [h.prepName, h.revName].filter(Boolean).join(' / ');
+  } catch (e) { return ''; }
+}
+
+function _mbrsEsc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+function _renderMbrsDrafts() {
+  const host = document.getElementById('mbrs-drafts-panel');
+  if (!host) return;
+  const drafts = (window.DRAFT_INVOICES || []).slice().sort((a, b) => String(a.draft_ref || '').localeCompare(String(b.draft_ref || '')));
+  if (!drafts.length) { host.style.display = 'none'; host.innerHTML = ''; return; }
+  const sugg = _suggestInvNos(drafts.length);
+  const rows = drafts.map((d, k) => {
+    const id = _mbrsEsc(d.inv_id);
+    const dn = (typeof _agDay === 'function') ? _agDay(d.date) : null;
+    const dt = (dn != null && typeof _agIso === 'function') ? _agIso(dn) : String(d.date || '').slice(0, 10);
+    return `<tr data-inv-id="${id}">
+      <td style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text3)">${_mbrsEsc(d.draft_ref || '')}</td>
+      <td><strong style="font-size:13px">${_mbrsEsc(d.client_name)}</strong><br><span style="font-size:11px;color:var(--text3)">${_mbrsEsc(d.billing_party || '')}</span></td>
+      <td style="font-size:12px;color:var(--text2)">${_mbrsEsc(_draftPeople(d))}</td>
+      <td style="font-family:'DM Mono',monospace;font-size:13px;text-align:right">RM ${parseFloat(d.amount || 0).toLocaleString('en-MY', { minimumFractionDigits: 2 })}</td>
+      <td><input type="date" class="mbrs-draft-date" value="${_mbrsEsc(dt)}" style="font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)"></td>
+      <td><input type="text" class="mbrs-draft-no" value="${sugg[k]}" maxlength="12" style="width:110px;font-family:'DM Mono',monospace;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)"></td>
+      <td><button class="btn btn-primary btn-sm" onclick="assignMbrsDraftNo('${id}', this)">Issue</button></td>
+    </tr>`;
+  }).join('');
+  host.style.display = 'block';
+  host.innerHTML = `<div class="card" style="border:1px solid var(--amber);margin-bottom:12px">
+    <div style="padding:12px 14px 4px">
+      <div style="font-weight:600;font-size:13px;color:var(--amber)">${drafts.length} MBRS draft invoice${drafts.length > 1 ? 's' : ''} waiting for a number</div>
+      <div style="font-size:12px;color:var(--text3);margin-top:2px">Check or change the number and date, then Issue. The master Excel gets the number from the MBRS filer within 15 minutes. Drafts are not in any total until issued.</div>
+    </div>
+    <table><thead><tr><th>Draft ref</th><th>Client</th><th>Preparer / Reviewer</th><th style="text-align:right">Amount</th><th>Invoice date</th><th>Invoice No.</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table>
+  </div>`;
+}
+
+async function assignMbrsDraftNo(invId, btn) {
+  const d = (window.DRAFT_INVOICES || []).find(x => String(x.inv_id) === String(invId));
+  if (!d) { toast('Draft not found - reload the page.', 'error'); return; }
+  const tr = btn && btn.closest('tr');
+  const invNo = String(((tr && tr.querySelector('.mbrs-draft-no')) || {}).value || '').trim().toUpperCase();
+  const date = String(((tr && tr.querySelector('.mbrs-draft-date')) || {}).value || '').trim();
+  if (!/^INV\d{6,}[A-Z]?$/.test(invNo)) { toast('Invoice number must look like INV261106.', 'error'); return; }
+  const clash = (INVOICES || []).find(i => String(i.inv_no || '').trim().toUpperCase() === invNo && String(i.status || '').toLowerCase() !== 'cancelled');
+  if (clash) { toast(invNo + ' is already used for ' + (clash.client_name || 'another invoice') + '.', 'error'); return; }
+  if (!confirm(`Issue ${d.client_name} (RM ${parseFloat(d.amount || 0).toFixed(2)}) as ${invNo}${date ? ', dated ' + date : ''}?\n\nThe dashboard is updated now; the master Excel (Inv - Raw data, Allocation 2026, Due (to), GL 2026) within 15 minutes.`)) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  let res;
+  try { res = await api({ action: 'assign_invoice_no', inv_id: d.inv_id, inv_no: invNo, date: date }); }
+  catch (e) { res = { ok: false, error: String(e) }; }
+  if (!res || !res.ok) {
+    const err = (res && res.error) || 'no response';
+    toast(/unknown action/i.test(err) ? 'The backend does not have Patch 9 yet - it needs installing and a new deployment.' : err, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Issue'; }
+    return;
+  }
+  toast(res.message || (invNo + ' issued.'), 'success');
+  await loadInvoices();
+  try { if (typeof loadAllocations === 'function') await loadAllocations(); } catch (e) {}
+  if ((INVOICES || []).some(i => String(i.inv_id) === String(d.inv_id))) previewInvoiceById(d.inv_id);
+}
+
 function _renderInvoiceDraftsBanner() {
   const host = document.getElementById('inv-drafts-banner');
   if (!host) return;
@@ -13740,7 +13834,7 @@ async function loadAllocations() {
   if (res.ok) {
     window.ALLOCATIONS_RAW = (res.data || []).slice();
     ALLOCATIONS = (res.data || []).filter(a =>
-      !(a.inv_no || '').startsWith('_DUP_') &&
+      !(a.inv_no || '').startsWith('_DUP_') && !_isDraftRef(a.inv_no) &&
       !isVoided('allocations', (a.alloc_id || '').toString())
     );
     _allocCacheMerge(); // inject any locally-cached allocs GAS missed
@@ -14056,7 +14150,7 @@ async function saveAllocEdit() {
       if (!_r.ok) return;
       window.ALLOCATIONS_RAW = (_r.data || []).slice();
       ALLOCATIONS = (_r.data || []).filter(a =>
-        !(a.inv_no || '').startsWith('_DUP_') &&
+        !(a.inv_no || '').startsWith('_DUP_') && !_isDraftRef(a.inv_no) &&
         !isVoided('allocations', (a.alloc_id || '').toString())
       );
       _preRefreshAllocs.forEach(oldA => {
@@ -14162,7 +14256,7 @@ async function saveAllocEdit() {
       if (allocRes.ok) {
         window.ALLOCATIONS_RAW = (allocRes.data || []).slice();
         ALLOCATIONS = (allocRes.data || []).filter(a =>
-          !(a.inv_no || '').startsWith('_DUP_') && !isVoided('allocations', (a.alloc_id||'').toString()));
+          !(a.inv_no || '').startsWith('_DUP_') && !_isDraftRef(a.inv_no) && !isVoided('allocations', (a.alloc_id||'').toString()));
         renderAllocations();
       }
     }
@@ -16370,6 +16464,12 @@ async function runSyncTallyCheck(opts) {
     else { raw[n] = null; loadErr.push(n + ': ' + ((r && r.error) || 'no response')); }
   });
 
+  // Patch 9: MBRS drafts (and their allocation rows) are not issued yet; the dashboard keeps them apart.
+  if (Array.isArray(raw.invoices)) {
+    const _draftIds = new Set(raw.invoices.filter(_isDraftInv).map(i => String(i.inv_id)));
+    raw.invoices = raw.invoices.filter(i => !_isDraftInv(i));
+    if (Array.isArray(raw.allocations)) raw.allocations = raw.allocations.filter(a => !_isDraftRef(a.inv_no) && !_draftIds.has(String(a.inv_id)));
+  }
   const R = buildSyncTally(raw);
   R.loadErrors = loadErr;
   R.backend = (raw.backend && !raw.backend._unknown && !raw.backend._error) ? raw.backend : (raw.backend || {});
@@ -19849,7 +19949,7 @@ async function loadInvoiceBreakdown() {
   if (_allocRes.ok) {
     window.ALLOCATIONS_RAW = (_allocRes.data || []).slice();
     ALLOCATIONS = (_allocRes.data || []).filter(a =>
-      !(a.inv_no || '').startsWith('_DUP_') &&
+      !(a.inv_no || '').startsWith('_DUP_') && !_isDraftRef(a.inv_no) &&
       !isVoided('allocations', (a.alloc_id || '').toString())
     );
     _allocCacheMerge(); // inject locally-cached allocs GAS hasn't flushed yet
